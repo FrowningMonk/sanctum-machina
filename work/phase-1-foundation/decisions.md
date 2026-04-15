@@ -397,7 +397,7 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 ## Task 11: Code Audit
 
 **Status:** Done
-**Commit:** (to be filled on completion)
+**Commit:** 44b9a51
 **Agent:** main agent
 **Summary:** Холистический code-quality аудит всей Phase 1 (app/src/main + core-runtime/src/main + тесты + build-контур) по 7 измерениям из task spec и скиллу code-reviewing. Результат — `status: pass` (0 critical, 0 high, 3 medium, 5 low) в [logs/audit/code-review.json](logs/audit/code-review.json). Module boundary чист (0 запретных импортов в :core-runtime), production-код не использует Log.i/w/d (TAC-5 зелёный), `Model.instance: Any?` живёт только в Gallery-extracted `Model.kt` под approved D6-deviation, single-active-engine сериализован через lifecycleMutex + stale-instance guard, все D1-D12 и T1-T11 реализованы или покрыты User-Spec Deviations. Medium findings (M1 — download-worker FAILED бypasses ErrorLog, M2 — ErrorLog не в CoreRuntimeModule @Provides списке, M3 — `Log.e` вместо ErrorLog в `DefaultDownloadRepository.sendNotification` ClassNotFound-ветке) — functional-quality улучшения, не блокирующие Phase 1 (AC-16 — желательный). Fixer-task оркестратору не требуется (0 critical/high).
 **Deviations:** None.
