@@ -160,3 +160,35 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 - `fixtureMatchesProductionAsset` читает файлы относительным путём `src/main/assets/...`, что предполагает working dir = `core-runtime/`. Под Gradle всё зелёно, но IDE run с другой CWD даст false-failure. Мини-ужесточение через classpath resource на Phase 2.
 - `per-entry NPE informativeness` (security-auditor-1 minor #4, не закрыт): если Gson вставит null в non-null Kotlin поле, текущий `Result.failure` несёт generic message. Некритично, можно улучшить когда появится first real integration path.
 - Dead-on-arrival positive-asserts в `loadFromFixture_allModelsHaveRequiredFields` (test-reviewer-2 minor #1). Они дублируют work guard-ов, но не вредят.
+
+---
+
+## Task 5: `ErrorLog` — on-device ERROR-only writer
+
+**Status:** Done
+**Commit:** 0153152
+**Agent:** main agent
+**Summary:** Реализовал `ErrorLog` — Hilt `@Singleton` с `@Inject constructor(@ApplicationContext)`, единственный публичный `suspend fun e(component, description, cause)`. Пишет в `context.filesDir/logs/errors.log` одну строку `ERROR [component] description :: cause.message` (или без суффикса при `cause == null`) + `\n`. `description` и `cause?.message` санитизируются через pre-compiled `Regex("[\\n\\r\\t]")` + `take(500)`; `component` оставлен as-is по спеку (whitelist в KDoc). Запись сериализована через `Mutex.withLock` с внутренним `withContext(Dispatchers.IO)`; после каждой записи — ротация при `file.length() > 2 MB` (удаление `errors.log.1` → `renameTo`). Все пути резолвятся от `File(filesDir, "logs")`, родительская директория создаётся через `mkdirs()`. Никакого `@Provides` в `CoreRuntimeModule` не добавлено — Hilt auto-binds через constructor injection.
+
+**Deviations:**
+- **`runCatching` заменён на explicit try/catch с rethrow `CancellationException`** (round 1, security-auditor). Task spec в Implementation hints не требовал этого явно («swallow внутри withLock, никогда не пробрасывать вверх»), но `runCatching` ловит все `Throwable`, включая `CancellationException`, что ломает structured concurrency — если вызывающая корутина отменена во время `appendText`, отмена должна пропагироваться вверх, а не глохнуть в логгере. Семантика «логгер не валит вызывающий код» сохранена для I/O-ошибок, но корректно обрабатывает cancellation.
+- **Security-auditor major findings не адресованы — deferred:** (1) redaction чувствительных данных в `cause.message` (HF-токены в URL query params, полные filesystem paths) — не входит в scope Task 5 (спек говорит только про whitespace sanitization + truncation); auditor сам рекомендует закрыть в Task 6 когда появятся реальные call-sites с HF-auth ошибками. `android:allowBackup="false"` в `:app` manifest уже зафиксирован в TAC-12. (2) санитизация `component` — task spec в Edge cases **явно запрещает**: «`component` не санитизируется (он всегда literal из whitelist)». Defence-in-depth deferred в угоду буквальному соответствию спеку.
+- **Security-auditor minor findings не адресованы — по спеку:** broader sanitize regex (Unicode line separators `\u2028/\u2029`, vertical tab, form feed, NUL) — спек буквально требует `[\\n\\r\\t]`; `renameTo` return value игнорируется — edge case проявится максимум как `errors.log` без ротации до следующей записи, self-healing.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved (3 optional minor) → [logs/working/task-5/code-reviewer-1.json](logs/working/task-5/code-reviewer-1.json)
+- security-auditor: approved (0 critical; 2 major deferred к Task 6/TAC-12; 4 minor) → [logs/working/task-5/security-auditor-1.json](logs/working/task-5/security-auditor-1.json)
+- test-reviewer: passed (0 findings, D8 justified) → [logs/working/task-5/test-reviewer-1.json](logs/working/task-5/test-reviewer-1.json)
+
+**Verification:**
+- `./gradlew :core-runtime:compileDebugKotlin` → `BUILD SUCCESSFUL in 2s` (warnings — Kotlin compilerOptions DSL / context-receivers из Task 2, не в scope).
+- `grep -E "2 \* 1024 \* 1024|MAX_LOG_BYTES" core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt` → 3 совпадения (constant decl + KDoc + usage).
+- `grep "@Inject constructor" core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt` → 1 совпадение (Hilt auto-binding без `@Provides`).
+- Unit-тестов нет по D8 / Task 5 TDD Anchor — валидация runtime-поведения отложена в Task 6 (real call-sites) + Task 14 QA (`adb shell run-as ... cat files/logs/errors.log`).
+
+**Pending user action (Phase 2 tech-debt):**
+- Redaction sensitive data в `cause.message` (HF tokens, filesystem paths). Закрывается в Task 6 когда появятся реальные call-sites с HF-auth failure path.
+- `component` не санитизируется — при расширении whitelist за Phase 1 рассмотреть defence-in-depth (sanitize + length cap) если появятся non-literal вызовы.
+- Broader sanitize regex (`\u2028`, `\u2029`, `\v`, `\f`, `\u0000`) — если появятся log-lines из UTF-8 потоков извне.
