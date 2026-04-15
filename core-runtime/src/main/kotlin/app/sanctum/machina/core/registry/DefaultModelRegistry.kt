@@ -152,10 +152,12 @@ constructor(
             IllegalArgumentException("unknown model: $modelName")
           )
       val model = entry.model
-      // Idempotent re-initialize: release any prior engine first so the new init never leaks a
+      // Flip to Initializing first so the StateFlow never advertises Ready over a null instance
+      // during the subsequent releaseEngine window (code-reviewer-2 R2-Min-2).
+      updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Initializing) }
+      // Idempotent re-initialize: release any prior engine so the new init never leaks a
       // still-allocated native instance (security-auditor-1 SM2). Safe no-op when Idle.
       releaseEngine(model)
-      updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Initializing) }
 
       val err1 = awaitInitialize(model)
       if (err1.isEmpty() && model.instance != null) {
