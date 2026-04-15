@@ -5,6 +5,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -51,7 +52,7 @@ class ErrorLog @Inject constructor(@ApplicationContext private val context: Cont
   suspend fun e(component: String, description: String, cause: Throwable? = null) {
     mutex.withLock {
       withContext(Dispatchers.IO) {
-        runCatching {
+        try {
           val line = buildLine(component, description, cause)
           val dir = File(context.filesDir, LOG_DIR).apply { mkdirs() }
           val file = File(dir, LOG_FILE)
@@ -61,6 +62,10 @@ class ErrorLog @Inject constructor(@ApplicationContext private val context: Cont
             if (rotated.exists()) rotated.delete()
             file.renameTo(rotated)
           }
+        } catch (ce: CancellationException) {
+          throw ce
+        } catch (_: Throwable) {
+          // Logger must never fail its caller — I/O errors are swallowed by design.
         }
       }
     }
