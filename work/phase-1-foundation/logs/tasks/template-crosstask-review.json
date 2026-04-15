@@ -1,0 +1,160 @@
+{
+  "validator": "task-validator",
+  "mode": "cross_task_integration",
+  "iteration": 1,
+  "batch": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "resource-sharing",
+      "task": 10,
+      "section": "What to do / Acceptance Criteria",
+      "issue": "Interface contract mismatch between Task 10 (consumer) and Task 8 (producer) for ModelManagerScreen. Task 8 defines signature `ModelManagerScreen(onOpenChat: (String) -> Unit, viewModel: ModelManagerViewModel = hiltViewModel())` (line 35, 106 of 8.md). Task 10 calls it as `ModelManagerScreen(onLoad = { modelName -> navController.navigate(\"chat/$modelName\") })` (lines 31, 49, 61 of 10.md) with parameter name `onLoad`, not `onOpenChat`. This will fail compilation.",
+      "fix": "Align parameter name. Either (a) change Task 8 to use `onLoad` parameter, or (b) change Task 10 to pass `onOpenChat = { ... }`. Recommended: rename in Task 8 to `onLoad` since that better matches the user-spec action label 'Загрузить'. Update Task 8 description, What to do step 2, Acceptance Criteria and Files section consistently."
+    },
+    {
+      "severity": "critical",
+      "category": "resource-sharing",
+      "task": 10,
+      "section": "What to do / Acceptance Criteria",
+      "issue": "Interface contract mismatch between Task 10 (consumer) and Task 9 (producer) for ChatScreen. Task 9 defines `ChatScreen(navController: NavController, viewModel: ChatViewModel = hiltViewModel())` (line 99 of 9.md) with `modelName` read from `SavedStateHandle` in ViewModel. Task 10 calls `ChatScreen(modelName = modelName, onBack = { navController.popBackStack() })` (lines 32, 40-44, 62, 126 of 10.md) — completely different signature. Compilation will fail.",
+      "fix": "Choose one contract. Recommended (cleaner navigation decoupling): change Task 9 to `ChatScreen(modelName: String, onBack: () -> Unit, viewModel: ChatViewModel = hiltViewModel())` and keep reading modelName via SavedStateHandle in ChatViewModel (SavedStateHandle still populated by nav-arg). Update Task 9's What to do step 3, Acceptance Criteria (line 125, 128), Context Files and Implementation hints. Remove NavController parameter."
+    },
+    {
+      "severity": "critical",
+      "category": "resource-sharing",
+      "task": 8,
+      "section": "What to do",
+      "issue": "Interface contract mismatch with Task 6 canonical ModelRegistry interface. Task 8 calls `registry.startDownload(entry)` (line 31 of 8.md) but the canonical `ModelRegistry` interface in Task 6 (line 39 of 6.md) defines `fun download(model: Model): Flow<ModelDownloadStatus>` — no `startDownload(entry: ModelEntry)` method exists. Task 8 itself even hedges with 'или как именуется метод в Task 6 API' (line 31), acknowledging uncertainty.",
+      "fix": "Replace `registry.startDownload(entry)` with `registry.download(entry.model)` and collect the returned Flow (or delegate collection to the VM scope). Update Task 8 What to do step 1 and Acceptance Criteria to specify exact method name `download(model: Model): Flow<ModelDownloadStatus>` matching Task 6's canonical table. Remove the hedge phrase 'или как именуется'."
+    },
+    {
+      "severity": "critical",
+      "category": "resource-sharing",
+      "task": 9,
+      "section": "Implementation hints / onCleared pattern",
+      "issue": "Task 9 describes `registry.cleanupBlocking(modelName)` as an alternative wrapper (lines 31, 96, 202 of 9.md) but the canonical `ModelRegistry` interface in Task 6 (lines 35-46) does NOT include a `cleanupBlocking` method. Only `suspend fun cleanup(modelName: String)` exists. If implementer picks the alternative path, compilation fails or requires extending Task 6 scope silently.",
+      "fix": "Either (a) add `cleanupBlocking(modelName: String)` to Task 6's canonical interface table with explicit contract (fire-and-forget wrapper that launches internal scope), or (b) remove the alternative from Task 9 and commit to `CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { registry.cleanup(modelName) }`. Option (a) is cleaner because it encapsulates the scope inside registry."
+    },
+    {
+      "severity": "critical",
+      "category": "resource-sharing",
+      "task": 2,
+      "section": "What to do / Files",
+      "issue": "CoreRuntimeModule.kt skeleton has no clear owner. Task 4 does not create it (uses @Singleton class-level Hilt, no explicit provider). Task 5 (lines 40, 71, 89, 92) assumes 'скелет модуля создан Task 2'. Task 6 (line 68, 153, 241) assumes it already exists. But Task 2's What to do and Acceptance Criteria make NO mention of creating `core-runtime/src/main/kotlin/app/sanctum/machina/core/di/CoreRuntimeModule.kt` skeleton. This is a shared-resource ownership gap — the file has no explicit creator.",
+      "fix": "Add to Task 2 What to do step 5 (core-runtime/build.gradle.kts section): 'Создать пустой скелет `core-runtime/src/main/kotlin/app/sanctum/machina/core/di/CoreRuntimeModule.kt` с `@Module @InstallIn(SingletonComponent::class) object CoreRuntimeModule` — Task 5 добавит `provideErrorLog`, Task 6 завершит остальные @Provides.' Add corresponding Acceptance Criterion. Alternatively, assign ownership to Task 5 (first task to add a @Provides). Recommended: Task 5 creates skeleton + provideErrorLog in single step, update Task 5 dependencies and Task 2 acceptance to drop the implicit assumption."
+    },
+    {
+      "severity": "major",
+      "category": "resource-sharing",
+      "task": 5,
+      "section": "What to do / Acceptance Criteria",
+      "issue": "Redundant @Provides for ErrorLog. Task 5 defines ErrorLog with `@Inject constructor(@ApplicationContext context: Context)` and class-level @Singleton annotation would make Hilt auto-provide it via constructor injection. Explicit `@Provides @Singleton fun provideErrorLog(...)` in CoreRuntimeModule is redundant and may cause Hilt duplicate binding warnings if ErrorLog also has @Singleton class annotation. Either use class-level @Singleton + @Inject constructor (no @Provides needed) or remove @Singleton from class and keep @Provides only.",
+      "fix": "Remove @Provides @Singleton fun provideErrorLog from CoreRuntimeModule. Instead annotate ErrorLog class with `@Singleton class ErrorLog @Inject constructor(@ApplicationContext context: Context)`. Same consideration applies to AllowlistLoader in Task 4. Update Task 5 What to do step 2 and Acceptance Criteria accordingly."
+    },
+    {
+      "severity": "major",
+      "category": "resource-sharing",
+      "task": 9,
+      "section": "Context Files",
+      "issue": "Path inconsistency. Task 9 Context Files (line 148 of 9.md) references `core-runtime/src/main/kotlin/app/sanctum/machina/core/inference/ModelRegistry.kt`, but Task 6 creates it at `core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/ModelRegistry.kt` (What to do step 2 of 6.md). Two different paths for the same file.",
+      "fix": "Update Task 9 Context Files to point to `core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/ModelRegistry.kt` matching Task 6's actual file location."
+    },
+    {
+      "severity": "major",
+      "category": "resource-sharing",
+      "task": 7,
+      "section": "Dependencies / Description",
+      "issue": "Dependency comment misleading. Task 7 Dependencies section (line 141 of 7.md) says 'Task 6 (Wave 2): DefaultDownloadRepository with companion mainActivityFqn already exists'. However, the companion `mainActivityFqn` is actually created in Task 3 (What to do step 5 of 3.md, Decision T6 plumbing), not Task 6. Task 6 does not modify DefaultDownloadRepository. Task 7's `depends_on: [6]` is correct by transitivity (Task 6 depends on Task 3), but the textual rationale is wrong.",
+      "fix": "Update Task 7 Dependencies section to: 'Task 3 (via Task 6 transitive): DefaultDownloadRepository with companion mainActivityFqn exists in :core-runtime (created in Task 3, Decision T6 plumbing).' Clarifies which task actually owns the companion."
+    },
+    {
+      "severity": "major",
+      "category": "resource-sharing",
+      "task": 14,
+      "section": "Context Files / Dependencies",
+      "issue": "Task 14 mislabels audit tasks. Lines 59, 119-121 of 14.md describe Tasks 11-13 as: 11 = core-runtime isolation, 12 = banned deps/logging/secrets, 13 = AndroidManifest (permissions/foregroundServiceType/allowBackup/cleartext). Actual task assignments: Task 11 = Code Audit (covers all dimensions including isolation, logging, error-handling), Task 12 = Security Audit (covers OWASP, secrets, manifest hardening), Task 13 = Test Audit (covers test quality, fixture parity). The descriptions in Task 14 do not match the actual content of Tasks 11/12/13.",
+      "fix": "Update Task 14 Context Files bullet (line 59) and Dependencies section (lines 119-121) to describe correct audit scopes: Task 11 = Code Audit (module boundary TAC-3, ErrorLog discipline, anti-patterns, idioms), Task 12 = Security Audit (TAC-4, TAC-12, TAC-13, TAC-14, OWASP), Task 13 = Test Audit (TAC-2, test quality, fixture parity)."
+    },
+    {
+      "severity": "major",
+      "category": "decomposition",
+      "task": 4,
+      "section": "depends_on / Details",
+      "issue": "Task 4 declares `depends_on: [2]` and lives in Wave 1, but its implementation explicitly requires types from Task 3 (ModelAllowlist.kt, AllowedModel, AllowedModelConfig, toModel()). Task 4's own Details section (lines 96, 130 of 4.md) acknowledges: 'Task 3 создаёт ModelAllowlist.kt... Task 4 в той же волне (Wave 1), поэтому координируйся: если Task 3 ещё не завершён — блокируйся до его готовности'. This is a hidden sequential dependency expressed through coordination language, not frontmatter. Parallel Wave 1 execution will fail because Task 4 cannot compile without Task 3's types.",
+      "fix": "Either (a) change Task 4 `depends_on: [2, 3]` and move Task 4 to Wave 2 (breaks current Wave 1 parallelism), or (b) move creation of `ModelAllowlist.kt`/`AllowedModel`/`toModel()` from Task 3 to Task 4 (since Task 4 is the primary consumer and needs to shape them anyway), leaving Task 3 to extract only DownloadRepository/DownloadWorker/LlmChatModelHelper/etc. Option (b) preserves Wave 1 parallelism. Tech-spec should be updated accordingly."
+    },
+    {
+      "severity": "major",
+      "category": "decomposition",
+      "task": 3,
+      "section": "Files to modify / What to do",
+      "issue": "Task 3 modifies many files (~10-15: Model.kt, Consts.kt, DownloadRepository.kt, DownloadWorker.kt, ModelAllowlist.kt, ModelHelperExt.kt, LlmChatModelHelper.kt, TaskIds.kt new, Utils.kt subset, LlmModelHelper.kt, Types.kt, Config.kt, ConfigValue.kt) with many interacting patches (D3 HF-token removal, Firebase removal, T5 ProcessLifecycleOwner, T6 FQN plumbing, ModelAllowlist AICore trim, notification-string inlining, Task-parameter removal, deep-link removal). While cohesive (all port Gallery into :core-runtime), the scope exceeds typical 1-3 file atomicity guideline substantially. Risk: a single failing patch blocks the whole task, making re-review expensive.",
+      "fix": "Consider splitting into 3a (file copy + package rename + ModelAllowlist.kt trim), 3b (D3 HF-token + Firebase removal + notification-string inlining), 3c (T5 ProcessLifecycleOwner + T6 FQN plumbing + Task-parameter removal + deep-link removal). Alternatively accept as-is given it is a tightly coupled mechanical port and splitting creates re-review overhead. Document the logical cohesion rationale in tech-spec. Severity is 'major' not 'critical' because the task is tightly coupled; a true split may produce re-review cost greater than single-task risk."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 9,
+      "section": "What to do / Implementation hints",
+      "issue": "Task 9 uses `context.getString(R.string.ttft_footer_format, ttftMs, totalMs / 1000.0)` with totalSec as Double. Task 7 strings.xml declares placeholder `%2$.1fs` which Android string formatter expects Float or Double. Works, but Task 9 line 121 and 199 should emphasize that explicit Double argument is used; otherwise Float (if mistakenly provided) gives different precision. Minor clarity nit.",
+      "fix": "Add explicit note in Task 9 Implementation hints: 'Второй аргумент — `Double` (например, `totalMs / 1000.0`), НЕ Long и НЕ Float; `%2$.1f` ожидает Double/Float.'"
+    },
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": 14,
+      "section": "frontmatter",
+      "issue": "Task 14 has `reviewers: []` (empty) and comment 'Ревьюеры не назначены'. Template allows empty reviewers for self-verifying tasks (QA, deploy) which is compatible. However, Task 11-13 also have `reviewers: []`. Consistency is fine. Noted as non-issue, but frontmatter `verify: []` could be `verify: [smoke, user]` for Task 14 since it explicitly has both Automated and User verification sections. Discrepancy between frontmatter and content.",
+      "fix": "Update Task 14 frontmatter to `verify: [smoke, user]` reflecting the actual Automated+User verification structure. Same for Tasks 11/12/13 which have Automated sections but `verify: []` — consider `verify: [smoke]` for consistency."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 14,
+    "issues_found": 13,
+    "critical": 5,
+    "major": 6,
+    "minor": 2
+  },
+  "cross_task_checks_performed": {
+    "shared_resource_ownership": {
+      "strings_xml_owner_task_7_consumers_tasks_8_9": "ok — Tasks 8, 9 both declare depends_on: [6, 7]; strings.xml key set enforced by Task 7 and read-only in 8/9",
+      "allowlist_loader_owner_task_4_consumer_task_6": "ok — Task 6 depends_on: [3, 4, 5]",
+      "error_log_owner_task_5_consumer_task_6": "ok — Task 6 depends_on: [3, 4, 5]",
+      "gallery_extracted_core_owner_task_3_consumers_tasks_4_5_6": "partial — Task 4 declares depends_on: [2] but actually needs Task 3 types (see finding on Task 4 decomposition)",
+      "gradle_infra_owner_task_2_consumers_all_code_tasks": "ok — Tasks 3, 4, 5 all declare depends_on: [2]",
+      "git_init_owner_task_1_consumer_task_2": "ok — Task 2 depends_on: [1]",
+      "core_runtime_module_hilt_co_owned": "broken — no single task creates skeleton; see critical finding on Task 2",
+      "main_activity_fqn_plumbing_companion_owner_task_3_setter_task_7": "ok — Task 7 depends_on: [6] which transitively includes Task 3; but Task 7's textual rationale mislabels owner (see major finding)"
+    },
+    "wave_conflicts": {
+      "wave_0_tasks_1_2_sequential": "ok — Task 1 (no deps), Task 2 (depends on 1)",
+      "wave_1_tasks_3_4_5_parallel": "partial — Tasks 3 and 4 modify different directories (data/, registry/) but Task 4 functionally needs Task 3 types; see decomposition finding",
+      "wave_2_task_6": "ok — single task, depends on 3/4/5",
+      "wave_3_tasks_7_8_9_parallel": "ok — Task 7 owns strings.xml and manifest; Tasks 8, 9 read-only on strings.xml and live in separate ui/ subdirectories (modelmanager/, chat/)",
+      "wave_4_task_10": "ok — final wiring",
+      "wave_5_tasks_11_12_13_parallel": "ok — all audit tasks, read-only, different JSON report files",
+      "wave_6_task_14": "ok — final QA gate"
+    },
+    "dependency_graph_consistency": {
+      "dag_no_cycles": "ok — verified: 1→2→{3,4,5}→6→{7→{8,9}→10}→{11,12,13}→14",
+      "wave_monotonic_with_deps": "ok — every depends_on target has strictly lower wave number"
+    },
+    "interface_contracts": {
+      "model_registry_task_6_vs_task_8": "BROKEN — Task 8 uses startDownload(entry), interface defines download(model): Flow",
+      "model_registry_task_6_vs_task_9": "partial — getModel(modelName): Model? matches, but cleanupBlocking(modelName) referenced by Task 9 is not in Task 6 interface",
+      "model_manager_screen_task_8_vs_task_10": "BROKEN — onOpenChat vs onLoad parameter name mismatch",
+      "chat_screen_task_9_vs_task_10": "BROKEN — (navController, viewModel) vs (modelName, onBack, viewModel) complete signature mismatch",
+      "download_repository_mainActivityFqn_task_3_vs_task_7": "ok — Task 3 creates companion field, Task 7 sets value on it",
+      "data_bundle_KEY_MAIN_ACTIVITY_FQN_task_3": "ok — both DefaultDownloadRepository (producer side) and DownloadWorker (consumer side) are in Task 3; package-prefix guard present"
+    },
+    "frontmatter_parity": {
+      "statuses_all_planned": "ok — all 14 tasks have status: planned",
+      "wave_numbers": "ok — 1:0, 2:0, 3:1, 4:1, 5:1, 6:2, 7:3, 8:3, 9:3, 10:4, 11:5, 12:5, 13:5, 14:6",
+      "skills_sets": "ok — infrastructure-setup (1,2), code-writing (3-10), code-reviewing (11), security-auditor (12), test-master (13), pre-deploy-qa (14)",
+      "reviewers_sets": "ok for code tasks — {code-reviewer, security-auditor, test-reviewer} for 3-10; {code-reviewer, security-auditor, infrastructure-reviewer} for 1-2; empty for 11-14 (self-verifying audits)",
+      "verify_types": "minor mismatch — Tasks 11-14 have verify:[] but Tasks 11, 12, 13 contain Automated verification sections, Task 14 contains Automated+User sections; see minor finding"
+    }
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "Consts.kt contains `import androidx.compose.ui.unit.dp` (line 20) used by `val MODEL_INFO_ICON_SIZE = 18.dp` (line 67). Task 3 only patches line 33 (KEY_MODEL_DOWNLOAD_ACCESS_TOKEN) but does not mention removing this compose import or the constant. The smoke grep `grep -rE \"androidx.compose|androidx.activity\" core-runtime/src/` (Task 3 AC) will fail with 1 match in Consts.kt, violating the module boundary rule from tech-spec (zero androidx.compose.* imports in :core-runtime).",
+      "fix": "Add an explicit step in Task 3 'Details / Consts.kt': remove `import androidx.compose.ui.unit.dp` and delete `val MODEL_INFO_ICON_SIZE = 18.dp` (it is a UI-only constant, not referenced by any of the 13 extracted files). Confirm with grep after deletion."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 3,
+      "issue": "ModelHelperExt.kt (gallery-source/.../runtime/ModelHelperExt.kt, file #12 in code-research §2 extraction set) is absent from Task 3's copy list and destination files. The file defines `val Model.runtimeHelper: LlmModelHelper` extension property. DefaultModelRegistry (Task 4 / Wave 2) is expected to call this to dispatch to LlmChatModelHelper. Without this file, :core-runtime will fail to compile when DefaultModelRegistry references `.runtimeHelper`. No other task claims ownership of this file.",
+      "fix": "Add ModelHelperExt.kt to Task 3's copy list: source `gallery-source/.../runtime/ModelHelperExt.kt` → destination `core-runtime/.../core/runtime/ModelHelperExt.kt`. Apply the simplification from code-research §2: strip the AICoreModelHelper branch (which imports aicore package), leaving only the `return LlmChatModelHelper` path. Also strip the RuntimeType.AICORE branch in the get() body. This aligns with user-spec D1 (GPU/CPU only)."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "`lifecycle-process` dependency is not explicitly added to `:core-runtime/build.gradle.kts` by any task. Task 2 step 5 leaves core-runtime deps empty/minimal (`implementation(libs.androidx.core.ktx)` only). Task 3 step 165 notes 'ProcessLifecycleOwner requires androidx.lifecycle:lifecycle-process — добавлен Task 2 в libs.versions.toml и :core-runtime/build.gradle.kts', but Task 2 does not add it to the module-level build file (only to version catalog). If `lifecycle-process` is missing from `:core-runtime/build.gradle.kts`, the `ProcessLifecycleOwner` import will fail to resolve, breaking `./gradlew :core-runtime:compileDebugKotlin`.",
+      "fix": "Either: (a) add an explicit step in Task 3 to add `implementation(libs.androidx.lifecycle.process)` to `:core-runtime/build.gradle.kts` as part of the ProcessLifecycleOwner patch; or (b) update Task 2 step 5 to explicitly list `lifecycle-process` among the core-runtime dependencies. Option (a) is simpler since it co-locates the dependency addition with the patch that requires it."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 2,
+      "issue": "Task 2 step 4 includes `kotlinReflect=2.2.21` in [versions]. Code-research §2 explicitly marks `kotlin-reflect: НЕТ — только для config UI (createLlmChatConfigs)`. The library is not needed in either :core-runtime or :app for Phase 1. Including it in the catalog is harmless but may cause confusion; if it ends up in :core-runtime dependencies by accident it adds unnecessary classpath weight.",
+      "fix": "Either remove `kotlinReflect` from libs.versions.toml or add a comment marking it as reserved/unused in Phase 1 (e.g. `# reserved, not used in Phase 1`). Acceptance criterion already doesn't require it to be wired into any module."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 3,
+      "issue": "TDD Anchor is marked 'Не применимо' citing D8. This is correct per user-spec D8 ('в Phase 1 тестом покрывается только AllowlistLoader'). However, the task includes new code (companion object + FQN guard in DefaultDownloadRepository, require() guard in DownloadWorker). The require() guard is a security-relevant invariant and has no test coverage. This is acceptable for Phase 1 scope but worth flagging for Task 4/5 backlog.",
+      "fix": "No change required for Phase 1. Recommend adding a comment in Post-completion to log a backlog item for testing the FQN guard in a future QA round, or cover it in the AllowlistLoader test task (Task 4) if scope allows."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "Task 3 step 37 says to delete 'параметр конструктора `lifecycleProvider` line 83' from DownloadRepository.kt. The actual code at line 83 is `private val lifecycleProvider: AppLifecycleProvider,` — which is a constructor parameter of `DefaultDownloadRepository`, not `DownloadRepository` (the interface above it). The interface declaration starts at line 53. The task description correctly targets `DefaultDownloadRepository` in step 5 (companion object), but step 2 says 'DownloadRepository' which could confuse the executor. The import on line 39 (`AppLifecycleProvider`) must also be removed.",
+      "fix": "Clarify Task 3 step 2 bullet: 'DownloadRepository.kt — параметр конструктора `lifecycleProvider` line 83 (in class DefaultDownloadRepository)'. Also add explicit mention to remove the `AppLifecycleProvider` import (line 39) when patching T5, since it's no longer referenced after the ProcessLifecycleOwner replacement."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 31,
+    "issues_found": 6
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "status": "pass",
+  "checks": [
+    {
+      "name": "completeness",
+      "pass": true,
+      "note": "All sections filled with substantive content. No placeholders or empty sections. 'Что делаем' is self-contained. 'Зачем' identifies WHO (solo dev), WHAT (extract inference core), WHAT PROBLEM (validate Variant B before 2-3 month investment). Interview scored sections all complete (85-95), every topic reflected in spec. conversation_history[] is empty but all interview knowledge is captured in scored phase sections — not a gap."
+    },
+    {
+      "name": "edge_cases",
+      "pass": true,
+      "note": "10+ edge cases documented inline in 'Как должно работать' (cancel, kill, corrupted file, offline, multi-model switch, back during init, stream stall, send-while-streaming, context overflow, cleanup exceptions). Risks section has R1-R10, each with explicit mitigation. R4 and R7 explicitly accept the risk with documented rationale — valid mitigation pattern for a spike."
+    },
+    {
+      "name": "acceptance_criteria",
+      "pass": true,
+      "note": "AC-14 now includes an objective backstop: TTFT from Phase 1 footer must not exceed 1.5× Gallery TTFT on the same prompt and device, measured by stopwatch. The override condition is explicit ('независимо от субъективного ощущения'). Threshold is specific, measurement method is defined (one stopwatch run sufficient). All 16 criteria are now objectively verifiable. D8 addition (allowlist parser unit test) introduced a corresponding verifiable criterion in the agent verification table — consistent."
+    },
+    {
+      "name": "contradictions",
+      "pass": true,
+      "note": "Log path contradiction is resolved: all references (AC-16, Ограничения line 92, D11, verification command) now uniformly point to context.filesDir/logs/errors.log (internal storage). Verification command uses 'adb shell run-as app.sanctum.machina cat files/logs/errors.log' — correct for debug-APK internal storage. Model storage path (externalFilesDir) remains distinct and consistent in AC-4, Ограничения, D5 — no cross-contamination. One minor new inconsistency noted: the 'Вне скоупа Phase 1' bullet on automated tests still says 'в Phase 1 не пишутся' without mentioning the allowlist parser exception that was added in D8 and the Testing section. This is minor (same document, D8 is authoritative), not a blocking contradiction."
+    },
+    {
+      "name": "template_compliance",
+      "pass": true,
+      "note": "Frontmatter present with all required fields (created: 2026-04-14, status: draft, type: feature, size: L). All required sections present. 'Тестирование' gives explicit decision + rationale for unit (exception documented), integration, and E2E. 'Как проверить' correctly split into 'Агент проверяет' (table format, now includes unit test row) and 'Пользователь проверяет' (numbered checklist). Document structure matches template."
+    },
+    {
+      "name": "size_check",
+      "pass": true,
+      "note": "Size L declared and consistent with scope: two new Gradle modules, architectural refactor (ModelDefinition/ModelRuntimeHandle), god-object replacement, new Compose UI, 16 acceptance criteria. L is correct."
+    }
+  ],
+  "findings": [
+    {
+      "severity": "minor",
+      "section": "Ограничения — Вне скоупа Phase 1",
+      "issue": "The 'Автоматические тесты' bullet says 'в Phase 1 не пишутся' as a flat statement, without mentioning the allowlist parser exception added in D8 and the Testing section. A reader skimming only the Ограничения section would get a wrong impression. The contradiction is internal to the document, not between spec and implementation.",
+      "suggested_fix": "Append a parenthetical to that bullet: '(кроме одного unit-теста на парсер allowlist — см. D8 и раздел Тестирование)'."
+    },
+    {
+      "severity": "minor",
+      "section": "Как проверить — Главный критерий Phase 1",
+      "issue": "The back-to-back Gallery comparison section (lines ~195-215) describes AC-14 in subjective terms only ('субъективно скорость «примерно такая же»? TTFT в нашем футере не драматически выше...') without referencing the 1.5× backstop threshold now defined in AC-14. A user following only this verification section could omit the objective gate.",
+      "suggested_fix": "Add one sentence to the final verdict paragraph: 'Объективный backstop: если TTFT из футера Phase 1 превышает 1.5× TTFT Gallery (измеренный секундомером) — AC-14 провален, независимо от субъективного ощущения (подробнее — см. AC-14).'"
+    },
+    {
+      "severity": "low",
+      "section": "Риски — R8 и R9",
+      "issue": "R8 (Phase 1 :core-runtime architecture may need reworking) and R9 (throwaway UI) are explicitly accepted up-front design decisions with no real uncertainty, rather than genuine risks. They dilute the risk register slightly.",
+      "suggested_fix": "Optionally move R8 and R9 to 'Технические решения' or annotate them as 'acknowledged constraint, not a risk'. Keeping them in risks is also acceptable for audit trail purposes."
+    }
+  ],
+  "interview_coverage": {
+    "covered": [
+      "feature_description: extract Gallery inference core into :core-runtime, minimal text-only chat APK",
+      "user_problem: validate Variant B (speed parity) before 2-3 month investment",
+      "target_users: solo developer on Honor 200",
+      "success_criteria: TTFT+total duration footer, back-to-back Gallery comparison, secondary: download/load/reset flows",
+      "constraints: text-only, two models, bundled allowlist, no Room/DataStore/AppAuth/Firebase/AICore, no tests",
+      "testing_strategy: no automated tests in interview (exception added post-interview via adequacy validator — deliberate, documented in D8)",
+      "user_stories: 10-step happy path, secondary back-to-back speed comparison flow",
+      "acceptance_criteria: AC-1 through AC-16 fully mapped from interview scored values",
+      "edge_cases: cancel, kill, reboot mid-download, renameTo bug, sha256 missing, NPU missing, send-while-streaming, stop, back-during-init, stream stall, cleanup exceptions, context overflow",
+      "error_scenarios: E1 download failed, E2 model load failed, E3 inference failed, E4 stop (not an error), E5 cleanup failure, E6 corrupted file",
+      "verification_strategy: agent grep checks + user 15-step checklist + back-to-back Gallery comparison + log inspection",
+      "ui_ux_requirements: ModelManagerScreen and ChatScreen layouts, string externalization, Material 3 minimal",
+      "risks: R1 hardcoded MainActivity, R2 NPU unsupported, R3 cleanUp race, R4 renameTo bug, R5 no sha256, R6 tok/s accuracy, R7 stream stall, R8 arch rework, R9 throwaway UI, R10 upstream allowlist change",
+      "technical_decisions: D1-D12 covered (Variant B, file list, patches, allowlist asset, no Room, ModelDefinition refactor, ModelRegistry, allowlist parser test, metrics choice, UI minimal, error log, back navigation)",
+      "deploy_approach: manual adb install, no CI/CD, no signing in Phase 1",
+      "integration_points: HuggingFace CDN, LiteRT-LM SDK, WorkManager, NotificationManager, filesystem",
+      "dependencies: exact gradle coordinates listed for :core-runtime and :app, explicit exclusions",
+      "technical_constraints: compileSdk 35, minSdk 31, Kotlin 2.2.x, module boundary rules, AndroidManifest permissions",
+      "data_requirements: bundled allowlist, in-memory StateFlow, externalFilesDir for models, filesDir for logs, no PII"
+    ],
+    "missing": []
+  },
+  "summary": "Оба блокирующих дефекта из предыдущего раунда устранены: AC-14 получил объективный backstop (1.5×, секундомер, одного прогона достаточно), путь к лог-файлу унифицирован до context.filesDir везде, команда adb run-as корректна. Добавление теста allowlist-парсера не создало противоречий — оно аккуратно отражено в D8, Тестировании и таблице агента. Осталось два минорных недочёта (bullets «вне скоупа» и «Как проверить» не упоминают соответствующие уточнения), не блокирующих утверждение спека. Статус: approved."
+}

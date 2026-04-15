@@ -1,0 +1,27 @@
+{
+  "reviewer": "security-auditor",
+  "task": "1",
+  "round": 1,
+  "verdict": "ok",
+  "summary": "Initial commit is clean of secrets; .gitignore and .gitattributes cover the dominant secret vectors (env files, keystores, PEM/keys, credentials.json, release-keys/, local.properties, Claude local settings). Task 3 gitleaks wiring can proceed without any history rewrite. Two minor coverage gaps worth closing now while history is still 1 commit deep.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "ignore-coverage",
+      "issue": "Android signing bundles in PKCS#12 form (*.p12, *.pfx) are not explicitly ignored. A developer who later generates or imports a signing cert in PKCS#12 (common with Play App Signing / upload keys exported from keytool) could drop a file named e.g. `upload-cert.p12` at repo root and it would not be caught by the existing *.jks / *.keystore patterns. `secrets/` and `release-keys/` only protect those directory names.",
+      "suggestion": "Add to the Secrets section of .gitignore:\n*.p12\n*.pfx\nAlso binary-mark them in .gitattributes (`*.p12 binary`, `*.pfx binary`) so any accidental add does not render a text diff."
+    },
+    {
+      "severity": "minor",
+      "category": "ignore-coverage",
+      "issue": "Android signing configs in Gradle conventionally read from a `keystore.properties` file alongside `local.properties`. That filename is NOT covered by the current ignore list. `gradle.properties.local` is covered, but the idiomatic Android name for keystore creds is `keystore.properties` (or `signing.properties`). If a developer follows the standard Android Studio signing-config tutorial, they may commit this file with HuggingFace tokens, upload key passwords, or store passwords.",
+      "suggestion": "Add to the Secrets section of .gitignore:\nkeystore.properties\nsigning.properties\nAlternatively document in patterns.md that signing credentials must live under `secrets/` only."
+    },
+    {
+      "severity": "nit",
+      "category": "gitattributes",
+      "issue": ".gitattributes binary-marks *.jks and *.keystore (good), but not *.pem / *.key. These are technically text but should never diff: a partial PEM fragment leaked in a diff view is still a disclosure. Not a real vulnerability because *.pem and *.key are already gitignored, but belt-and-suspenders.",
+      "suggestion": "Optionally add: `*.pem binary` and `*.key binary` to .gitattributes. Low priority since the primary control (.gitignore) already blocks them."
+    }
+  ]
+}

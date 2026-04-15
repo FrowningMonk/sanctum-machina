@@ -1,0 +1,51 @@
+{
+  "validator": "reality-checker",
+  "batch": [4, 5, 6],
+  "iteration": 2,
+  "status": "approved",
+  "round1_fixes_verified": {
+    "task6_cleanUp_onDone_signature": "FIXED — Task 6 now documents LlmChatModelHelper.cleanUp(model, onDone = { }) explicitly in canonical API table, Decision T9 algorithm, Details section, and Implementation hints (line 247). Verified against gallery-source LlmChatModelHelper.kt:209 which confirms onDone: () -> Unit with no default.",
+    "task6_resetConversation_systemInstruction_Contents": "FIXED — Task 6 canonical API table entry for resetConversation now documents Contents? conversion: 'val contents = systemPrompt?.let { Contents.of(listOf(Content.Text(it))) }'. Implementation hints section (line 252) gives explicit guidance. Verified gallery-source resetConversation signature at line 153-159 accepts systemInstruction: Contents?.",
+    "task6_downloadModel_not_enqueue": "FIXED — Task 6 canonical API table (line 39) and Acceptance Criteria (line 122) now correctly reference DownloadRepository.downloadModel(model). Verified gallery-source DownloadRepository.kt:54 confirms method is downloadModel, not enqueue.",
+    "task6_cancelDownloadModel_not_cancel_name": "FIXED — Task 6 canonical API table for cancelDownload (line 40) explicitly states 'DownloadRepository.cancelDownloadModel(model) (реальная Gallery-сигнатура — не cancel(String))'. Verified gallery-source DownloadRepository.kt:60 confirms cancelDownloadModel(model: Model).",
+    "task6_errorlog_inference_run_removed": "FIXED — Task 6 Acceptance Criteria line 126 explicitly states 'Тэг inference-run не используется — его нет в whitelist'. Smoke verification step (line 196-198) grep for inference-run is present. Verified no inference-run in whitelist.",
+    "task6_accelerator_label_disambiguated": "FIXED — Task 6 Decision T8 algorithm (line 82) now explicitly states: 'Не путать: ConfigKeys.ACCELERATOR.label — имя ключа в map, Accelerator.CPU.label / Accelerator.GPU.label — значения в этом map.' Implementation hints (line 250) reinforce this. Verified: ConfigKeys.ACCELERATOR = ConfigKey(id='accelerator', label='Accelerator'), Accelerator.CPU.label = 'CPU' — both are distinct .label fields on different objects."
+  },
+  "findings": [
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 6,
+      "issue": "Task 6 canonical interface table (line 39) states 'download(model: Model): Flow<ModelDownloadStatus>' delegates to 'DownloadRepository.downloadModel(model)'. However, the actual Gallery DownloadRepository interface signature is downloadModel(task: Task?, model: Model, onStatusUpdated: (model: Model, status: ModelDownloadStatus) -> Unit) — a callback-based API, not Flow-returning. The task never explains how to bridge the callback to a Flow, nor how to supply the required task and onStatusUpdated arguments. This will cause a compilation failure unless the implementor invents the bridging logic without guidance.",
+      "fix": "In the 'download()' implementation hint, explain: (1) pass task = null (per gallery source DOWNLOAD_FROM_GLOBAL_MODEL_MANAGER_TASK_ID pattern), (2) the onStatusUpdated callback emits to a SharedFlow or Channel, converting the callback-API to Flow<ModelDownloadStatus>. Show the pattern: callbackFlow { downloadRepository.downloadModel(null, model) { _, status -> trySend(status) }; awaitClose { cancelDownloadModel(model) } }."
+    },
+    {
+      "severity": "minor",
+      "category": "hallucination",
+      "task": 6,
+      "issue": "Task 6 Implementation hints (line 254) and Acceptance Criteria (line 126) list 'allowlist' as a valid ErrorLog component tag. User-spec D11 defines the Phase 1 whitelist as exactly 4 tags: 'download', 'inference-init', 'inference', 'inference-cleanup'. The tag 'allowlist' is NOT in D11. Tech-spec TAC-9 grep check lists only those 4 tags. Task 5 KDoc whitelist also lists only those 4. The inconsistency means the refreshAllowlist() failure path calling errorLog.e(\"allowlist\", ...) (canonical table line 38) would be flagged by code-reviewer and fail TAC-9 grep.",
+      "fix": "Either: (a) add 'allowlist' to D11 whitelist in user-spec and TAC-9 in tech-spec (requires user approval), or (b) change the refreshAllowlist() error path to use 'download' as the component tag (closest semantic match), and remove 'allowlist' from the hint list and AC line 126."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 4,
+      "issue": "Task 4 step 5 says 'рефакторить парсинг так, чтобы тест мог жить без Android Context' and mentions extracting an internal helper function. However, the task only declares this as a step without naming the helper function or specifying whether it should be package-private (internal) or file-private. This is not a blocking issue but may cause the test to call a symbol that the implementor placed at the wrong visibility level.",
+      "fix": "Recommend marking the parsing helper as 'internal fun parseAllowlistStream(inputStream: InputStream): Result<List<Model>>' — the word 'internal' makes it accessible from the test module within the same Gradle module. Document the expected function signature in the Implementation hints."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 5,
+      "issue": "Task 5 rotation logic describes 'File(\"errors.log.1\").delete()' and 'file.renameTo(File(\"errors.log.1\"))' using relative paths. On Android, File(\"errors.log.1\") creates a file relative to the process working directory, not context.filesDir/logs/. The actual rotation target should be constructed relative to the same parent directory as the log file.",
+      "fix": "Clarify in the implementation: rotation target = File(file.parentFile, \"errors.log.1\"), not File(\"errors.log.1\"). This is already implied by the edge case note 'File(\"errors.log.1\").delete() (если есть)' but should be made explicit to avoid a silent bug where .log.1 lands in the wrong directory."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 41,
+    "issues_found": 4,
+    "round1_fixes_verified": 6,
+    "new_criticals": 0
+  }
+}
