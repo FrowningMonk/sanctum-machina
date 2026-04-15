@@ -149,43 +149,45 @@ constructor(
   // and blocks for 5-30s while LiteRT warms the GPU backend; leaving it on Main freezes Compose
   // so the ChatScreen Loading state never reaches a frame.
   override suspend fun initialize(modelName: String): Result<Unit> =
-    withContext(Dispatchers.Default) { lifecycleMutex.withLock {
-      val entry =
-        _models.value.find { it.model.name == modelName }
-          ?: return@withLock Result.failure(
-            IllegalArgumentException("unknown model: $modelName")
-          )
-      val model = entry.model
-      // Flip to Initializing first so the StateFlow never advertises Ready over a null instance
-      // during the subsequent releaseEngine window (code-reviewer-2 R2-Min-2).
-      updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Initializing) }
-      // Idempotent re-initialize: release any prior engine so the new init never leaks a
-      // still-allocated native instance (security-auditor-1 SM2). Safe no-op when Idle.
-      releaseEngine(model)
+    withContext(Dispatchers.Default) {
+      lifecycleMutex.withLock {
+        val entry =
+          _models.value.find { it.model.name == modelName }
+            ?: return@withLock Result.failure(
+              IllegalArgumentException("unknown model: $modelName")
+            )
+        val model = entry.model
+        // Flip to Initializing first so the StateFlow never advertises Ready over a null instance
+        // during the subsequent releaseEngine window (code-reviewer-2 R2-Min-2).
+        updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Initializing) }
+        // Idempotent re-initialize: release any prior engine so the new init never leaks a
+        // still-allocated native instance (security-auditor-1 SM2). Safe no-op when Idle.
+        releaseEngine(model)
 
-      val err1 = awaitInitialize(model)
-      if (err1.isEmpty() && model.instance != null) {
-        updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Ready) }
-        return@withLock Result.success(Unit)
+        val err1 = awaitInitialize(model)
+        if (err1.isEmpty() && model.instance != null) {
+          updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Ready) }
+          return@withLock Result.success(Unit)
+        }
+
+        // T8: unconditional GPU→CPU fallback. No error-text parsing.
+        errorLog.e(LOG_TAG_INIT, "GPU init failed: $err1")
+        // Guard against partial native allocation before retry.
+        llmModelHelper.cleanUp(model, onDone = { })
+        model.configValues =
+          model.configValues + (ConfigKeys.ACCELERATOR.label to Accelerator.CPU.label)
+
+        val err2 = awaitInitialize(model)
+        if (err2.isEmpty() && model.instance != null) {
+          updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Ready) }
+          return@withLock Result.success(Unit)
+        }
+
+        errorLog.e(LOG_TAG_INIT, "CPU init failed: $err2")
+        updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Failed(err2)) }
+        Result.failure(RuntimeException("GPU+CPU init failed: $err2"))
       }
-
-      // T8: unconditional GPU→CPU fallback. No error-text parsing.
-      errorLog.e(LOG_TAG_INIT, "GPU init failed: $err1")
-      // Guard against partial native allocation before retry.
-      llmModelHelper.cleanUp(model, onDone = { })
-      model.configValues =
-        model.configValues + (ConfigKeys.ACCELERATOR.label to Accelerator.CPU.label)
-
-      val err2 = awaitInitialize(model)
-      if (err2.isEmpty() && model.instance != null) {
-        updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Ready) }
-        return@withLock Result.success(Unit)
-      }
-
-      errorLog.e(LOG_TAG_INIT, "CPU init failed: $err2")
-      updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Failed(err2)) }
-      Result.failure(RuntimeException("GPU+CPU init failed: $err2"))
-    } }
+    }
 
   override suspend fun cleanup(modelName: String) {
     withContext(Dispatchers.Default) {
