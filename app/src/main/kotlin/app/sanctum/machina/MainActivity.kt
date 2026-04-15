@@ -37,6 +37,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             SanctumTheme {
+                // TODO(Task 10): replace stub with SanctumApp() NavHost.
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("Sanctum loading…")
                 }
