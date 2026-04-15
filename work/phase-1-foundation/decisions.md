@@ -438,3 +438,36 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 
 **Verification:**
 - `python -c "json.load(...)"` по `logs/audit/test-review.json` → валидная схема, `verdict=pass`, `metrics.test_files_found=1`, `fixture_matches_prod=true`, `tac15_covered=true`, `t8_invariant_covered=true`, `phase2_debt_documented=true`.
+
+---
+
+## Task 14: Pre-deploy QA
+
+**Status:** Done — **Phase 1 verdict = PASS** 🟢
+**Commit:** (fix + chore — см. ниже)
+**Agent:** main agent
+**Summary:** Финальная приёмка Phase 1 на Honor 200 (Snapdragon 7 Gen 3). Автоматика: `./gradlew build` → BUILD SUCCESSFUL (0 lint errors в обоих модулях), `./gradlew :core-runtime:test` → 8/8 passed (AllowlistLoaderTest). Все **TAC-1…TAC-16 pass (16/16)**. Ручная проверка: clean install (adb uninstall + installDebug + re-download обеих моделей); 13/15 шагов pass, 2 шага skipped (12 — PSS через adb не верифицирован, функциональных проблем нет; 15 — corrupted-model опционален, пользователь отказался портить модель). **AC-14 TTFT**: на промпте «Объясни третий закон ньютона. Отвечай на русском», Gallery median = **44,9 с**, Phase 1 median = **40,1 с**, ratio = **0,893** — Phase 1 быстрее Gallery во всех 3 прогонах, гейт `≤ 1,5` пройден с запасом. Полный отчёт: [logs/qa-report.json](logs/qa-report.json).
+
+**Первый прогон упал на TAC-1** (2 lint errors в `:core-runtime`: MissingPermission в DownloadRepository.kt:264, SpecifyForegroundServiceType в DownloadWorker.kt:312). Корневая причина — пустой `core-runtime/src/main/AndroidManifest.xml`: library-lint не видел permission-декларации и `<service>`-override из :app-манифеста и flag'ал безопасные в runtime конструкции. Пользователь одобрил рекомендуемый фикс, применён минимальным изменением (см. Deviations); пересборка ушла в 21 с, все TAC зелёные.
+
+**APK:** `app/build/outputs/apk/debug/app-debug.apk`, 115 675 821 B (~110 MiB), sha256 `a6484aa90ff87b9e3949f90415a04fc15e0762e14296664258a2acd8fa291083`.
+
+**Deviations:**
+1. **Код-фикс в рамках QA-задачи** (нестандартно для pre-deploy-qa-task, но pragmatic после одобрения пользователя):
+   - `core-runtime/src/main/AndroidManifest.xml` расширен: добавлены `<uses-permission POST_NOTIFICATIONS>` и `<service SystemForegroundService foregroundServiceType="dataSync" tools:node="merge">` — library-модуль декларирует свои runtime surfaces, manifest-merger корректно сольёт с :app без конфликтов (`tools:node="merge"` разрешает совпадение).
+   - `core-runtime/build.gradle.kts`: `androidx.work.runtime.ktx` переведён с `implementation` на `api` — после расширения core-runtime manifest'а всплыл второй lint в `:app:lintDebug` (MissingClass на `SystemForegroundService`, потому что work-runtime не был транзитивно доступен :app). WorkManager де-факто часть публичного surface core-runtime (DownloadWorker enqueue'ится из :app через `DefaultDownloadRepository`) — `api` scope архитектурно корректен.
+2. **Скипы ручной проверки:** шаг 12 (PSS через `adb shell dumpsys meminfo`) — observational skip (пользователь не запускал adb, видимых memory-проблем нет); шаг 15 (corrupted model) — optional-skip по выбору пользователя.
+3. **Литералистичные spec-grep'ы TAC-9/10/15** не ловят instance-методы / многострочные декларации / константы. Intent всех трёх выполнен; задокументировано в qa-report.json per-TAC.
+
+**Reviews:** не назначены (Task 14 — gate-задача).
+
+**Verification:**
+- `python -c "json.load(...)"` по `logs/qa-report.json` → JSON valid, `phase1_verdict=PASS`, 16/16 TACs pass, `ac_14_protocol.gate_verdict=pass`, `ratio=0.8931`.
+- `grep -c 'severity="Error"' app/build/reports/lint-results-debug.xml` → 0.
+- `grep -c 'severity="Error"' core-runtime/build/reports/lint-results-debug.xml` → 0.
+- `wc -c < app/build/outputs/apk/debug/app-debug.apk` → 115675821.
+- `sha256sum app/build/outputs/apk/debug/app-debug.apk` → `a6484aa9…291083`.
+- User-verified on Honor 200 (clean install, обе модели скачаны, 13/15 шагов pass, 2 skip).
+- AC-14: median(S)=40.1s < median(G)=44.9s → Phase 1 функционально быстрее baseline.
+
+**Phase 1 закрыта.** Готова передача в Phase 2 (or `/done` для архивации в `work/completed/`).

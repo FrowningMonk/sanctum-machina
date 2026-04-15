@@ -337,22 +337,22 @@ Post-deploy verification (MCP, live environment) не применима: Phase 
 
 Дополняют пользовательские AC-1 … AC-16 из user-spec. Технические приёмочные критерии:
 
-- [ ] **TAC-1.** `./gradlew build` → `BUILD SUCCESSFUL`, ноль ERROR в `lint-results-*.html`.
-- [ ] **TAC-2.** `./gradlew :core-runtime:test` → `BUILD SUCCESSFUL`, ровно 1 тест пройден (`AllowlistLoaderTest`).
-- [ ] **TAC-3.** Модуль `:core-runtime` не импортирует Compose / Activity / ViewModel (grep'ы из user-spec § «Агент проверяет» — 0 совпадений для `androidx.compose`, `androidx.activity`, `ViewModel` в `core-runtime/src/main/`).
-- [ ] **TAC-4.** В проекте **нет** `firebase`, `mlkit-genai`, `aicore`, `AppAuth` (grep 0 совпадений в `app/src/`, `core-runtime/src/`, `build.gradle.kts`, `gradle/libs.versions.toml`).
-- [ ] **TAC-5.** В production коде (`app/src/main/`, `core-runtime/src/main/`) используется только `Log.e` — grep `Log\.(i|w|d)\(` возвращает 0 совпадений.
-- [ ] **TAC-6.** `core-runtime/src/main/assets/model_allowlist.json` валидный JSON, `.models | length == 2`, каждый элемент имеет непустые `name`, `modelId`, `modelFile`, `commitHash`, `sizeInBytes`.
-- [ ] **TAC-7.** `AndroidManifest.xml` содержит все permissions: `INTERNET`, `ACCESS_NETWORK_STATE`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`, `POST_NOTIFICATIONS`, `WAKE_LOCK` (grep ≥ 6 совпадений).
-- [ ] **TAC-8.** `AndroidManifest.xml` содержит `<service android:name="androidx.work.impl.foreground.SystemForegroundService" ...>` с `foregroundServiceType="dataSync"`.
-- [ ] **TAC-9.** `ErrorLog` записывает ошибки в `context.filesDir/logs/errors.log` в формате `ERROR [component] description :: cause` (по одной строке на событие, без переносов). Верифицируется кодом `ErrorLog` + его вызовы используют корректный формат (grep `ErrorLog.e\(` → все вызовы передают component из white-list {`download`, `inference-init`, `inference`, `inference-cleanup`}).
-- [ ] **TAC-10.** `BuildConfig.MAIN_ACTIVITY_CLASS_NAME == "app.sanctum.machina.MainActivity"` — grep в `app/build.gradle.kts` подтверждает `buildConfigField`.
-- [ ] **TAC-11.** Пакет приложения (`applicationId`) + `namespace` в `:app` = `app.sanctum.machina`; `namespace` в `:core-runtime` = `app.sanctum.machina.core`.
-- [ ] **TAC-12.** `AndroidManifest.xml <application>` содержит атрибуты `android:allowBackup="false"`, `android:fullBackupContent="false"`, `android:usesCleartextTraffic="false"`. Grep по каждому — 1+ совпадение.
-- [ ] **TAC-13.** Нет residual HF-token кода в копируемых Gallery-файлах. `grep -rEi "(hfToken|HF_TOKEN|Authorization|bearerToken|oauth|appauth|accessToken|refreshToken)" core-runtime/src/main/ app/src/main/` → 0 совпадений. (Комплементарно к TAC-4, ловит пропущенные при патче D3 ссылки.)
-- [ ] **TAC-14.** FQN `MainActivity` плумбинг в двух точках: `grep "app.sanctum.machina.MainActivity" app/src/main/kotlin/app/sanctum/machina/SanctumApplication.kt` ≥ 1 совпадение (там где установка companion'а); `grep "startsWith(\"app.sanctum.machina.\")" core-runtime/src/main/kotlin/app/sanctum/machina/core/worker/DownloadWorker.kt` = 1 совпадение (package-prefix guard).
-- [ ] **TAC-15.** `AllowlistLoader` валидирует каждую запись: грубый схема-guard — `modelId` начинается с `litert-community/`, итоговый download URL — с `https://huggingface.co/`, `sizeInBytes in 1..10_737_418_240L` (до 10 ГБ). Любой fail → `Result.failure`, весь load ломается (not per-entry skip). Проверяется кодом + `AllowlistLoaderTest` расширенным сценарием.
-- [ ] **TAC-16.** Gallery baseline протокол: в QA-отчёте (Task 14) зафиксированы 3 TTFT-замера Gallery на одном промпте + медиана; аналогично 3 замера Phase 1 APK + медиана; отношение `median(Phase 1) / median(Gallery) ≤ 1.5`.
+- [x] **TAC-1.** `./gradlew build` → `BUILD SUCCESSFUL`, ноль ERROR в `lint-results-*.html`.
+- [x] **TAC-2.** `./gradlew :core-runtime:test` → `BUILD SUCCESSFUL`, ровно 1 тест пройден (`AllowlistLoaderTest`).
+- [x] **TAC-3.** Модуль `:core-runtime` не импортирует Compose / Activity / ViewModel (grep'ы из user-spec § «Агент проверяет» — 0 совпадений для `androidx.compose`, `androidx.activity`, `ViewModel` в `core-runtime/src/main/`).
+- [x] **TAC-4.** В проекте **нет** `firebase`, `mlkit-genai`, `aicore`, `AppAuth` (grep 0 совпадений в `app/src/`, `core-runtime/src/`, `build.gradle.kts`, `gradle/libs.versions.toml`).
+- [x] **TAC-5.** В production коде (`app/src/main/`, `core-runtime/src/main/`) используется только `Log.e` — grep `Log\.(i|w|d)\(` возвращает 0 совпадений.
+- [x] **TAC-6.** `core-runtime/src/main/assets/model_allowlist.json` валидный JSON, `.models | length == 2`, каждый элемент имеет непустые `name`, `modelId`, `modelFile`, `commitHash`, `sizeInBytes`.
+- [x] **TAC-7.** `AndroidManifest.xml` содержит все permissions: `INTERNET`, `ACCESS_NETWORK_STATE`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`, `POST_NOTIFICATIONS`, `WAKE_LOCK` (grep ≥ 6 совпадений).
+- [x] **TAC-8.** `AndroidManifest.xml` содержит `<service android:name="androidx.work.impl.foreground.SystemForegroundService" ...>` с `foregroundServiceType="dataSync"`.
+- [x] **TAC-9.** `ErrorLog` записывает ошибки в `context.filesDir/logs/errors.log` в формате `ERROR [component] description :: cause` (по одной строке на событие, без переносов). Верифицируется кодом `ErrorLog` + его вызовы используют корректный формат (grep `ErrorLog.e\(` → все вызовы передают component из white-list {`download`, `inference-init`, `inference`, `inference-cleanup`}).
+- [x] **TAC-10.** `BuildConfig.MAIN_ACTIVITY_CLASS_NAME == "app.sanctum.machina.MainActivity"` — grep в `app/build.gradle.kts` подтверждает `buildConfigField`.
+- [x] **TAC-11.** Пакет приложения (`applicationId`) + `namespace` в `:app` = `app.sanctum.machina`; `namespace` в `:core-runtime` = `app.sanctum.machina.core`.
+- [x] **TAC-12.** `AndroidManifest.xml <application>` содержит атрибуты `android:allowBackup="false"`, `android:fullBackupContent="false"`, `android:usesCleartextTraffic="false"`. Grep по каждому — 1+ совпадение.
+- [x] **TAC-13.** Нет residual HF-token кода в копируемых Gallery-файлах. `grep -rEi "(hfToken|HF_TOKEN|Authorization|bearerToken|oauth|appauth|accessToken|refreshToken)" core-runtime/src/main/ app/src/main/` → 0 совпадений. (Комплементарно к TAC-4, ловит пропущенные при патче D3 ссылки.)
+- [x] **TAC-14.** FQN `MainActivity` плумбинг в двух точках: `grep "app.sanctum.machina.MainActivity" app/src/main/kotlin/app/sanctum/machina/SanctumApplication.kt` ≥ 1 совпадение (там где установка companion'а); `grep "startsWith(\"app.sanctum.machina.\")" core-runtime/src/main/kotlin/app/sanctum/machina/core/worker/DownloadWorker.kt` = 1 совпадение (package-prefix guard).
+- [x] **TAC-15.** `AllowlistLoader` валидирует каждую запись: грубый схема-guard — `modelId` начинается с `litert-community/`, итоговый download URL — с `https://huggingface.co/`, `sizeInBytes in 1..10_737_418_240L` (до 10 ГБ). Любой fail → `Result.failure`, весь load ломается (not per-entry skip). Проверяется кодом + `AllowlistLoaderTest` расширенным сценарием.
+- [x] **TAC-16.** Gallery baseline протокол: в QA-отчёте (Task 14) зафиксированы 3 TTFT-замера Gallery на одном промпте + медиана; аналогично 3 замера Phase 1 APK + медиана; отношение `median(Phase 1) / median(Gallery) ≤ 1.5`.
 
 ## Implementation Tasks
 
