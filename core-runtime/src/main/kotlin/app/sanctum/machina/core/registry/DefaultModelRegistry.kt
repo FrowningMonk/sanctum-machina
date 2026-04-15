@@ -34,6 +34,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 private const val LOG_TAG_DOWNLOAD = "download"
 private const val LOG_TAG_INIT = "inference-init"
@@ -144,8 +145,11 @@ constructor(
     }
   }
 
+  // Hops off Main for the whole lifecycle section: LlmChatModelHelper.initialize is synchronous
+  // and blocks for 5-30s while LiteRT warms the GPU backend; leaving it on Main freezes Compose
+  // so the ChatScreen Loading state never reaches a frame.
   override suspend fun initialize(modelName: String): Result<Unit> =
-    lifecycleMutex.withLock {
+    withContext(Dispatchers.Default) { lifecycleMutex.withLock {
       val entry =
         _models.value.find { it.model.name == modelName }
           ?: return@withLock Result.failure(
@@ -181,22 +185,26 @@ constructor(
       errorLog.e(LOG_TAG_INIT, "CPU init failed: $err2")
       updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Failed(err2)) }
       Result.failure(RuntimeException("GPU+CPU init failed: $err2"))
-    }
+    } }
 
   override suspend fun cleanup(modelName: String) {
-    lifecycleMutex.withLock {
-      val entry = _models.value.find { it.model.name == modelName } ?: return@withLock
-      releaseEngine(entry.model)
-      updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Idle) }
+    withContext(Dispatchers.Default) {
+      lifecycleMutex.withLock {
+        val entry = _models.value.find { it.model.name == modelName } ?: return@withLock
+        releaseEngine(entry.model)
+        updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Idle) }
+      }
     }
   }
 
   override suspend fun resetConversation(modelName: String, systemPrompt: String?) {
-    lifecycleMutex.withLock {
-      val entry = _models.value.find { it.model.name == modelName } ?: return@withLock
-      if (entry.initStatus !== ModelInitStatus.Ready) return@withLock
-      val contents: Contents? = systemPrompt?.let { Contents.of(listOf(Content.Text(it))) }
-      llmModelHelper.resetConversation(entry.model, systemInstruction = contents)
+    withContext(Dispatchers.Default) {
+      lifecycleMutex.withLock {
+        val entry = _models.value.find { it.model.name == modelName } ?: return@withLock
+        if (entry.initStatus !== ModelInitStatus.Ready) return@withLock
+        val contents: Contents? = systemPrompt?.let { Contents.of(listOf(Content.Text(it))) }
+        llmModelHelper.resetConversation(entry.model, systemInstruction = contents)
+      }
     }
   }
 
