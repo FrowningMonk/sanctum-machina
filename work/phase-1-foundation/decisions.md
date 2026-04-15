@@ -117,3 +117,46 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 - Fix inherited Gallery-bugs: double-count `totalBytes`, URL encoding в `ModelAllowlist.toModel()`, HTTP redirect whitelist, `observeForever` leak, `/data/local/tmp` dev-path.
 - Remove unused `AGWorkInfo` data class if Wave 2 doesn't consume it.
 - Migrate `kotlinOptions { jvmTarget = "11" }` → `compilerOptions { jvmTarget.set(JvmTarget.JVM_11) }` в `:core-runtime/build.gradle.kts` (inherited от Task 2).
+
+---
+
+## Task 4: `AllowlistLoader` + `CoreRuntimeModule` skeleton + bundled JSON + первый Phase 1 unit-тест
+
+**Status:** Done
+**Commit:** d9e3619
+**Agent:** main agent
+**Summary:** Реализовал `AllowlistLoader` (Hilt `@Singleton`, `suspend fun load(): Result<List<Model>>` на `Dispatchers.IO`, internal `companion.parse(InputStream)` для тестов) + schema-guard по TAC-15 (modelId regex `^litert-community/[A-Za-z0-9._-]+$` + `..` ban, modelFile regex + `..` ban, commitHash `^[a-f0-9]{40}$`, sizeInBytes 1..10 GB, URL prefix check через `toModel().url`). Создал пустой скелет `CoreRuntimeModule` (`@Module @InstallIn(SingletonComponent::class) object`, без `@Provides` — под задел Tasks 5/6). Зашипил `core-runtime/src/main/assets/model_allowlist.json` (форк `1_0_11.json` с двумя litert-community Gemma-4 записями, поля 1-в-1). Написал plain JUnit4-тесты (8 методов): TDD-якорь из TDD Anchor секции (2 теста) + 4 негативных сценария под TAC-15 (empty list, bad modelId prefix, modelFile path-traversal, malformed commitHash, oversized) + fixture-drift byte-identity check + mapped-Model URL assertion.
+
+**Deviations:**
+- **Re-added `AllowedModelConfig` data class** в `core/data/ModelAllowlist.kt`. Task 3 его явно выпилил (deviation «ModelAllowlist.kt обрезан агрессивнее спека») с оговоркой «если потребуется расширение — вернём поля точечно». Task 4 требует по AC доступа к `defaultConfig.topK/temperature/accelerators` в тестовом ассершене под Decision T8 — это и есть триггер точечного возврата. Поля nullable (`topK: Int?` и т.д.), Gson-friendly. `toModel()` теперь читает accelerators/topK/topP/temperature/maxTokens/visionAccelerator из `defaultConfig` с fallback на `DEFAULT_*` константы — ломает Task 3-ный хардкод `DEFAULT_ACCELERATORS`, но согласовано с tech-spec § Dependencies (раздел «Allowlist JSON schema») и Decision T8 intent.
+- **`AllowedModel.version` и `description` сделаны nullable.** Gson через reflection обходит Kotlin non-null и вставляет `null`, когда поля отсутствуют в JSON (так и было в trimmed fixture — поля `version` нет). Без этого `toModel()` падал c NPE в round-1 тестах. Fix: `version: String? = null`, `description: String? = null`. Маппинг в `Model`: `version.takeUnless { it.isNullOrEmpty() } ?: commitHash`, `description.orEmpty()`. Семантика для prod-ассета не меняется.
+- **Expanded Phase 1 test count с 1 до 8** (nominal у user-spec D8 — «единственный Phase 1 unit-тест»). Round-1 test-reviewer и security-auditor оба настояли: TAC-15 буквально требует «AllowlistLoaderTest расширенным сценарием», одного теста на happy-path недостаточно чтобы доказать работу guard-ов (кто-то удалит `require` — тест останется зелёным). Добавил 4 негативных inline-JSON теста (+2 drift/mapped-Model). Все 8 — plain JUnit4, без новых зависимостей, unit-only. Аргументация согласована с test-reviewer-2.json.
+- **Regex-ужесточение сверх буквы TAC-15.** TAC-15 требует `modelId.startsWith("litert-community/")`. Я поставил полный regex + запрет `..`, плюс валидации `modelFile` и `commitHash`. Раундовая эскалация: security-auditor-1 запросил regex для modelId (round-1), security-auditor-2 поднял до critical что modelFile/commitHash тоже interpolate-ятся в URL и требуют валидации, round-3 закрыт. Всё внутри scope TAC-15 (schema guard), но формулировка в тех-спеке более мягкая, чем итоговый код.
+- **Оставил лишний `m.toModel()` вызов внутри guard-лупа** (code-reviewer-2 minor): `require(m.toModel().url.startsWith(URL_PREFIX))`. Производит `Model` объект, выбрасывается (`.url` берётся, остальное — GC). Кажется расточительным, но по другому код становится тавтологичным (см. security-auditor-1 URL-tautology finding) — текущий вариант защищает от будущего дрейфа в `AllowedModel.toModel()` URL-билдере. Приемлемо для Phase 1.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved_with_suggestions (1 major — Hilt default-arg pitfall; 6 minor) → [logs/working/task-4/code-reviewer-1.json](logs/working/task-4/code-reviewer-1.json)
+- security-auditor: approved (0 critical; 2 major — path-traversal в modelId, fixture drift; 3 minor) → [logs/working/task-4/security-auditor-1.json](logs/working/task-4/security-auditor-1.json)
+- test-reviewer: needs_improvement (0 critical; 3 major — TAC-15 guards uncovered, dead-on-arrival positive asserts, mapped Model untested; 4 minor) → [logs/working/task-4/test-reviewer-1.json](logs/working/task-4/test-reviewer-1.json)
+
+*Round 2 (after fixes, commit 29bd562):*
+- code-reviewer: approved (3 minor optional) → [logs/working/task-4/code-reviewer-2.json](logs/working/task-4/code-reviewer-2.json)
+- security-auditor: changes_required (1 critical — modelFile+commitHash ещё не валидировались; 1 major — dot-segment gap; 2 minor) → [logs/working/task-4/security-auditor-2.json](logs/working/task-4/security-auditor-2.json)
+- test-reviewer: passed (2 minor optional) → [logs/working/task-4/test-reviewer-2.json](logs/working/task-4/test-reviewer-2.json)
+
+*Round 3 (after security fixes, commit d9e3619):*
+- security-auditor: approved (0 findings) → [logs/working/task-4/security-auditor-3.json](logs/working/task-4/security-auditor-3.json)
+
+**Verification:**
+- `./gradlew :core-runtime:test` → `BUILD SUCCESSFUL`, 8 tests / 0 failures / 0 errors (`AllowlistLoaderTest` — все 8 методов зелёные, включая negative TAC-15 сценарии и fixture-drift guard).
+- `./gradlew :core-runtime:compileDebugKotlin` → `BUILD SUCCESSFUL` (AllowlistLoader компилируется с типами из Task 3, AllowedModelConfig восстановлен).
+- `python -c "import json; ..." core-runtime/src/main/assets/model_allowlist.json` → `count: 2`, modelIds: `litert-community/gemma-4-E2B-it-litert-lm`, `litert-community/gemma-4-E4B-it-litert-lm`. (jq на Windows bash недоступен — эквивалент через Python, подтверждён в тесте `fixtureMatchesProductionAsset`.)
+- `diff core-runtime/src/main/assets/model_allowlist.json core-runtime/src/test/resources/model_allowlist_fixture.json` → no output (fixture байт-в-байт совпадает с prod-ассетом).
+
+**Pending user action (Phase 2 tech-debt):**
+- Commit-hash regex совпадает с современным Git SHA-1 (40 hex). Переход HF на SHA-256 потребует расширения паттерна.
+- `fixtureMatchesProductionAsset` читает файлы относительным путём `src/main/assets/...`, что предполагает working dir = `core-runtime/`. Под Gradle всё зелёно, но IDE run с другой CWD даст false-failure. Мини-ужесточение через classpath resource на Phase 2.
+- `per-entry NPE informativeness` (security-auditor-1 minor #4, не закрыт): если Gson вставит null в non-null Kotlin поле, текущий `Result.failure` несёт generic message. Некритично, можно улучшить когда появится first real integration path.
+- Dead-on-arrival positive-asserts в `loadFromFixture_allModelsHaveRequiredFields` (test-reviewer-2 minor #1). Они дублируют work guard-ов, но не вредят.
