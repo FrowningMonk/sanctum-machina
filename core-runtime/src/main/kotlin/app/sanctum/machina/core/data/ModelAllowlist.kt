@@ -38,8 +38,8 @@ data class AllowedModel(
   val commitHash: String,
   val sizeInBytes: Long,
   val taskTypes: List<String>,
-  val description: String = "",
-  val version: String = "",
+  val description: String? = null,
+  val version: String? = null,
   val defaultConfig: AllowedModelConfig? = null,
 ) {
   fun toModel(): Model {
@@ -69,8 +69,8 @@ data class AllowedModel(
 
     return Model(
       name = name,
-      version = if (version.isNotEmpty()) version else commitHash,
-      info = description,
+      version = version.takeUnless { it.isNullOrEmpty() } ?: commitHash,
+      info = description.orEmpty(),
       url = downloadUrl,
       sizeInBytes = sizeInBytes,
       configs = configs,
