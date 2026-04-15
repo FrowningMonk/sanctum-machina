@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -36,7 +37,9 @@ import kotlinx.coroutines.sync.withLock
 
 private const val LOG_TAG_DOWNLOAD = "download"
 private const val LOG_TAG_INIT = "inference-init"
-private const val LOG_TAG_CLEANUP = "inference-cleanup"
+// LOG_TAG_CLEANUP ("inference-cleanup") — whitelisted in user-spec D11; not used yet because
+// LlmChatModelHelper.cleanUp swallows its own exceptions internally. Phase 2 debt: surface
+// close-failures via ErrorLog if/when cleanUp grows a throwing error path.
 
 /**
  * Phase-1 implementation of [ModelRegistry]. Process-wide `@Singleton` owning:
@@ -86,8 +89,8 @@ constructor(
         return Result.failure(cause)
       }
     loaded.forEach { it.preProcess() }
-    val existing = _models.value.associateBy { it.model.name }
-    _models.value =
+    _models.update { current ->
+      val existing = current.associateBy { it.model.name }
       loaded.map { model ->
         existing[model.name]?.copy(model = model)
           ?: ModelEntry(
@@ -96,6 +99,7 @@ constructor(
             initStatus = ModelInitStatus.Idle,
           )
       }
+    }
     return Result.success(Unit)
   }
 
@@ -104,7 +108,11 @@ constructor(
       updateEntry(model.name) { it.copy(downloadStatus = status) }
       trySend(status)
     }
-    awaitClose { /* WorkManager cancellation flows through cancelDownload. */ }
+    // Phase-2 debt: flow-collector cancellation does NOT propagate to WorkManager or detach the
+    // `observeForever` LiveData observer inside DefaultDownloadRepository.observerWorkerProgress
+    // (see Task 3 decisions.md: `observeForever` leak listed as inherited Gallery bug). External
+    // cancellation goes through [cancelDownload]. See code-reviewer-1.json finding M2.
+    awaitClose { }
   }
 
   override fun cancelDownload(modelName: String) {
@@ -115,6 +123,9 @@ constructor(
   override suspend fun delete(modelName: String) {
     lifecycleMutex.withLock {
       val entry = _models.value.find { it.model.name == modelName } ?: return@withLock
+      // Cancel any in-flight download first so the worker can't resurrect the file we're about
+      // to delete (security-auditor-1 SM1).
+      downloadRepository.cancelDownloadModel(entry.model)
       if (entry.initStatus !== ModelInitStatus.Idle) {
         releaseEngine(entry.model)
       }
@@ -141,6 +152,9 @@ constructor(
             IllegalArgumentException("unknown model: $modelName")
           )
       val model = entry.model
+      // Idempotent re-initialize: release any prior engine first so the new init never leaks a
+      // still-allocated native instance (security-auditor-1 SM2). Safe no-op when Idle.
+      releaseEngine(model)
       updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Initializing) }
 
       val err1 = awaitInitialize(model)
@@ -205,8 +219,11 @@ constructor(
       model.instance = null
       return
     }
-    // Stale-instance guard — abort if instance was swapped between capture and cleanUp,
-    // protecting against double-close of a foreign engine (SIGSEGV risk, research §4/§12).
+    // Stale-instance guard (Decision T9, user-spec R3). Under the current design every caller
+    // holds `lifecycleMutex`, so `model.instance` cannot change between capture and check —
+    // the guard is anchor-only today (grep-verified by Task 6 smoke). It stays defensively so
+    // any future refactor that exposes a non-mutex release path still avoids double-closing a
+    // foreign engine (SIGSEGV risk, research §4/§12).
     val sameInstance = currentInstance === model.instance
     if (!sameInstance) return
 
@@ -257,9 +274,9 @@ constructor(
       runCatching {
           val tmp = File("${entry.model.getPath(context)}.$TMP_FILE_EXT")
           if (tmp.exists()) {
-            downloadRepository.downloadModel(entry.model) { _, status ->
-              updateEntry(entry.model.name) { it.copy(downloadStatus = status) }
-            }
+            // Route resume through the public `download()` API so late subscribers also observe
+            // progress and the StateFlow/Flow contract is symmetric (code-reviewer-1 M3).
+            download(entry.model).launchIn(scope)
           }
         }
         .onFailure { cause ->
