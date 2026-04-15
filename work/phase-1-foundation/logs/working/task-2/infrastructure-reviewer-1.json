@@ -1,0 +1,43 @@
+{
+  "round": 1,
+  "verdict": "pass",
+  "summary": "Task 2 Gradle infrastructure meets all 12 Acceptance Criteria. Module structure (:app + :core-runtime) is correct, version catalog pins every version from tech-spec § Dependencies (agp=8.8.2, kotlin=2.2.0, composeBom=2026.03.00, hilt=2.57.1, ksp=2.3.6, litertlm=0.10.0, workRuntime=2.10.0, gson=2.12.1, coreKtx=1.15.0, lifecycle=2.8.7, activityCompose=1.10.1, navigation=2.8.9, materialIconExtended=1.7.8, hiltNavigation=1.3.0, kotlinReflect=2.2.21), Hilt is wired through KSP (no kapt anywhere), wrapper is 8.11.1, :app depends on project(':core-runtime'), buildConfigField MAIN_ACTIVITY_CLASS_NAME is declared, and none of the forbidden libs (Firebase/google-services/oss-licenses/protobuf/camera/richtext/OAuth/DataStore/security-crypto/room/moshi/mockk/mlkit-genai-prompt) appear in the catalog or module scripts. The declared deviation (hilt-android + ksp hilt-compiler added to :core-runtime) is justified — the Hilt Gradle plugin fails configuration without the runtime dep — but should be recorded in decisions.md per the Post-completion checklist. Remaining findings are minor/nit housekeeping that do not block Wave 1.",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "work/phase-1-foundation/decisions.md",
+      "issue": "Declared deviation (Hilt runtime + KSP compiler wired into :core-runtime during Task 2 rather than Task 3) is present in the commit message but not yet recorded in decisions.md. Post-completion checklist for Task 2 explicitly requires that deviations from the spec be written into decisions.md.",
+      "suggestion": "Append a short entry to decisions.md under Task 2: 'Deviation — hilt-android + ksp(hilt-android-compiler) added to :core-runtime in Task 2 instead of Task 3 because applying the com.google.dagger.hilt.android plugin fails at configuration time without the runtime dep on the classpath. Scope of Task 3 unchanged otherwise.'"
+    },
+    {
+      "severity": "minor",
+      "file": "gradle/libs.versions.toml",
+      "issue": "tech-spec § Decisions T2 (line 109) lists kotlinx-serialization-json = 1.7.3 as a pinned version, but no `kotlinx-serialization-json` version or library alias exists in the catalog. Task 2 AC does not require it explicitly, but Wave 1 tasks may reach for it and find it missing.",
+      "suggestion": "Either (a) add `kotlinxSerializationJson = \"1.7.3\"` to [versions] and a matching library alias now, keeping the catalog aligned with Decision T2; or (b) confirm with tech-spec § Dependencies (line 229, not fully visible in the excerpt) that kotlinx-serialization-json is actually used in Phase 1 — if it is not, remove the mention from Decision T2 to avoid drift. Not a blocker for Wave 1 sync."
+    },
+    {
+      "severity": "minor",
+      "file": "app/build.gradle.kts, core-runtime/build.gradle.kts",
+      "issue": "Both modules use the legacy `kotlinOptions { jvmTarget = \"11\"; freeCompilerArgs += \"-Xcontext-receivers\" }` block, which Kotlin 2.2.0 deprecates in favour of the `kotlin { compilerOptions { jvmTarget.set(JvmTarget.JVM_11); freeCompilerArgs.add(\"-Xcontext-receivers\") } }` DSL. User already observed the deprecation warnings during smoke. Additionally, `-Xcontext-receivers` is itself deprecated in Kotlin 2.2 in favour of context parameters; Gallery uses it but Phase 1 does not yet ship any @ExperimentalApi code relying on it.",
+      "suggestion": "Leave as-is for Task 2 (warnings only, build succeeds, matches Gallery reference per spec). Track as Phase 2 tech debt: migrate both modules to the new compilerOptions DSL, and re-evaluate whether -Xcontext-receivers is still required once real code lands in Tasks 3–10. No change required now."
+    },
+    {
+      "severity": "nit",
+      "file": "gradle/libs.versions.toml",
+      "issue": "Library aliases `kotlin-reflect` and `junit` are declared but not referenced by any module build script. Task 2 spec intentionally lists them as pre-declared aliases for Wave 1 (junit → :core-runtime unit test in Task 5, kotlin-reflect → possible LlmChatModelHelper reflection), so this is expected. Flagging only so that if Task 5 chooses not to use kotlin-reflect, the alias is cleaned up rather than left orphan.",
+      "suggestion": "No action for Task 2. Re-check at end of Wave 1: if an alias remains unused after Tasks 3–5, remove it to keep the catalog lean."
+    },
+    {
+      "severity": "nit",
+      "file": "gradle.properties",
+      "issue": "gradle.properties does not enable `org.gradle.parallel=true` or `org.gradle.caching=true`. Not required by Task 2 AC, but with two modules and KSP in both, parallel + build-cache give a measurable speedup once Wave 1 starts compiling real sources.",
+      "suggestion": "Optional Phase 1 polish: add `org.gradle.parallel=true` and `org.gradle.caching=true` to gradle.properties. No change required for Task 2 to pass."
+    },
+    {
+      "severity": "nit",
+      "file": "app/build.gradle.kts, core-runtime/build.gradle.kts",
+      "issue": "Neither module declares a `buildTypes { release { ... } }` block, so AGP will use the default (no minify, default signingConfig). Task 2 does not require release configuration, but Wave 2+ will need it eventually. Not flagged as a gap — just a forward-looking note.",
+      "suggestion": "No action for Task 2. Release buildType + R8 config can be added when the project approaches an actual release build; Phase 1 is debug-only per spec."
+    }
+  ]
+}
