@@ -169,7 +169,7 @@ Phase 2 делает приложение пригодным для ежедне
 
 Новые unit-тесты в Phase 2:
 - `:core-settings` — `AppSettingsRepositoryTest` (save/read round-trip, merge defaults ∪ overrides, reset clears entry).
-- `:core-runtime` — `AllowlistLoaderTest` расширяется кейсами для новых полей `llmSupportImage/Audio/Thinking`; `EffectiveConfigTest` проверяет слияние defaults и overrides.
+- `:core-runtime` — `AllowlistLoaderTest` расширяется кейсами для новых полей `llmSupportImage/Audio/Thinking`; `EffectiveConfigTest` проверяет слияние defaults и overrides; `MediaUtilsTest` (`decodeSampledBitmapFromUri`, `rotateBitmap`); `AudioClipTest` (round-trip raw PCM, граничные случаи); `MultimodalContentsBuilderTest` (сборка `Contents` из text + Bitmap + ByteArray).
 
 **Интеграционные тесты:** не делаем — Phase 2 не вводит инфраструктуры, для которой они нужны; litertlm в JVM-тестах не воспроизводим (native-зависимость).
 
