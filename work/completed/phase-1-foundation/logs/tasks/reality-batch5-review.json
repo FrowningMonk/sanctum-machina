@@ -1,0 +1,72 @@
+{
+  "validator": "reality-checker",
+  "batch": [13, 14],
+  "iteration": 1,
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 14,
+      "issue": "TAC-15 grep command (Details line 144) targets the wrong package path: 'core-runtime/src/main/kotlin/app/sanctum/machina/core/allowlist/AllowlistLoader.kt'. Tech-spec Architecture §What we're building, Task 4 Files to modify, and Task 13 Context Files all place AllowlistLoader in '...core/registry/AllowlistLoader.kt'. The 'allowlist' sub-package does not exist in the spec; the correct package is 'registry'. When Task 14 runs the TAC-15 grep against this non-existent path, grep will return 0 matches on a missing file — the check will silently pass or fail with a file-not-found error instead of actually verifying the schema guards.",
+      "fix": "Replace 'core-runtime/src/main/kotlin/app/sanctum/machina/core/allowlist/AllowlistLoader.kt' with 'core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/AllowlistLoader.kt' in both the Context Files section (line 72) and the TAC-15 grep command (line 144)."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 14,
+      "issue": "TAC-14 grep for SanctumApplication.kt checks for 'app.sanctum.machina.MainActivity' as the string that confirms FQN wiring. Decision T6 in tech-spec states that SanctumApplication.onCreate() calls 'DefaultDownloadRepository.mainActivityFqn = \"app.sanctum.machina.MainActivity\"' — so the string is indeed in SanctumApplication.kt. However, the TAC-14 comment says '(там где установка companion'а)' which is misleading: T6 uses a companion object on DefaultDownloadRepository, not on SanctumApplication. The grep itself will work, but the explanatory comment creates confusion and may cause an executor to doubt the check and look for a companion object in the wrong file.",
+      "fix": "Update TAC-14 comment to: '(там где SanctumApplication.onCreate() устанавливает DefaultDownloadRepository.mainActivityFqn)' to accurately reflect Decision T6 mechanics."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 14,
+      "issue": "TAC-1 verification command uses 'grep -c \"ERROR\" app/build/reports/lint-results-*.html' but lint HTML reports use CSS class attributes like 'class=\"error\"' (lowercase) not the word 'ERROR' for issue severity. Task 14 Implementation hints acknowledge this: 'count(<issue severity=\"Error\"') or grep -c \"class=\\\"error\\\"\"' — but the TAC checks block uses a different approach ('grep -c \"ERROR\"'). On a clean build the lint file may not even exist yet (build/reports is generated). The TAC-1 command as written in the TAC checks block will likely produce 0 matches even when lint errors exist, giving a false pass.",
+      "fix": "Align TAC-1 verification command with the Implementation hints approach: use 'grep -c \"class=\\\"error\\\"\"' or 'grep -c \"<issue severity=\\\"Error\\\"\"' against the lint HTML. Also add a guard: if the lint HTML file does not exist, treat as unverified (fail-open), not as 0 errors."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 14,
+      "issue": "APK size command for Windows: Details §APK metadata proposes 'stat -c %s <path>' (Linux syntax) or 'wc -c < <path>' on Windows git-bash. 'stat -c %s' is not available in git-bash on Windows (git-bash ships GNU stat but -c format flag behavior differs across versions). 'wc -c' is safer but reads the entire file into wc. The Implementation hints suggest '(Get-Item <path>).Length' via PowerShell — but that requires leaving bash context. The sha256 command 'sha256sum' is reliable in git-bash.",
+      "fix": "Replace 'stat -c %s <path>' with 'wc -c < <path>' as the primary Windows-safe size command, matching what the hints already suggest. Or add 'powershell -c \"(Get-Item \\\"<path>\\\").Length\"' as the explicit fallback."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 13,
+      "issue": "Task 13 Description and Acceptance Criteria reference checking 'accelerators[0] == \"gpu\"' from the fixture. The tech-spec Testing Strategy (§Unit tests) TDD Anchor in Task 4 explicitly includes this check: 'defaultConfig.accelerators первым токеном содержит \"gpu\"'. Task 13 Step 2 checks for this in the test assertions. However, if AllowlistLoaderTest.kt as created by Task 4 does NOT have this explicit assert (only checks topK/temperature as listed in tech-spec §Testing Strategy Scenario 2), then the Task 13 audit will correctly flag it as a medium finding. This is not a defect in task 13 itself — the task is correctly designed — but is flagged for awareness: the D8 'copy of production asset' requirement alone does not guarantee the T8 invariant is asserted in code.",
+      "fix": "No change to Task 13 needed — the audit logic is correct. Note for Task 4 executor: the TDD Anchor in task 4 explicitly requires the accelerators[0]=gpu assert; ensure it is implemented."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 14,
+      "issue": "Context Files entry line 66: 'app/build/outputs/apk/debug/app-debug.apk — артефакт сборки (создаётся в Task 13)'. Task 13 is Test Audit (wave 5), not a build task. The APK is produced by Task 14's own './gradlew build' command in step 1. This was noted as minor in the previous batch3 review but not yet corrected.",
+      "fix": "Change the parenthetical to '(создаётся командой ./gradlew build в шаге 1 этой задачи)' or remove from Context Files entirely since it is an output of this task, not a pre-existing input."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 13,
+      "issue": "Task 13 scope-lock check (Step 1) searches for extra tests under 'app/src/test/' and 'app/src/androidTest/' — but tech-spec Architecture does not place any test infrastructure under ':app' module at all (no test dependencies in app/build.gradle.kts are mentioned). Searching these directories is harmless and correct defensively, but the task could confuse an executor who expects to find standard app test directories. Phase 1 has no app-level tests by design.",
+      "fix": "Minor clarification: add a note in Step 1 that 'app/src/test/' and 'app/src/androidTest/' are expected to not exist in Phase 1 — any file found there is a scope violation, even if the directory itself is absent."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 2,
+    "claims_verified": 31,
+    "issues_found": 7,
+    "critical": 1,
+    "major": 2,
+    "minor": 4
+  },
+  "notes": {
+    "task_13_scope_lock": "VERIFIED CORRECT. Task 13 correctly limits audit scope to exactly 1 test file per user-spec D8. AllowlistLoaderTest.kt path is consistent with tech-spec and Task 4 (core/registry package). Fixture parity check is well-defined. Phase 2 debt documentation check is comprehensive (covers Mutex T9, GPU-CPU fallback T8, ErrorLog rotation T11, DownloadWorker renameTo R4).",
+    "task_14_ac14_protocol": "VERIFIED CORRECT. AC-14 protocol is fully documented: 3 Gallery runs (G1,G2,G3) + 3 Phase 1 runs (S1,S2,S3), medians computed separately, gate median(S)/median(G) <= 1.5. Matches tech-spec Agent Verification Plan and the approved deviation in User-Spec Deviations (approved 2026-04-15).",
+    "task_14_qa_report_schema": "VERIFIED CORRECT. qa-report.json schema contains all 6 TTFT measurements (gallery_runs_ms: [G1,G2,G3], phase1_runs_ms: [S1,S2,S3]), both medians (median_gallery_ms, median_phase1_ms), ratio (float), gate_threshold (1.5), gate_verdict (pass/fail). Schema has room for all required AC-14 data points.",
+    "task_14_tac_completeness": "TAC-1 through TAC-15 agent-automated checks are present. TAC-16 correctly deferred to post-user-measurement fill-in. The TAC-15 path bug (critical finding above) is the only structural defect.",
+    "codebase_state": "Phase 1 source files do not yet exist in the codebase (no .kt files under app/ or core-runtime/ project directories — only gallery-source/ reference copy). Tasks 13 and 14 are Wave 5/6 tasks that depend on Wave 1-4 implementation tasks being completed first. The absence of implementation files is expected at task-definition time and does not constitute a task defect."
+  }
+}

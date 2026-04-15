@@ -1,0 +1,21 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 0,
+    "critical": 0,
+    "major": 0,
+    "minor": 0
+  },
+  "findings": [],
+  "notes": {
+    "round": 3,
+    "scope": "Re-audit of commit d9e3619 against round-2 critical (missing modelFile+commitHash validation) and round-2 major (dot-segment gap in MODEL_ID_REGEX).",
+    "round2Critical_verdict": "CLOSED. modelFile is now pinned to Regex `^[A-Za-z0-9._-]+$` with explicit `!contains(\"..\")` ban; commitHash is pinned to Regex `^[a-f0-9]{40}$` (strict 40-lowercase-hex). Both guards run before the URL tautology check, so a malicious allowlist can no longer smuggle `..`, `/`, `\\`, query strings, fragments, alternate branches, or short/uppercase hashes through the validator.",
+    "round2Major_verdict": "CLOSED. MODEL_ID_REGEX retains the `^litert-community/[A-Za-z0-9._-]+$` shape, and an explicit `!m.modelId.contains(\"..\")` substring ban is applied alongside the regex. The segment-can-equal-dot-dot gap is defensively closed.",
+    "path_traversal_residual_analysis": "No remaining avenues found. (1) Character classes for all three user-controlled URL/path components exclude `/`, `\\`, `?`, `#`, `@`, `:`, `%`, NUL, CR, LF — so URL authority/path rewriting is impossible. (2) Dot-segment escape (`..`) is blocked by an explicit substring ban on both modelId and modelFile. (3) The sole filesystem sink, `Model.getPath(context, fileName = downloadFileName)`, inherits the sanitized `modelFile` verbatim with no re-decoding/normalization between AllowlistLoader and the File path assembly, so no canonicalization-differential attack is possible. (4) commitHash appears in the HuggingFace URL only; the strict hex regex eliminates injection into the URL path.",
+    "guard_ordering": "Correct. The three structural validators (modelId → modelFile → commitHash) run before sizeInBytes and the final URL-prefix check. The earlier round-1 concern that the URL-prefix check was a tautology no longer matters, because each component is now independently constrained.",
+    "tests_verdict": "Sufficient. New negative tests parse_rejectsModelFilePathTraversal (modelFile `../evil.lm`) and parse_rejectsMalformedCommitHash (commitHash `HEAD`) assert Result.isFailure with the expected error messages. Existing oversized-model test was updated to use a well-formed commit hash so it isolates the size check. 8/8 green per task summary.",
+    "defense_in_depth_note": "The `regex.matches() && !contains(\"..\")` pattern is belt-and-suspenders — the regex charset already forbids `/` and `\\`, so the only way `..` can pass the regex is as the whole segment (two literal dots). The explicit substring ban makes intent unambiguous and protects against accidental regex relaxations in the future. This is a good pattern, not a finding.",
+    "final_verdict": "APPROVED. All round-1 and round-2 findings are fully addressed. No new findings in round 3. Task 4 security posture is sound for the allowlist-loading scope."
+  }
+}

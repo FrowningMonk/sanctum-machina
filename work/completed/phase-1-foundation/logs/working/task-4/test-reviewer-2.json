@@ -1,0 +1,37 @@
+{
+  "status": "passed",
+  "summary": "Round-2 closes all three round-1 major findings with genuine behavioral coverage. Three negative-path tests (parse_rejectsEmptyAllowlist, parse_rejectsDisallowedModelIdPrefix, parse_rejectsOversizedModel) drive AllowlistLoader.parse() with inline malformed JSON and assert Result.failure plus message substring — each independently litmus-passes (deleting the corresponding require() in parse() turns the corresponding test red). The fixtureMatchesProductionAsset test compares raw bytes via java.io.File against src/main/assets/model_allowlist.json, automating the manual sync rule from task 4 spec. The URL-shape assertion added inside loadFromFixture_allModelsHaveRequiredFields exercises AllowedModel.toModel() and verifies the production code path (parse → toModel) end-to-end against the fixture, addressing the round-1 minor gap. The expansion from one to six @Test methods is justified: tech-spec TAC-15 explicitly mandates 'AllowlistLoaderTest расширенным сценарием' for the schema-guard, which user-spec D8's headline 'единственный Phase 1 unit-тест' could not satisfy with one test. The expansion is bounded (~70 LoC additional, plain JUnit4, no new dependencies, no infra) and earns each test's place. One residual minor concern (dead-on-arrival fixture assertions in test 2) carries over from round 1 but does not block approval.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/AllowlistLoaderTest.kt:33-43 (loadFromFixture_allModelsHaveRequiredFields)",
+      "issue": "Carry-over from round-1 minor finding #7. The assertions model.name.isNotEmpty(), model.modelId.isNotEmpty(), model.modelFile.isNotEmpty(), model.commitHash.isNotEmpty(), model.sizeInBytes > 0L, and the four assertNotNull checks on defaultConfig fields are dead-on-arrival on the success path: parse() either succeeds with a structurally validated list or returns failure (and result.getOrThrow() would throw before these assertions ran). They document fixture intent but cannot observe a violation. The Decision-T8 first-token-gpu assertion and the new URL-shape assertion are the only assertions in this test that earn their place. Not a blocker — these assertions are cheap and self-documenting.",
+      "recommendation": "Optional cleanup, not required for approval: trim test 2 down to (a) the T8 accelerators-first-token guard and (b) the mapped URL-shape assertion. The structural-non-empty checks are subsumed by the schema-guard tests added in round 2 plus the fixtureMatchesProductionAsset drift gate. If kept, leave a comment noting they are redundant intent-documentation, not behavioral guards."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/AllowlistLoaderTest.kt:60-61 (fixtureMatchesProductionAsset uses File with relative paths)",
+      "issue": "The drift test reads files via java.io.File(\"src/main/assets/...\") and File(\"src/test/resources/...\"), which depends on the JVM working directory being the module root. This holds for Gradle's default test runner (./gradlew :core-runtime:test) but is not guaranteed in every IDE run configuration (some Android Studio setups use the project root or a different cwd, leading to a misleading 'prod asset missing' failure). Functional impact is low because the canonical CI/local run is via Gradle, but the test could falsely fail when run from the IDE.",
+      "recommendation": "Optional: derive paths from a known classpath anchor. E.g., resolve the module root via System.getProperty(\"user.dir\") with a fallback that walks up looking for build.gradle.kts, or expose the prod asset on the test classpath via a Gradle 'copy' task into src/test/resources/ and read both via getResourceAsStream. Cheapest fix: keep as-is and document in a comment that the test is intended for `./gradlew :core-runtime:test` execution context."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 3,
+    "litmusTest": {
+      "checked": 6,
+      "passed": 5,
+      "failed": 0,
+      "notApplicable": 1,
+      "notes": "5 tests pass litmus (each negative-path test fails when its corresponding require() is removed from parse(); fixtureMatchesProductionAsset fails when bytes diverge; URL assertion fails when toModel().url shape changes). The structural checks in loadFromFixture_allModelsHaveRequiredFields are not litmus-applicable (they assert fixture data, not loader behavior) — see minor finding #1."
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 6,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

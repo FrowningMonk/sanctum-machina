@@ -1,0 +1,171 @@
+{
+  "validator": "task-validator",
+  "batch": [6, 7, 8, 9, 10],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "structure",
+      "task": 6,
+      "section": "TDD Anchor",
+      "issue": "TDD Anchor section is entirely missing from the task file. Task 6 is a code task producing ~120 LoC of concurrent lifecycle code (Mutex, stale-instance guard, GPU->CPU fallback). The template mandates TDD Anchor for code tasks. The Verification Steps explicitly state 'Unit-tests in Phase 1 не пишем for this task' citing user-spec D8, but the template still requires the section present (even if documenting the skip). More importantly: the tech-spec for Task 6 does not carry a TDD Anchor either, so this propagates a gap from tech-spec.",
+      "fix": "Add `## TDD Anchor` section after `## What to do`. Either (a) list smoke-grep anchors formatted as test entries, or (b) explicitly document the deferral per user-spec D8 with a rationale block (similar to Task 9's approach). Consistent with Task 9 which does carry the section as a justified no-op."
+    },
+    {
+      "severity": "critical",
+      "category": "structure",
+      "task": 7,
+      "section": "TDD Anchor",
+      "issue": "TDD Anchor section is missing. Task 7 creates code (SanctumApplication.kt, MainActivity.kt, Theme.kt) — it is a code task per task-creator rules. Template requires the section for code tasks.",
+      "fix": "Add `## TDD Anchor` section with either concrete anchors or an explicit justified skip (reference user-spec D8 and list the smoke-greps as verification substitutes), matching the approach used in Task 9."
+    },
+    {
+      "severity": "critical",
+      "category": "structure",
+      "task": 8,
+      "section": "TDD Anchor",
+      "issue": "TDD Anchor section is missing. Task 8 creates ModelManagerViewModel + ModelManagerScreen (Kotlin code). Template requires the section for code tasks. Details mention 'Не тестируем Compose UI ... TDD Anchor в задаче отсутствует намеренно' but this rationale belongs inside the TDD Anchor section, not in Details.",
+      "fix": "Add `## TDD Anchor` section that explicitly documents the no-test decision with reference to user-spec D8 and patterns.md Test Infrastructure section, matching Task 9's N/A-with-justification pattern."
+    },
+    {
+      "severity": "critical",
+      "category": "structure",
+      "task": 10,
+      "section": "TDD Anchor",
+      "issue": "TDD Anchor section is missing. Task 10 creates SanctumApp.kt (Compose code) and modifies MainActivity.kt. It is a code task.",
+      "fix": "Add `## TDD Anchor` section with explicit N/A justification referencing user-spec D8 (Phase 1 has single unit test — AllowlistLoaderTest — per Task 4)."
+    },
+    {
+      "severity": "critical",
+      "category": "carry-forward",
+      "task": 6,
+      "section": "Verification Steps / Smoke",
+      "issue": "Tech-spec Verify-smoke for Task 6 lists four commands. Task file's Smoke section correctly carries all four (compileDebugKotlin, lifecycleMutex.withLock >=4, currentInstance === model.instance >=1, KEY_MAIN_ACTIVITY_FQN >=1) plus adds a fifth (UI-imports boundary check). However, the tech-spec smoke check `grep \"KEY_MAIN_ACTIVITY_FQN\" core-runtime/.../DownloadRepository.kt ≥ 1` is carried but its semantic purpose (validating T6 plumbing integrity after wave-2 integration) is preserved only in a comment. This is a minor concern — acceptable — but verify the grep target path matches after Task 3 completes.",
+      "fix": "No fix required; finding is informational. Path is correct per Task 3 output structure. Downgrade to minor if flagged at all — listed here for traceability."
+    },
+    {
+      "severity": "major",
+      "category": "carry-forward",
+      "task": 9,
+      "section": "Context Files",
+      "issue": "Context Files entry for LlmChatModelHelper.kt points at `core-runtime/src/main/kotlin/app/sanctum/machina/core/inference/LlmChatModelHelper.kt` but Task 3 (per tech-spec) extracts LlmChatModelHelper into :core-runtime — the exact package path `core/inference/` is an assumption not verified against Task 3's spec. Task 6 references same file via a different assumption ('object-ссылка на LlmChatModelHelper'). If Task 3 places it under `core/runtime/` or similar, Task 9 will have a dead context link.",
+      "fix": "Cross-check path with Task 3's Files to modify after Task 3 is finalized. Either adjust the path in Task 9 Context Files or add a note that the exact path is determined by Task 3. Alternatively wildcard the path hint (e.g. 'core-runtime/.../LlmChatModelHelper.kt')."
+    },
+    {
+      "severity": "major",
+      "category": "content",
+      "task": 9,
+      "section": "Details / Implementation hints",
+      "issue": "Implementation hints recommends `GlobalScope.launch(Dispatchers.IO)` as fallback for cleanup in onCleared() with a 'TODO for Phase 2 refactoring' comment. GlobalScope is flagged by code-reviewer as anti-pattern (structured-concurrency violation) and the task provides no DI-scope alternative. Decision T9 mandates Mutex lifecycle management — a leaking cleanup coroutine undermines correctness guarantees.",
+      "fix": "Either (a) introduce `@ApplicationScope CoroutineScope` binding as part of Task 6's CoreRuntimeModule provides (pipe into this task's dependencies), or (b) document a concrete decision that cleanup is fire-and-forget via the registry's own SupervisorJob scope (which Task 6 already creates). Replace GlobalScope reference."
+    },
+    {
+      "severity": "major",
+      "category": "content",
+      "task": 8,
+      "section": "What to do / Acceptance Criteria",
+      "issue": "Task delegates download action via `registry.startDownload(model)` in one place and `registry.download(model)` in another (Task 6 interface declares `fun download(model: Model): Flow<ModelDownloadStatus>`). Naming inconsistency between Task 6 contract and Task 8 consumer — risks compilation failure or late discovery.",
+      "fix": "Align Task 8 method references with Task 6's canonical interface method `download(model)`. Remove `startDownload` references (What-to-do step 1 uses `registry.startDownload(model)` with parenthesized disclaimer — make this decisive and correct)."
+    },
+    {
+      "severity": "major",
+      "category": "content",
+      "task": 8,
+      "section": "What to do / Acceptance Criteria",
+      "issue": "Task 8 references `ModelEntry.name`, `model.errorMessage`, `model.sizeInBytes`, `receivedBytes`, `totalBytes` as direct fields, but Task 6 defines `ModelEntry(val model: Model, val downloadStatus: ModelDownloadStatus, val initStatus: ModelInitStatus)` — the actual fields live under `model.*` and `downloadStatus.*`. The status matrix in Task 8 treats `downloadStatus` as a bare enum with numeric fields but Task 6 keeps it as Gallery's `ModelDownloadStatus` type (which in Gallery is a class carrying receivedBytes/totalBytes/errorMessage).",
+      "fix": "Replace bare-field references with correct `entry.model.name`, `entry.downloadStatus.receivedBytes`, `entry.downloadStatus.totalBytes`, `entry.downloadStatus.errorMessage`, `entry.model.sizeInBytes`. Update AC text and What-to-do matrix accordingly to match Task 6's ModelEntry shape."
+    },
+    {
+      "severity": "major",
+      "category": "consistency",
+      "task": 8,
+      "section": "Context Files / strings.xml",
+      "issue": "Task 8 references R.string keys `status_not_downloaded`, `status_downloaded`, `action_download`, `action_cancel`, `action_load`, `progress_bytes_format`, `model_size_gb_format`, `unit_gb`, `status_error_format` — but Task 7 defines a different key set: `model_status_not_downloaded`, `model_status_downloaded`, `btn_download`, `btn_cancel`, `btn_load`, `progress_bytes_template`. Keys in Task 8 will fail R.string resolution at compile time.",
+      "fix": "Harmonize key naming between Task 7 (owner) and Task 8 (consumer). Either (a) update Task 8 to use the exact keys Task 7 declares (`model_status_*`, `btn_*`, `progress_bytes_template`), or (b) update Task 7's strings.xml key list to match Task 8's semantic names. Recommended: adopt Task 7's naming (it is the source of truth per tech-spec wave ordering) and fix Task 8."
+    },
+    {
+      "severity": "major",
+      "category": "consistency",
+      "task": 9,
+      "section": "Context Files / strings.xml",
+      "issue": "Task 9 references `R.string.chat_init_failed_title`, `R.string.back`, `R.string.message_interrupted_suffix` — Task 7 declares `chat_load_failed_title`, `btn_back`, `chat_message_interrupted_suffix`. Three key mismatches will cause compile failure.",
+      "fix": "Update Task 9 What-to-do and Implementation hints to use Task 7's canonical keys: `chat_load_failed_title`, `btn_back`, `chat_message_interrupted_suffix`. Also add `chat_load_failed_download_again` usage if the Failed-state Download button from Task 7's key list is intended (tech-spec says no retry button, but key is declared — confirm with Task 7 owner)."
+    },
+    {
+      "severity": "major",
+      "category": "consistency",
+      "task": 7,
+      "section": "strings.xml",
+      "issue": "Task 7 declares 20 string keys but the consumers (Task 8, Task 9) reference several keys not in Task 7's list AND Task 7 declares keys not used by consumers. Examples: Task 7 has `chat_load_failed_download_again` but Task 9 explicitly says no retry button. Task 7 lacks `model_size_gb_format`, `unit_gb`, `chat_init_failed_title`, `status_error_format`, `action_*` variants referenced by Tasks 8/9.",
+      "fix": "Task 7 should be the single source of truth for Phase 1 strings. After fixing Tasks 8/9 to use Task 7's canonical keys, remove unused keys from Task 7 (`chat_load_failed_download_again` if retry-button is out of scope) and add any missing ones needed by Tasks 8/9 (e.g. `model_size_gb_format`). Re-align all three tasks in a single pass."
+    },
+    {
+      "severity": "major",
+      "category": "content",
+      "task": 9,
+      "section": "What to do / Details",
+      "issue": "Task 9's ChatViewModel calls `LlmChatModelHelper.runInference(...)` directly from the ViewModel, bypassing ModelRegistry. Task 6's registry exposes `getInstance(modelName): LlmModelInstance?` but not a `runInference` wrapper. This means inference-run errors will not flow through `ErrorLog.e(\"inference-run\", ...)` (tech-spec §3 mandates this component tag). Acceptance Criteria says 'ошибка уже залогирована из ModelRegistry' and 'ModelRegistry уже пишет в ErrorLog' — but Task 6's interface does not include runInference, so this assumption is incorrect.",
+      "fix": "Either (a) add `runInference` wrapper to `ModelRegistry` in Task 6 (recommended — keeps single-active-model discipline and centralizes ErrorLog writes), updating Task 6 interface + AC + smoke-greps, or (b) accept that ChatViewModel logs `inference-run` failures itself via an injected `ErrorLog` (adds ErrorLog to Task 9's constructor DI). Whichever chosen, update both tasks consistently."
+    },
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": 7,
+      "section": "frontmatter",
+      "issue": "`verify: [smoke]` declared but Task 7 is user-facing bootstrap — MainActivity launch, POST_NOTIFICATIONS prompt, first-time app startup deserve a user-verify step even if covered later in Task 10's full scenario. Currently Verification Steps lacks a User subsection.",
+      "fix": "Either add `verify: [smoke, user]` with a minimal user-check ('Install APK, launch app, see stub screen, POST_NOTIFICATIONS prompt appears on SDK33+'), or document in task body that user-verify is deferred to Task 10's full scenario (current implicit position)."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 6,
+      "section": "Acceptance Criteria",
+      "issue": "AC mixes testable behavioral claims with grep-structural claims ('grep ≥ 4 вхождений', 'grep ≥ 1 вхождение', 'литерально выражение currentInstance === model.instance'). Grep-structural anchors verify string presence, not behavior — they're substitutes for TDD in a no-test Phase. Task-creator guideline flags this as minor: tests should verify behavior, not text.",
+      "fix": "Keep the grep-structural ACs (they mirror tech-spec smoke-greps and are the only verification bar Phase 1 offers), but add one or two behavioral ACs describing observable outcomes ('second initialize of the same model after cleanup succeeds', 'concurrent initialize+cleanup serialize without SIGSEGV') to strengthen the review target."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 9,
+      "section": "TDD Anchor",
+      "issue": "TDD Anchor exists but its body is 'N/A в Phase 1 — см. комментарий выше и user-spec D8' plus an HTML comment. This is acceptable as a justified skip but is the only task in the batch that carries TDD Anchor at all — inconsistent with Tasks 6/7/8/10 which omit the section entirely.",
+      "fix": "After fixing the missing TDD Anchor sections in Tasks 6/7/8/10 (critical findings above), align all five tasks on the same pattern: explicit N/A with user-spec D8 reference."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 6,
+      "section": "section order / Verification Steps placement",
+      "issue": "In Task 6, Verification Steps section appears AFTER Context Files, matching the template order. However Task 6's content table 'Контракты методов' is embedded inside What to do and duplicates information that also appears under Details. This creates two sources of truth inside one task file.",
+      "fix": "Keep method contracts in ONE place (preferably Details → Files/Implementation hints area) and reference from What to do, to avoid drift when contracts are edited."
+    },
+    {
+      "severity": "minor",
+      "category": "decomposition",
+      "task": 7,
+      "section": "atomicity",
+      "issue": "Task 7 bundles five distinct concerns: SanctumApplication, MainActivity stub, Theme, AndroidManifest, strings.xml (20 keys covering all of Phase 1). The title itself admits 'весь Phase 1'. This violates the 1-3 files heuristic. However, tech-spec explicitly intends this bundling (strings.xml owned by Task 7, consumed read-only by Tasks 8/9) to avoid merge conflicts in Wave 3 parallel tasks. The bundle has logical cohesion (app-bootstrap resources) — acceptable per logical-cohesion rule.",
+      "fix": "No action required. Finding is informational — tech-spec rationale for bundling is sound (single-owner strings.xml across parallel Wave 3). Consider adding a one-line note in Task 7 Description explicitly naming this decision so reviewers do not flag split-candidate."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 10,
+      "section": "Verification Steps / Automated",
+      "issue": "Automated subsection contains two bash commands (`./gradlew :app:assembleDebug` and `./gradlew :app:compileDebugKotlin`) but Task 10 is marked `verify: [user]` — Automated section is present without a matching frontmatter flag. Minor frontmatter↔body inconsistency.",
+      "fix": "Either add `smoke` to `verify:` frontmatter array, or move the two gradle commands into a Smoke subsection (which requires `smoke` in verify anyway), or drop them if the full-scenario user-verify implicitly exercises the build."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 8,
+      "section": "Verification Steps / Automated",
+      "issue": "No Automated subsection declared, but `./gradlew :app:assembleDebug` is listed as AC-8 ('Проект собирается'). Template has Automated section commented 'Always present for code tasks'.",
+      "fix": "Add Automated subsection with the gradle compile/assemble commands matching AC-8 compilation claim."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 20
+  }
+}

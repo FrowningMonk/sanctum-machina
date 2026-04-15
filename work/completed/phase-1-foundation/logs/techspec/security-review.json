@@ -1,0 +1,65 @@
+{
+  "status": "issues_found",
+  "findings": [
+    {
+      "category": "A08: Software and Data Integrity Failures / OWASP Mobile M7",
+      "description": "Tech-spec acknowledges (user-spec R5) that downloaded model files (~2-5 GB .litertlm binaries from HuggingFace) are NOT verified via checksum (sha256). The allowlist JSON contains `commitHash` and `sizeInBytes` fields that could be used for integrity verification, but tech-spec explicitly inherits Gallery behavior of skipping verification. Mitigation stated is 'Engine.initialize will fail on corrupt file' — this only catches corruption, not malicious tampering. Threat model: (a) HF community repo compromise or account takeover allowing malicious model upload, (b) HTTPS MITM via a compromised CA or user-installed CA (unlikely but possible), (c) transport corruption producing a file that still loads but misbehaves. A tampered .litertlm processed by native LiteRT-LM Engine is an attack surface — native deserialization of attacker-controlled bytes can yield RCE in native layer.",
+      "severity": "medium",
+      "recommendation": "Since allowlist already carries `sizeInBytes` and `commitHash`, add a sha256 field per model and verify after download but before rename from *.gallerytmp to final file. On mismatch — delete tmp, mark FAILED, ErrorLog.e('download', 'checksum mismatch ...'). This is ~30 LoC and removes the largest remaining integrity gap. If full sha256 is out of scope for Phase 1, at minimum verify `Content-Length` against allowlist `sizeInBytes` to catch truncation/extension attacks — this is ~3 LoC and already uses data present in allowlist. Document the sha256 work as a Phase 2 deliverable."
+    },
+    {
+      "category": "A05: Security Misconfiguration / OWASP Mobile M4 Insecure Communication",
+      "description": "Tech-spec does not explicitly mandate HTTPS-only transport or declare `android:usesCleartextTraffic=\"false\"` / a networkSecurityConfig pinning HTTPS. HuggingFace URLs are https:// by convention but the allowlist JSON is bundled as data — nothing in tech-spec prevents an allowlist entry (now or in future Phase 2 when allowlist may be fetched/editable) from carrying an http:// URL that Android will honor on API 28+ by default only if cleartext is allowed. Phase 1 targetSdk=35 means cleartext is denied by default per-domain rules, but the app does not explicitly set `android:usesCleartextTraffic=\"false\"` at application level.",
+      "severity": "medium",
+      "recommendation": "Add to AndroidManifest.xml `<application ... android:usesCleartextTraffic=\"false\">` as a defense-in-depth guard. Additionally in AllowlistLoader validate that every Model.url (or equivalent download URL field) starts with `https://` and reject the model entry (or fail parsing) otherwise. Add a TAC verifying: grep `android:usesCleartextTraffic=\"false\"` in AndroidManifest.xml == 1 match."
+    },
+    {
+      "category": "A08: Software and Data Integrity / Injection (class loading) — Decision T6",
+      "description": "Decision T6 passes the MainActivity FQN as a STRING via WorkManager Data bundle, then DownloadWorker calls `Class.forName(fqn)` on it. WorkManager Data bundles are per-app isolated storage (SharedPreferences-backed), so a cross-app attack requires root or another app having already compromised this app's data dir — not a realistic threat on unrooted Android. HOWEVER, passing a class name as data and reflectively loading it is an anti-pattern: it is a trust boundary that could be broken if a future refactor ever lets user input influence that Data field, or if a shared WorkManager library allows cross-module enqueues. The safer, equally simple alternative is to store the FQN as a BuildConfig constant in `:core-runtime` (or read from a companion object passed at worker-factory time) rather than round-tripping through serialized Data.",
+      "severity": "low",
+      "recommendation": "Either (a) put MAIN_ACTIVITY_CLASS_NAME in `:core-runtime/BuildConfig` (tech-spec rejects this for modular reasons — acceptable), OR (b) validate in DownloadWorker that the loaded FQN starts with `app.sanctum.machina.` (package allow-list) before calling Class.forName. One-line guard: `require(fqn.startsWith(\"app.sanctum.machina.\")) { \"Unexpected main activity FQN\" }`. This converts a theoretical class-loading gadget into a hard fail. Also consider: the class is only used to build a PendingIntent target — an alternative is to pass the `ComponentName` directly rather than reflectively resolving it."
+    },
+    {
+      "category": "A09: Security Logging — Sensitive Data in Logs",
+      "description": "ErrorLog writes to `context.filesDir/logs/errors.log` with 2 MB rotation and the format `ERROR [component] short description :: cause`. Risk surface for sensitive data in log lines: (1) `download` component errors may include full HuggingFace URL — as noted, HF community repo URLs are public, so this is not sensitive; (2) `inference-init` errors come from native LiteRT-LM `cleanUpMediapipeTaskErrorMessage` which can include file paths (`/sdcard/Android/data/app.sanctum.machina/files/...`) — this reveals the app's data directory layout but not PII; (3) `cause` field from exceptions may contain unexpected data (e.g., HTTP response body fragments, native error dumps with memory addresses). Tech-spec TAC-9 only checks format and component name, not content sanitization. filesDir is internal storage — not world-readable on unrooted devices. User-spec explicitly enables `adb run-as` export for debug builds, which is acceptable.",
+      "severity": "low",
+      "recommendation": "Phase 1 has no PII (no user accounts, no chat history persistence, no user identifiers), so log content risk is limited. Add a defensive single-line discipline: ErrorLog should truncate each `cause` argument to ~500 chars to prevent log blow-up from large native error strings, and should strip newlines (tech-spec already implies this via TAC-9 'one line per event'). Consider explicitly stripping any `Authorization:` or `token=` substrings defensively — cheap insurance against a future HF-token reintroduction being logged. Document that release builds (Phase 5) must disable `android:allowBackup` and `android:debuggable` to prevent log extraction."
+    },
+    {
+      "category": "Insecure Design / Gallery Patch Completeness",
+      "description": "Tech-spec describes removing HF-token plumbing via precise line numbers: `DownloadRepository.kt` lines 123-125 + import line 39 + ctor param line 83, and `DownloadWorker.kt` lines 32, 105, 134-137. This is a line-number-based patch plan — if Gallery source has shifted lines since research was captured, patches may miss a call site and leave dead token-reading code that still reaches SharedPreferences / DataStore expecting a token. Any remaining reference to token storage could reintroduce a code path that reads credentials from a non-existent store and fails at runtime, or — worse — accepts a user-provided token via a reintroduced debug flag. Tech-spec has no grep-based verification that `token`, `hfToken`, `auth`, `Authorization` are all absent from `:core-runtime/src/main/` after copy.",
+      "severity": "medium",
+      "recommendation": "Add to Agent Verification Plan / TAC-4 a companion check: `grep -rE '(hfToken|HF_TOKEN|Authorization|bearerToken|oauth|appauth|AppAuth)' core-runtime/src/main/ app/src/main/` → 0 matches. Also grep for `SharedPreferences.*token` and `DataStore.*token`. This catches missed patches. Currently TAC-4 only checks for `firebase`, `mlkit-genai`, `aicore`, `AppAuth` as package/library names, not for residual token-reading code."
+    },
+    {
+      "category": "A04: Insecure Design — Missing Download URL Validation",
+      "description": "Allowlist JSON is bundled in assets so the URL space is closed at build time (not user-editable in Phase 1). However AllowlistLoader is described as a pure Gson parse + success/failure; there is no described validation that (a) `modelId` matches expected HF org pattern (`litert-community/`), (b) the resulting download URL is https-only, (c) `sizeInBytes` is bounded (sanity cap, e.g. < 10 GB) to prevent a future tampered allowlist triggering a disk-exhaustion DoS. Phase 1 risk is low because the asset is bundled, but a hardened AllowlistLoader sets the baseline for Phase 2+ where allowlist may become fetchable.",
+      "severity": "low",
+      "recommendation": "In AllowlistLoader, after Gson parse, validate each Model: `require(modelId.startsWith(\"litert-community/\"))`, `require(sizeInBytes in 1..10L*1024*1024*1024)`, `require(resultingDownloadUrl.startsWith(\"https://huggingface.co/\"))`. Fail the whole load on violation so the app never tries an unexpected URL. This is ~10 LoC and adds a hard schema contract that Phase 2 can rely on."
+    },
+    {
+      "category": "Permissions / OWASP Mobile M1 Improper Platform Usage",
+      "description": "AndroidManifest declares `INTERNET`, `ACCESS_NETWORK_STATE`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`, `POST_NOTIFICATIONS`, `WAKE_LOCK`. Review: `FOREGROUND_SERVICE_DATA_SYNC` is the correct API 34+ typed permission for a download service — good. `WAKE_LOCK` is declared but tech-spec doesn't describe who holds wake-locks; WorkManager foreground service obtains CPU wake-lock implicitly, so this is fine. `POST_NOTIFICATIONS` is declared and runtime-requested on SDK 33+ — correctly handled in MainActivity per Decision. No permission over-request. `<service android:foregroundServiceType=\"dataSync\">` with `tools:node=\"merge\"` is correct for WorkManager's SystemForegroundService. Verdict: permission surface is minimal and appropriate.",
+      "severity": "info",
+      "recommendation": "No change. Note for Phase 5 (release): explicitly set `android:exported=\"false\"` on MainActivity if no external intent-filter launcher is needed beyond `MAIN`/`LAUNCHER`, and keep `<service>` node exported=false (WorkManager's SystemForegroundService is internal)."
+    },
+    {
+      "category": "A05: Security Misconfiguration — Backup and Debuggable Flags",
+      "description": "Tech-spec does not specify AndroidManifest `<application>` attributes `android:allowBackup`, `android:fullBackupContent`, `android:debuggable`. Phase 1 is debug-build only (user-spec explicit), so `debuggable=true` is implicit — this means an attacker with physical access + USB debugging enabled can `adb run-as` the app and extract filesDir (including errors.log). User-spec even documents this path for developer log extraction. For Phase 1 debug-build scope this is acceptable. Backup flag default (`allowBackup=true` pre-API 31, false on API 31+) combined with minSdk=31 means backup is off by default on the target — acceptable. Issue: there is no positive assertion in manifest.",
+      "severity": "low",
+      "recommendation": "In AndroidManifest.xml `<application>`, set `android:allowBackup=\"false\"` and `android:fullBackupContent=\"false\"` explicitly as defense-in-depth — the model files live in externalFilesDir (backup skips them anyway) but errors.log is in filesDir which is backup-eligible. Add TAC-12: grep `android:allowBackup=\"false\"` in AndroidManifest.xml == 1 match."
+    },
+    {
+      "category": "A06: Vulnerable and Outdated Components",
+      "description": "Dependencies pinned: litertlm 0.10.0 (Google), work-runtime 2.10.0, hilt 2.57.1, kotlin 2.2.0, gson 2.12.1, compose-bom 2026.03.00, lifecycle 2.8.7. All versions are recent (2025-2026). Gson 2.12.1 is current (no known CVEs as of cutoff). litert-lm 0.10.0 is a Google first-party native library — security posture depends on Google's supply chain; no alternative to trust baseline. kotlin-reflect 2.2.21 is fine. No transitive dependency audit is described in tech-spec.",
+      "severity": "info",
+      "recommendation": "Add to Agent Verification Plan / Task 2: `./gradlew :app:dependencies > build/deps.txt` plus a check that no declared version string contains `-alpha` / `-beta` / `-SNAPSHOT` in `libs.versions.toml` (aside from intentional exceptions). For Phase 2 consider adding `gradle-versions-plugin` or OWASP dependency-check. No Phase 1 blocker."
+    },
+    {
+      "category": "A02: Cryptographic Failures (N/A confirmation)",
+      "description": "Tech-spec uses NO cryptography in Phase 1: no Room encryption, no DataStore encryption, no secret storage, no key generation, no TLS pinning. `androidx.security.crypto` is explicitly NOT included. Model files are non-secret (public HuggingFace content). Log content is non-PII. Confirmation: A02 does not apply to Phase 1 scope.",
+      "severity": "info",
+      "recommendation": "No action for Phase 1. When Phase 3 introduces Room for chat history, revisit: chat content is likely the first privacy-sensitive data in this app. Consider SQLCipher or at minimum strict `filesDir` placement + `allowBackup=false`."
+    }
+  ]
+}

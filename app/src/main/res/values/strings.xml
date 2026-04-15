@@ -1,0 +1,32 @@
+<resources>
+  <string name="app_name">Sanctum</string>
+
+  <!-- ModelManager screen -->
+  <string name="model_manager_title">Модели</string>
+  <string name="model_status_not_downloaded">Не скачано</string>
+  <string name="model_status_downloading">Скачивание</string>
+  <string name="model_status_downloaded">Скачано</string>
+  <string name="model_status_failed">Ошибка</string>
+  <string name="model_size_gb_format">%1$.1f ГБ</string>
+  <string name="model_download_progress_format">%1$d / %2$d МБ</string>
+  <string name="model_error_prefix">Ошибка: %1$s</string>
+
+  <!-- Buttons -->
+  <string name="btn_download">Скачать</string>
+  <string name="btn_cancel">Отмена</string>
+  <string name="btn_load">Загрузить</string>
+  <string name="btn_retry">Повторить</string>
+  <string name="btn_send">Отправить</string>
+  <string name="btn_stop">Стоп</string>
+  <string name="btn_reset">Сбросить</string>
+  <string name="btn_back">Назад</string>
+
+  <!-- Chat screen -->
+  <string name="chat_loading_model">Загрузка модели…</string>
+  <string name="chat_load_failed_title">Не удалось загрузить модель. Скачайте заново.</string>
+  <string name="chat_input_placeholder">Сообщение</string>
+  <string name="chat_message_interrupted_suffix"> (прервано)</string>
+
+  <!-- Chat TTFT footer -->
+  <string name="ttft_footer_format">TTFT %1$dms · %2$.1fs total</string>
+</resources>

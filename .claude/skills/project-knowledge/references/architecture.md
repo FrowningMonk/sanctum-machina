@@ -80,22 +80,26 @@ PhoneWrap/                                  # Repository root, working dir
 │
 ├── app/                                    # :app gradle module — the Android application
 │   ├── build.gradle.kts                    # namespace = "app.sanctum.machina"
+│   ├── src/main/AndroidManifest.xml        # final merged manifest: permissions, SystemForegroundService, hardening flags
 │   └── src/main/kotlin/app/sanctum/machina/
-│       ├── ui/                             # Compose screens: projects, chats, chat, settings
-│       ├── data/                           # Room database, DAOs, repositories for Projects/Chats
-│       ├── di/                             # Hilt modules specific to :app
-│       └── SanctumApplication.kt           # @HiltAndroidApp, initialization
+│       ├── ui/                             # Compose screens (chat/, modelmanager/, theme/); SanctumApp.kt NavHost
+│       ├── MainActivity.kt
+│       └── SanctumApplication.kt           # @HiltAndroidApp; wires DefaultDownloadRepository.mainActivityFqn
+│                                           # Phase 2+: data/ (Room repos), di/ (app-level Hilt modules)
 │
 ├── core-runtime/                           # :core-runtime gradle module — extracted Gallery core
 │   ├── build.gradle.kts                    # namespace = "app.sanctum.machina.core"
+│   ├── src/main/AndroidManifest.xml        # library-scope hygiene: uses-permission + service merge-override (see patterns.md)
 │   └── src/main/kotlin/app/sanctum/machina/core/
-│       ├── inference/                      # LlmModelHelper interface + LiteRT-LM implementation
-│       ├── model/                          # ModelDefinition (immutable) + ModelRuntimeHandle
-│       ├── download/                       # DownloadRepository + DownloadWorker (from Gallery)
-│       ├── auth/                           # HuggingFace OAuth service (AppAuth wrapper)
-│       ├── registry/                       # ModelRegistry + allowlist loader
-│       ├── embed/                          # Embedder interface (Phase 4 slot, no impl in MVP)
-│       └── log/                            # Local ERROR-only log writer
+│       ├── common/                         # shared utilities (enums, helpers)
+│       ├── data/                           # Model / ModelAllowlist / Config / DownloadRepository (data classes + repo)
+│       ├── di/                             # Hilt modules (CoreRuntimeModule, @Provides graph)
+│       ├── inference/                      # LlmChatModelHelper (litertlm wrapper)
+│       ├── log/                            # ErrorLog (on-device error writer)
+│       ├── registry/                       # ModelRegistry + AllowlistLoader (+ schema guards)
+│       ├── runtime/                        # runtime helpers (ModelHelperExt, coroutine scope)
+│       └── worker/                         # DownloadWorker (WorkManager foreground service)
+│                                           # Phase 2: auth/ (HF OAuth), Phase 4: embed/ (Embedder interface)
 │
 ├── build.gradle.kts                        # Root build config
 ├── settings.gradle.kts                     # Module declarations (:app, :core-runtime)

@@ -1,0 +1,82 @@
+{
+  "validator": "reality-checker",
+  "batch": [4, 5, 6],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 6,
+      "issue": "Task 6 calls `LlmChatModelHelper.cleanUp(model)` without the required `onDone` parameter. The actual LlmModelHelper interface and LlmChatModelHelper implementation have signature `fun cleanUp(model: Model, onDone: () -> Unit)` — `onDone` is mandatory (no default). All Task 6 call-sites (GPU fallback cleanup, stale-instance cleanup, cancel-hook in suspendCancellableCoroutine) will fail to compile without providing `onDone`.",
+      "fix": "Pass a lambda for `onDone` at every call-site in DefaultModelRegistry, e.g. `LlmChatModelHelper.cleanUp(model) { }` (no-op) or use it to release a continuation. Update all three occurrences: GPU-fallback path, cleanup() method body, and suspendCancellableCoroutine cancel handler."
+    },
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 6,
+      "issue": "Task 6 (Method contracts table and resetConversation description) uses the API call `LlmChatModelHelper.resetConversation(model, systemInstruction = systemPrompt)` treating `systemInstruction` as a named parameter with a `String?` type. The actual interface signature is `fun resetConversation(model: Model, supportImage: Boolean = false, supportAudio: Boolean = false, systemInstruction: Contents? = null, tools: List<ToolProvider> = listOf(), enableConversationConstrainedDecoding: Boolean = false)`. The `systemInstruction` parameter type is `Contents?` (a LiteRT-LM type), NOT `String?`. Passing a `String?` directly will not compile.",
+      "fix": "In DefaultModelRegistry.resetConversation, convert the `systemPrompt: String?` parameter to `Contents?` before passing to LlmChatModelHelper — either leave `systemInstruction = null` for Phase 1 (since Phase 1 has no system-prompt UI) or wrap via `systemPrompt?.let { Contents.of(listOf(Content.Text(it))) }`. Update the interface KDoc and contract table to reflect the `Contents?` type."
+    },
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 6,
+      "issue": "Task 6 method-contracts table defines `fun download(model: Model): Flow<ModelDownloadStatus>` delegating to `DownloadRepository.enqueue(model)`. The actual Gallery `DownloadRepository` interface has no `enqueue` method — the method is named `downloadModel(model: Model, ...)`. Calling a non-existent `enqueue` method will fail to compile.",
+      "fix": "Replace `DownloadRepository.enqueue(model)` with `DownloadRepository.downloadModel(model)`. Also update `cancelDownload` delegation — the actual method is `cancelDownloadModel(model: Model)`, not `cancel(modelName: String)`."
+    },
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 6,
+      "issue": "Task 6 method-contracts table defines `fun cancelDownload(modelName: String)` delegating to `DownloadRepository.cancel(modelName)`. The actual Gallery `DownloadRepository` interface method is `cancelDownloadModel(model: Model)` — it takes a `Model` object, not a `String` name, and is not named `cancel`.",
+      "fix": "Change `cancelDownload` to look up the `Model` from `_models.value` by name and pass the full model object to `DownloadRepository.cancelDownloadModel(model)`."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 6,
+      "issue": "Task 6 Description §5 (Data types) states: `ModelEntry` is a Phase 1 view-type and `D6 отложен в Phase 2 — оставляем Gallery-класс Model с instance: Any? нетронутым`. However, the cleanup stale-instance guard in the same task requires `model.instance = null` after cleanup, and `configValues` mutation requires `model.configValues = ...`. The Gallery `Model.kt` field `configValues` is declared as `var configValues: Map<String, Any>` — reassignable, so this is fine. But the `instance: Any?` field is `var instance: Any? = null` — also reassignable. Verify that `Model` is copied as a mutable `data class` (not a `val`-only copy) to `:core-runtime`. This is feasible but task text implies no changes to `Model.kt`, which is slightly ambiguous — the mutation happens at runtime, not as a structural refactor.",
+      "fix": "Add a clarification note to Task 6 confirming that `model.instance = null` and `model.configValues = ...` mutations are runtime state mutations on the Gallery `Model` class (which has `var` fields), not structural refactors — so they are compatible with 'D6 deferred'. No code change needed if the class is copied as-is."
+    },
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 6,
+      "issue": "Task 6 Acceptance Criteria states: `Все обращения к ErrorLog используют корректные component-теги: \"allowlist\", \"download\", \"inference-init\", \"inference-run\"`. However, the user-spec D11 whitelist (cited in tech-spec §Architecture and Task 5 KDoc) lists: `download`, `inference-init`, `inference`, `inference-cleanup`. The tag `\"inference-run\"` does not appear in D11 or tech-spec. Task 5 also lists the correct 4 tags. Using `\"inference-run\"` in Task 6 would be an undeclared tag that the QA grep will flag.",
+      "fix": "Replace `\"inference-run\"` with `\"inference\"` in Task 6 Acceptance Criteria and all hints that reference it. The correct D11 whitelist is: `download`, `inference-init`, `inference`, `inference-cleanup`."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 6,
+      "issue": "Task 6 initialize() algorithm (§Decision T8, step 4) says: \"Попытка 1 (GPU): `configValues` из `Model.defaultConfig` содержит `ConfigKeys.ACCELERATOR.label = GPU`\". However, the GPU accelerator label in Gallery `Accelerator` enum is `\"GPU\"` (uppercase), while `ConfigKeys.ACCELERATOR.label` is `\"Accelerator\"` (the human-readable label of the ConfigKey, not the accelerator value). The mutation in step 5 — `configValues[ConfigKeys.ACCELERATOR.label] = Accelerator.CPU.label` — correctly uses `ConfigKeys.ACCELERATOR.label` as the map key (= `\"Accelerator\"`) and `Accelerator.CPU.label` (= `\"CPU\"`) as the value. This is correct. But the phrasing `ConfigKeys.ACCELERATOR.label = GPU` in step 4 is misleading — it conflates two separate things. An implementer may misread this as setting the ConfigKey label field itself.",
+      "fix": "Reword step 4 to: \"The model's `configValues` map contains key `ConfigKeys.ACCELERATOR.label` (= `\\\"Accelerator\\\"`). The first accelerator in `defaultConfig.accelerators` (= `\\\"gpu,cpu\\\"`) becomes the initial value after `Model.preProcess()`. Confirm the value is `Accelerator.GPU.label` (= `\\\"GPU\\\"`).\" This disambiguates the ConfigKey label from the accelerator value."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 4,
+      "issue": "Task 4 TDD Anchor specifies two test methods: `loadFromFixture_returnsListOfTwoModels` and `loadFromFixture_allModelsHaveRequiredFields`. The tech-spec Testing Strategy (§Testing) lists a third optional scenario: `Result.failure` on malformed JSON. Task 4 explicitly omits it. This is acceptable per D8 but is noted for completeness: the error-path of `AllowlistLoader.load()` (malformed JSON, missing asset) is untested by any automated mechanism in Phase 1.",
+      "fix": "Optional: add one negative test case `loadFromMalformedJson_returnsFailure` (~5 LoC). This is below D8 scope so can be deferred; just ensure the `runCatching` wrapper in `AllowlistLoader.load()` is present regardless."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 4,
+      "issue": "Task 4 schema-guard TAC-15 requires validating the download URL via `require(url.startsWith(\"https://huggingface.co/\"))`. The `AllowedModel.toModel()` URL construction logic (verified in ModelAllowlist.kt:74) builds the URL as `\"https://huggingface.co/$modelId/resolve/$commitHash/$modelFile?download=true\"`. However, the `url` field override (`AllowedModel.url`) can replace this with an arbitrary URL — and for AICORE models `downloadUrl = \"\"`. For Phase 1 (2 litert-community models with no `url` override), this guard will pass correctly. But the task instructs implementers to call `AllowedModel.toModel()` helper and then check the result — this will call `Build.VERSION` branch logic that is unavailable in plain JUnit4 (no Android runtime). If `socToModelFiles` processing path is hit in the test, it will throw `NoClassDefFoundError` on `android.os.Build`.",
+      "fix": "In the unit test, use the fixture JSON that has no `socToModelFiles` field (both Gemma-4 entries in 1_0_11.json have none), so `Build.VERSION.SDK_INT` branch is never entered. Confirm fixture JSON excludes `socToModelFiles` key. Add a comment in the test explaining this dependency. Alternatively, extract URL-computation logic into a pure function with no Android API dependencies for testability."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 5,
+      "issue": "Task 5 Implementation hints section includes a fairly prescriptive KDoc template (exact section names, exact format example, exact wording of rotation behavior). While not full pseudocode, the template is more prescriptive than a hint — it dictates the exact structure of the KDoc comment, which is implementation content rather than architectural direction.",
+      "fix": "Acceptable for Phase 1 given ErrorLog has a strict format contract from patterns.md. No code change needed; flag for style in future task decompositions."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 38,
+    "issues_found": 10
+  }
+}

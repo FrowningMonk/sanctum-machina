@@ -1,0 +1,41 @@
+{
+  "status": "approved",
+  "summary": "Round-1 fixes are clean and introduce no regressions. The Hilt default-arg trap is gone, the URL guard now validates the production code path (`m.toModel().url`), the `Result.failure` contract is tight (single `runCatching` end-to-end), `@Suppress` is replaced by an explicit local-variable widening with a comment, and the new test cases lock down empty/disallowed-prefix/oversize negative paths plus fixture-vs-prod byte equality. The mid-task discovery that Gson populates non-null Kotlin fields with null was handled correctly by relaxing `version`/`description` to nullable in `AllowedModel` and degrading via `version.takeUnless { it.isNullOrEmpty() } ?: commitHash` and `description.orEmpty()` — semantics for fixture data are unchanged because both fields are present in the JSON. One residual nit (dead constant `MODEL_ID_PREFIX`) is cosmetic and not blocking.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/AllowlistLoader.kt",
+      "line": 18,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "`private const val MODEL_ID_PREFIX = \"litert-community/\"` is now unused — the prefix is encoded inside `MODEL_ID_REGEX` on line 19 and there are no other references. Either delete the constant, or refactor `MODEL_ID_REGEX` to interpolate `MODEL_ID_PREFIX` (e.g. `Regex(\"^${Regex.escape(MODEL_ID_PREFIX)}[A-Za-z0-9._-]+$\")`) so the prefix lives in exactly one place and the regex stays in sync if the prefix ever changes.",
+      "benefit": "Removes dead code; eliminates the duplicate source-of-truth for the litert-community prefix.",
+      "optional": true
+    },
+    {
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/AllowlistLoader.kt",
+      "line": 50,
+      "severity": "minor",
+      "category": "performance",
+      "suggestion": "`m.toModel()` is invoked inside the schema-guard loop solely to extract `.url`. `toModel()` builds a full `Model` (parses accelerators, constructs configs list, etc.) and is then discarded — the result is not memoized for the subsequent `load()` mapping on line 27. With two models the cost is negligible, but if the allowlist grows or `toModel()` ever becomes expensive, consider either (a) computing the URL via a dedicated helper `AllowedModel.downloadUrl()` and validating that, or (b) running the guard during the same pass that produces the final `List<Model>`. Optional — current code is correct and small-N.",
+      "benefit": "Avoids redundant `Model` construction per entry; tightens the guard to validate exactly the URL string, not an entire `Model`.",
+      "optional": true
+    },
+    {
+      "file": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/AllowlistLoaderTest.kt",
+      "line": 60,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "`fixtureMatchesProductionAsset` reads `File(\"src/main/assets/model_allowlist.json\")` and `File(\"src/test/resources/model_allowlist_fixture.json\")` via the working directory, which is `core-runtime/` under default Gradle layout. This is fine for `./gradlew :core-runtime:test`, but breaks if the test is ever launched from the IDE with a different working directory or from the repo root. Consider locating the prod asset via a project-relative path resolved against `System.getProperty(\"user.dir\")` with a fallback, or assert the byte-equality in a small Gradle task instead of a JUnit test. Non-blocking — current setup works for the documented `./gradlew :core-runtime:test` invocation.",
+      "benefit": "Makes the drift-detection test robust to IDE/CI working-directory variation.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 3,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 3,
+    "testCoverageAssessment": "adequate"
+  }
+}

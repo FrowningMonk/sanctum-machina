@@ -1,0 +1,13 @@
+{
+  "status": "approved",
+  "summary": "Round-1 blocker is correctly resolved. Commit 42e424e introduces `NOTIFICATION_CONTENT_FAIL = \"Failed to download \\\"%s\\\"\"` (DownloadRepository.kt:52) and swaps the FAIL branch (line 196) to use it, so the failure-state notification now reads 'Failed to download \"<model>\"' under title 'Download failed' — the SUCCESS template is no longer misused. All four Round-1 NOTIFICATION_* constants (SUCCESS title/body, FAIL title/body) are co-located and commented as Phase 2 i18n debt. No collateral regression: diff is minimal (+2 / -1). Same commit additionally lands a ZipSlip guard in DownloadWorker.kt (canonical-path prefix check + parent-mkdirs relocation) — unrelated to this reviewer's blocker but a clean CWE-22 hardening that does not conflict with mechanical-port scope. Deferrals of the Round-1 major/minor findings (AICore residue in Types/Model/Consts/LlmChatModelHelper, double-counted totalBytes, unused AGWorkInfo, 2026 copyright, Hilt placeholder in :core-runtime/build.gradle.kts) are reasonable: task-3 spec §§ 3, 5-bullet list and file-by-file notes (lines 208, 221) explicitly bound those files to 'copy-paste + только package rename', documented AICore stripping only for ModelAllowlist.kt / ModelHelperExt.kt, and the DownloadRepository double-count / AGWorkInfo are inherited Gallery behaviour preserved by scope. Phase-2 debt is tracked in decisions.md per the implementer's note. Approving.",
+  "findings": [
+    {
+      "severity": "nit",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/DownloadRepository.kt",
+      "line": 52,
+      "issue": "Phase-1 string 'Failed to download \"%s\"' is grammatically fine but reads as a past-failure report rather than a completion-event body the way SUCCESS does ('%s downloaded'). Either wording is acceptable — this is a Phase 2 i18n concern, not a correctness issue.",
+      "suggestion": "None required for this task. When Phase 2 i18n lands, pair the two strings as `notification_content_success` / `notification_content_fail` in the :core-runtime strings.xml so translators see them together."
+    }
+  ]
+}

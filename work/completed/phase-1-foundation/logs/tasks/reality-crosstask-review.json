@@ -1,0 +1,87 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+  "iteration": 1,
+  "mode": "cross_task_integration",
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "task": 9,
+      "issue": "Task 9 injects `LlmChatModelHelper` directly into `ChatViewModel` constructor and calls `helper.runInference(model, input, resultListener, cleanUpListener, onError, images, audioClips, coroutineScope, extraContext)`. However, code-research §12.1 shows that in Phase 1 the canonical ModelRegistry interface exposes `fun getInstance(modelName: String): LlmModelInstance?`, and the intent was for ChatViewModel to obtain an LlmModelInstance and call the helper. Task 6's canonical interface table instead defines `fun getModel(modelName: String): Model?` (returning Gallery `Model`, not `LlmModelInstance`). The two interface specs are internally inconsistent: code-research §12 defines `getInstance(): LlmModelInstance?`, while Task 6 Description (canonical table), Task 6 Acceptance Criteria, and Task 9 both define `getModel(): Model?`. Task 9 uses `registry.getModel(modelName)` throughout — this accessor name MUST be `getModel` in the Task 6 implementation or Task 9 will get an unresolved reference at compile time.",
+      "fix": "Task 6 must implement `fun getModel(modelName: String): Model?` (not `getInstance`). The code-research §12 mention of `getInstance` is an earlier draft superseded by Task 6 Description's canonical interface table, which uses `getModel`. Confirm Task 6 implementation uses exactly `getModel` and remove/rename any `getInstance` remnant. Both tasks already agree on return type `Model?` — only the method name must be reconciled."
+    },
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "task": 8,
+      "issue": "Task 8 calls `registry.startDownload(entry)` in `ModelManagerViewModel.onDownload()`: 'fun onDownload(entry: ModelEntry) — делегирует registry.startDownload(entry)'. However, Task 6 canonical interface defines the method as `fun download(model: Model): Flow<ModelDownloadStatus>`, not `startDownload(entry: ModelEntry)`. The method name and parameter type differ. At compile time `registry.startDownload(entry)` will be an unresolved reference against the `ModelRegistry` interface produced by Task 6.",
+      "fix": "Task 8 must call `registry.download(entry.model)` (not `registry.startDownload(entry)`). Update the Task 8 Details section: `fun onDownload(entry: ModelEntry)` → `viewModelScope.launch { registry.download(entry.model).collect { status -> /* status updates come back via registry.models StateFlow */ } }`. The download method returns `Flow<ModelDownloadStatus>` per Task 6 contract."
+    },
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "task": 9,
+      "issue": "Task 9 ChatScreen signature is `@Composable fun ChatScreen(navController: NavController, viewModel: ChatViewModel = hiltViewModel())` (What to do step 3). However Task 10 wires it as `ChatScreen(modelName = modelName, onBack = { navController.popBackStack() })` — without `navController` parameter, with explicit `modelName: String` and `onBack: () -> Unit` parameters. These two signatures are mutually incompatible: Task 9 passes `navController` to the composable; Task 10 explicitly prohibits it and uses `modelName + onBack` callbacks. This will cause a compilation failure at Task 10.",
+      "fix": "Task 9 must define `ChatScreen` as `@Composable fun ChatScreen(modelName: String, onBack: () -> Unit, viewModel: ChatViewModel = hiltViewModel())` — matching Task 10's calling convention. The `navController` must NOT be a parameter. Navigation actions (`popBackStack`) are exposed via the `onBack` lambda, and `modelName` is passed explicitly (not read from navController's backstack entry inside the composable). Task 9's `ChatScreen` step 3 and Acceptance Criteria must be updated accordingly."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 7,
+      "issue": "Task 7 FQN plumbing description says 'первой строкой после super.onCreate() выставить FQN-companion из DefaultDownloadRepository (Decision T6, TAC-14)'. Task 10 Description states: 'companion-FQN плумбинг (DefaultDownloadRepository FQN в SanctumApplication.onCreate per Decision T6) НЕ относится к этой задаче — он уже сделан в Task 7'. This is internally consistent. However, Task 7 assigns responsibility for setting `DefaultDownloadRepository.mainActivityFqn` to SanctumApplication.onCreate() (correct per T6). Task 3 creates the companion object in DefaultDownloadRepository. The dependency chain is Task 3 → Task 7. Task 7 correctly declares `depends_on: [6]` (Task 6 depends on Task 3 which creates the companion), so the companion exists by the time Task 7 runs. However Task 7's direct dependency should ideally include Task 3 explicitly — currently it is `depends_on: [6]`, and Task 6 depends on [3,4,5], so Task 3 is transitively available. This is acceptable but worth noting — if Task 6 were ever skipped, Task 7 would fail to compile because `DefaultDownloadRepository.mainActivityFqn` wouldn't exist.",
+      "fix": "No immediate change required — transitive dependency via Task 6 covers it. For resilience, consider adding `3` to Task 7's `depends_on` list: `depends_on: [3, 6]`. Document in decisions.md."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 9,
+      "issue": "Task 9 specifies the `runInference` 9-parameter signature with `audioClips: List<ByteArray>`. The code-research does not explicitly verify the `audioClips` type. The tech-spec (Architecture §How it works) lists the signature as: `LlmChatModelHelper.runInference(model, input, resultListener, cleanUpListener, onError, images: List<Bitmap>, audioClips: List<ByteArray>, coroutineScope, extraContext: Map<String, String>? = null)`. This signature is presented as authoritative in Task 9 Details. However code-research §4 analysis of `runInference` (lines 243-302) does not enumerate the actual parameter list — it only covers failure modes. The claimed 9-parameter signature with `extraContext: Map<String, String>? = null` as the 9th parameter is asserted without direct Gallery source verification in the research document. If the actual Gallery `LlmChatModelHelper.kt` has a different signature (e.g., no `extraContext`, different `audioClips` type), Task 9 will fail to compile.",
+      "fix": "Before executing Task 9, read the actual Gallery source file `gallery-source/Android/src/app/src/main/java/com/google/ai/edge/gallery/ui/llmchat/LlmChatModelHelper.kt` lines 243-302 to verify the exact `runInference` parameter list. The task's 9-parameter signature (with `extraContext`) must match byte-for-byte what Task 3 copies into `core-runtime/.../inference/LlmChatModelHelper.kt`."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 7,
+      "issue": "Task 7 strings.xml count check in Verification Steps says `grep -c '<string name=' app/src/main/res/values/strings.xml` → ровно 22. The accompanying comment says '(app_name + 7 ModelManager + 8 Buttons + 4 Chat + 1 TTFT + 1 btn_retry)'. But the 'What to do step 6' XML block contains exactly: 1 (app_name) + 8 ModelManager keys (model_manager_title, model_status_not_downloaded, model_status_downloading, model_status_downloaded, model_status_failed, model_size_gb_format, model_download_progress_format, model_error_prefix) + 8 Buttons (btn_download, btn_cancel, btn_load, btn_retry, btn_send, btn_stop, btn_reset, btn_back) + 4 Chat (chat_loading_model, chat_load_failed_title, chat_input_placeholder, chat_message_interrupted_suffix) + 1 TTFT (ttft_footer_format) = 22 total. The count in the XML block is consistent (22). The comment breakdown '7 ModelManager + 8 Buttons' is slightly misleading (ModelManager has 8, not 7, including model_error_prefix) but the total of 22 is arithmetically correct. No compilation failure risk, but the comment could cause confusion during verification.",
+      "fix": "Minor: correct the comment in Task 7 Verification Steps to read '(app_name + 8 ModelManager + 8 Buttons + 4 Chat + 1 TTFT = 22)'. No code change needed."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 3,
+      "issue": "Task 3 step 5 shows the companion object being placed in `DefaultDownloadRepository`. However, the companion is later accessed in `SanctumApplication.kt` (Task 7) as `DefaultDownloadRepository.mainActivityFqn = ...`. For this to compile in `:app`, the `DefaultDownloadRepository` class must be publicly visible from `:app`. It lives in `:core-runtime`. The Hilt DI module (Task 6 `CoreRuntimeModule`) provides it as `DownloadRepository` (interface). The companion object access in `SanctumApplication` must reference the concrete class `DefaultDownloadRepository` by importing it from `app.sanctum.machina.core.data.DefaultDownloadRepository`. Task 7 Details correctly notes this import. No compilation failure if the class and companion are `public` (Kotlin default). Risk: if the developer accidentally makes `DefaultDownloadRepository` `internal`, the companion access in `:app` would break. Tasks do not explicitly require `public` visibility.",
+      "fix": "Add explicit note in Task 3 and Task 7 that `DefaultDownloadRepository` class must be `public` (not `internal`) because `:app` module references its companion object directly. Add a smoke grep in Task 7: `grep 'internal class DefaultDownloadRepository' core-runtime/src/main/kotlin/...` → 0 matches."
+    },
+    {
+      "severity": "minor",
+      "category": "cross-task-integration",
+      "task": 14,
+      "issue": "TAC-9 grep in Task 14 Details is: `grep -rE 'ErrorLog\\.' app/src/main/ core-runtime/src/main/ — проверить что используется по whitelist-компонентам (детали — в tech-spec AC-9)`. This grep only finds call sites but does NOT verify that all calls use only the 4 whitelisted component strings (`download`, `inference-init`, `inference`, `inference-cleanup`). A literal string check like `grep -rE '\"inference-run\"|\"allowlist\"' core-runtime/src/main/'` (as required by tech-spec §ErrorLog whitelist and verified by Task 6 smoke) is absent from TAC-9's automated check.",
+      "fix": "Add to Task 14 TAC-9 checks: `grep -rE '\"inference-run\"|\"allowlist\"|\"init\"|\"cleanup\"' core-runtime/src/main/ app/src/main/` → 0 for the non-whitelisted variants. Also add positive check: `grep -rE 'errorLog\\.e\\(\"(download|inference-init|inference|inference-cleanup)\"' core-runtime/src/main/` → ≥ 1 match per component."
+    },
+    {
+      "severity": "minor",
+      "category": "cross-task-integration",
+      "task": 9,
+      "issue": "Task 9 `ttft_footer_format` usage: `context.getString(R.string.ttft_footer_format, ttftMs, totalMs / 1000.0)`. The string is `'TTFT %1$dms · %2$.1fs total'`. `%1$d` expects an `Int` or `Long`; `%2$.1f` expects a `Float` or `Double`. Task 9 passes `ttftMs` (likely `Long`) as arg1 and `totalMs / 1000.0` (a `Double`) as arg2. Android's `getString(int, vararg Any)` will accept these types, but the hint also warns 'do NOT use Kotlin .format(...)'. There is an additional risk: if `ttftMs` is a `Long`, Android may reject it silently on some API levels with `%1$d` and require an explicit `.toInt()` call. This is device/API dependent and not a guaranteed compile failure, but could cause runtime `IllegalFormatConversionException` on older API 31 devices.",
+      "fix": "In Task 9 Details/hints, explicitly cast: `context.getString(R.string.ttft_footer_format, ttftMs.toInt(), (totalMs / 1000.0).toFloat())` to ensure type safety across API levels. Alternatively document that `%1$d` accepts `Long` on all API 31+ targets (worth verifying against Android docs)."
+    },
+    {
+      "severity": "minor",
+      "category": "cross-task-integration",
+      "task": 13,
+      "issue": "Task 13 Acceptance Criteria check 'Decision T8 invariant covered' refers to `defaultConfig.accelerators[0] == \"gpu\"`. The actual JSON field `accelerators` is a comma-separated String (`\"gpu,cpu\"`), not an array. The test must split the string: `accelerators.split(\",\")[0].trim().lowercase() == \"gpu\"`. Task 4 correctly describes this as `split(',')`-based check. Task 13 audit must verify the test uses string-split, not array indexing, to avoid a `ClassCastException` or incorrect assertion.",
+      "fix": "Task 13 step 2 should explicitly note that `defaultConfig.accelerators` is a `String` (CSV), not `List<String>`. The T8 invariant check must split: `accelerators.split(\",\")[0].trim() == \"gpu\"` — not `accelerators[0]`."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 14,
+    "claims_verified": 47,
+    "issues_found": 10,
+    "critical": 3,
+    "major": 4,
+    "minor": 3
+  }
+}

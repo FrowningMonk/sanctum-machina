@@ -1,0 +1,55 @@
+{
+  "summary": "ModelManagerScreen + ViewModel structurally match the spec: thin @HiltViewModel over ModelRegistry, Scaffold + LazyColumn + Card with status matrix driven by ModelEntry.downloadStatus, SharedFlow<NavEvent> for navigation, collectAsStateWithLifecycle + LaunchedEffect, all user-facing strings via R.string.*, strings.xml untouched, and lifecycle-runtime-compose dep legitimately added. However, onDownload is broken: ModelRegistry.download returns a cold callbackFlow, so discarding the returned Flow never invokes DownloadRepository.downloadModel — the WorkManager job is never enqueued. The spec sanctions fire-and-forget, but the underlying implementation does not support it; this must be fixed before merge. A few minor nits around redundant defaults and status-matrix extensions (PARTIALLY_DOWNLOADED / UNZIPPING) that are not covered by the spec but are reasonable.",
+  "findings": [
+    {
+      "severity": "critical",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerViewModel.kt",
+      "line": 29,
+      "issue": "onDownload(entry) calls `registry.download(entry.model)` and discards the returned Flow. ModelRegistry.download() is implemented in DefaultModelRegistry as `callbackFlow { downloadRepository.downloadModel(...); awaitClose {} }` — a COLD Flow. Without a terminal subscriber the producer block never executes, so `downloadRepository.downloadModel(model)` is never invoked and WorkManager is never enqueued. End-to-end effect: pressing «Скачать» does nothing, breaking AC #3, AC #4 and the on-device verification steps 2–3. The task spec explicitly sanctions fire-and-forget, but that guidance is incorrect against the Task 6 implementation: callbackFlow side-effects require collection.",
+      "suggestion": "Change onDownload to actually subscribe, e.g.:\n```kotlin\nimport kotlinx.coroutines.flow.launchIn\nfun onDownload(entry: ModelEntry) {\n  registry.download(entry.model).launchIn(viewModelScope)\n}\n```\nThis triggers the callbackFlow producer (enqueues WorkManager work and registers progress callbacks) and ties its lifetime to viewModelScope. Registry already updates `models` StateFlow from inside the callback, so the UI still refreshes reactively. Update tasks/8.md `What to do` bullet 1 — remove the misleading claim that both fire-and-forget and launchIn are acceptable."
+    },
+    {
+      "severity": "minor",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerScreen.kt",
+      "line": 140,
+      "issue": "Status matrix silently bundles PARTIALLY_DOWNLOADED with NOT_DOWNLOADED and UNZIPPING with IN_PROGRESS. The task spec enumerates only NOT_DOWNLOADED / IN_PROGRESS / SUCCEEDED / FAILED explicitly (AC #4). Grouping extra enum values is a reasonable defensive choice, but it is an undocumented extension of the spec and may surprise reviewers of later tasks. For UNZIPPING specifically, showing a Cancel button may be wrong — WorkManager cancellation after the download has finished is a no-op on the already-unpacked work.",
+      "suggestion": "Either (a) narrow the `when` to the 4 spec'd cases and add an `else -> { /* show NOT_DOWNLOADED row as fallback */ }` with a comment, or (b) keep current grouping but add a one-line comment referencing that PARTIALLY_DOWNLOADED/UNZIPPING are treated as the nearest spec'd state. Record the decision in decisions.md."
+    },
+    {
+      "severity": "minor",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerScreen.kt",
+      "line": 142,
+      "issue": "`Spacer(Modifier.height(4.dp))` is emitted only in the NOT_DOWNLOADED branch. Parent Column already uses `verticalArrangement = Arrangement.spacedBy(8.dp)`, so this makes the NOT_DOWNLOADED row 12dp high while IN_PROGRESS/SUCCEEDED/FAILED stay at 8dp. Inconsistent visual rhythm across cards.",
+      "suggestion": "Remove the Spacer; rely on the Column's spacedBy."
+    },
+    {
+      "severity": "minor",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerScreen.kt",
+      "line": 177,
+      "issue": "`Button(onClick = onLoad, enabled = true)` — `enabled = true` is the Button default; the explicit argument is noise and does not reinforce the AC #5 invariant in any meaningful way (the button is simply absent in non-SUCCEEDED branches).",
+      "suggestion": "Drop `enabled = true`."
+    },
+    {
+      "severity": "minor",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerScreen.kt",
+      "line": 131,
+      "issue": "`ModelStatusRow` emits multiple siblings (Text, LinearProgressIndicator, Button, Spacer) directly into whatever layout calls it, relying on the caller providing a Column. The Composable name suggests a Row, and the function has no enforced layout. Slightly brittle if reused.",
+      "suggestion": "Rename to `ModelStatusSection` (or wrap contents in an internal Column) to make the layout contract explicit."
+    },
+    {
+      "severity": "nit",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerScreen.kt",
+      "line": 154,
+      "issue": "`downloadStatus.totalBytes.coerceAtLeast(1)` inside the progress lambda is dead defense — the outer `if (downloadStatus.totalBytes > 0L)` already guarantees totalBytes >= 1.",
+      "suggestion": "Simplify to `(downloadStatus.receivedBytes.toFloat() / downloadStatus.totalBytes).coerceIn(0f, 1f)` within the > 0 branch. Minor; current form is also correct."
+    },
+    {
+      "severity": "nit",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerScreen.kt",
+      "line": 203,
+      "issue": "`StatusBadge` is wrapped in a `Row` for a single Text child. The Row adds no layout value here.",
+      "suggestion": "Replace the Row wrapper with just the Text, or inline `StatusBadge` entirely."
+    }
+  ],
+  "verdict": "needs_fixes"
+}

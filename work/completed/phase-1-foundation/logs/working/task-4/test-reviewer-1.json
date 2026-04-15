@@ -1,0 +1,70 @@
+{
+  "status": "needs_improvement",
+  "summary": "Two tests load the fixture and assert structural properties of its data, plus a single behavioral guard for Decision T8 (first accelerator token == 'gpu'). The T8 guard is genuinely valuable and earns its place. However, TAC-15's schema-guard logic (modelId prefix, sizeInBytes 1..10GB range, https://huggingface.co/ URL prefix) is implemented in AllowlistLoader.parse() but NOT covered behaviorally by any test — removing any of the three require(...) calls leaves both tests green. The tests also exercise parse() (returning List<AllowedModel>), bypassing the .map(AllowedModel::toModel) step that production load() performs, so the domain mapping is uncovered. Fixture/prod-asset equivalence is enforced only by manual convention; no automated drift check exists. user-spec D8 explicitly limits Phase 1 to one test, and tech-spec § Testing Strategy + TAC-15 ('Проверяется кодом + AllowlistLoaderTest расширенным сценарием') signals that some negative-path coverage was intended. Recommend adding ~3 short negative-path tests (fail closed) and 1 fixture-equivalence test before closing the task; all are pure JUnit4, no infra changes.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/AllowlistLoaderTest.kt (no test for modelId prefix guard)",
+      "issue": "TAC-15 requires modelId.startsWith(\"litert-community/\") — implemented in AllowlistLoader.parse() line 47–49 — but no test fails when that require(...) is removed. Litmus test fails: deleting the require line keeps both existing tests green because the fixture happens to satisfy the prefix. tech-spec TAC-15 explicitly says 'Проверяется кодом + AllowlistLoaderTest расширенным сценарием'. The расширенный сценарий is missing.",
+      "recommendation": "Add a test parse_failsWhenModelIdPrefixWrong using an inline malformed JSON string (no fixture file needed): val bad = \"\"\"{\"models\":[{\"name\":\"x\",\"modelId\":\"google/gemma\",\"modelFile\":\"f\",\"commitHash\":\"c\",\"sizeInBytes\":1,\"defaultConfig\":{\"topK\":1,\"temperature\":1.0,\"accelerators\":\"gpu\"}}]}\"\"\"; val r = AllowlistLoader.parse(bad.byteInputStream(), Gson()); assertTrue(r.isFailure); assertTrue(r.exceptionOrNull()!!.message!!.contains(\"litert-community\")). One @Test, ~6 LoC."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/AllowlistLoaderTest.kt (no test for sizeInBytes 10GB cap and lower bound)",
+      "issue": "TAC-15 requires sizeInBytes in 1..10_737_418_240L; without this guard the app could attempt a 100 GB download or accept zero/negative sizes. Litmus test fails: removing line 50–52 in parse() leaves both existing tests green (fixture sizes are well within range). The existing assertion `model.sizeInBytes > 0L` in test 2 only inspects fixture data, it does not exercise the loader's enforcement.",
+      "recommendation": "Add parse_failsWhenSizeOverCap with sizeInBytes = 10_737_418_241L → assertTrue(r.isFailure). Optionally a second case with sizeInBytes = 0 → failure. Inline JSON, ~6 LoC each. This is the highest-payoff negative test: a misconfigured allowlist entry could otherwise burn user bandwidth/storage silently."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/AllowlistLoaderTest.kt (no test for empty allowlist failure)",
+      "issue": "TAC-15 requires fail-closed on empty models[]; require(models.isNotEmpty()) at parse() line 45 is uncovered. If someone accidentally publishes an asset with `\"models\": []`, the app would silently show zero models with no error logged. Litmus: remove the require, both existing tests pass.",
+      "recommendation": "Add parse_failsOnEmptyAllowlist: val r = AllowlistLoader.parse(\"\"\"{\"models\":[]}\"\"\".byteInputStream(), Gson()); assertTrue(r.isFailure); assertTrue(r.exceptionOrNull()!!.message!!.contains(\"Empty\")). ~3 LoC."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/AllowlistLoaderTest.kt (no test for download URL https prefix)",
+      "issue": "TAC-15 requires the computed download URL to start with https://huggingface.co/. Lines 53–56 in parse() build the URL from URL_PREFIX + modelId + commitHash + modelFile and immediately re-check the prefix. The check is largely tautological (it concatenates a const prefix and then asserts the result starts with that const), so the gap is real but lower-impact. If the URL builder is later refactored to read the prefix from data, this guard becomes load-bearing and untested.",
+      "recommendation": "Either (a) drop the trivially-true require from parse() and document URL_PREFIX as a build-time invariant, or (b) keep the require and add parse_buildsHttpsHuggingfaceUrl that asserts the success path includes the expected URL shape (e.g., assert all returned models implicitly produced an https://huggingface.co/{modelId}/resolve/{commitHash}/{modelFile}-style URL by exposing the URL via toModel() and asserting model.url.startsWith(\"https://huggingface.co/\"))."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/AllowlistLoaderTest.kt vs core-runtime/src/main/assets/model_allowlist.json",
+      "issue": "Fixture/prod-asset equivalence is enforced only by a manual rule in task 4 spec ('Если продовский JSON поменяется — фикстуру обновить синхронно'). The smoke command `jq '.models | length'` checks length only, not byte equality. If someone edits the prod asset and forgets to mirror the fixture, every test still passes against the stale fixture and the divergence ships unnoticed. This is the exact scenario where a green test would hide a regression.",
+      "recommendation": "Add fixture_isByteIdenticalToProductionAsset that reads both files from classpath and asserts SHA-256 (or simple String) equality. Test resource layout already provides the fixture; the prod asset is reachable via the project's main source set, but in unit-test classpath it's typically not exposed. Two practical options: (1) Add a Gradle task copy step that publishes the asset into test resources and asserts copy is identity, or (2) read both files via java.io.File using project-relative paths in the test (acceptable for repo-local validation). ~10 LoC. Alternatively, add a CI/git pre-commit hook that diffs the two files."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/AllowlistLoaderTest.kt (test exercises parse(), production calls parse() then .map(AllowedModel::toModel))",
+      "issue": "Production load() returns Result<List<Model>> via parse(...).map { list -> list.map(AllowedModel::toModel) }. Tests only call parse() which returns Result<List<AllowedModel>>. The toModel() mapping — the actual seam between parsed JSON and the domain Model used by the rest of :core-runtime — has zero test coverage. If toModel() drops a field, throws on a specific shape, or computes a derived attribute incorrectly, no test will catch it. This isn't a litmus failure of the existing tests; it's a coverage shape concern.",
+      "recommendation": "Either (a) refactor parse() to return Result<List<Model>> (apply toModel inside the helper, simplest), then update tests to assert on Model; or (b) add one toModel-focused test that loads the fixture and asserts on a single mapped Model: assertEquals(\"Gemma-4-E2B-it\", models[0].name) and a couple of derived fields. Aligns the tested code path with the production code path."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/AllowlistLoaderTest.kt:34 (assertTrue model.sizeInBytes > 0L)",
+      "issue": "Asserts data quality of the fixture, not behavior of the loader. Since parse() already requires sizeInBytes >= 1 and would Result.failure otherwise, this assertion can never observe a violation on the success path — it is dead-on-arrival. The assertion's intent (catch a misconfigured fixture) overlaps with what schema-guard tests should cover. It looks like a TAC-15 check but isn't one.",
+      "recommendation": "Either delete (and rely on schema-guard tests recommended above), or repurpose to assert on the loader's enforcement via a negative-path test. The same critique applies to the non-empty assertions on name/modelId/modelFile/commitHash — they document the fixture but cannot fail on the success path because parse() either succeeds with a structurally valid list or returns failure."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 5,
+    "litmusTest": {
+      "checked": 2,
+      "passed": 1,
+      "failed": 1
+    },
+    "coverageAssessment": "insufficient",
+    "pyramidBalance": {
+      "unit": 2,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

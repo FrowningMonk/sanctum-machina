@@ -1,0 +1,54 @@
+{
+  "verdict": "approved_with_suggestions",
+  "summary": "DefaultModelRegistry's lifecycle mutex correctly serialises initialize/cleanup/reset/delete, and the stale-instance guard + stopResponse-before-cleanUp + GPU->CPU pre-retry cleanUp pattern closes the main SIGSEGV vectors highlighted in the task brief. No critical or major security findings. Concerns are mostly data-integrity and defense-in-depth: download() runs outside lifecycleMutex (by design - WorkManager handles download concurrency) so delete() does not cancel an in-flight download, which can re-create a file just deleted; initialize() lacks a precondition check for already-Ready/Initializing, which could double-allocate native state if the mutex were ever released between calls; Model.getPath interpolates `version` without a regex check (allowlist is bundled, so this is defense-in-depth only); errorLog messages can carry LiteRT-LM/HF error strings but no auth tokens are used in Phase 1 (offline, bundled allowlist, public HF URLs). No hardcoded secrets, no OWASP Top 10 breaches applicable to this registry layer.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "A04-InsecureDesign / data-integrity",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt",
+      "line": 97,
+      "issue": "delete(modelName) removes the on-disk file and resets downloadStatus to NOT_DOWNLOADED but does not cancel any in-flight WorkManager download for that model. If the user triggers delete() while download() is active, the DownloadWorker continues, may finish, and will re-create the model file (and re-emit SUCCEEDED through the still-open callbackFlow), racing back into _models and producing an inconsistent view: file on disk, status NOT_DOWNLOADED or oscillating. The callbackFlow for the stale download remains open because awaitClose is a no-op (no cancellation trigger).",
+      "recommendation": "At the top of delete() (still inside lifecycleMutex), call downloadRepository.cancelDownloadModel(entry.model) before deleting the file. Also consider wiring awaitClose { downloadRepository.cancelDownloadModel(model) } inside download()'s callbackFlow so consumer-side cancellation of the Flow cancels the worker, closing the race symmetrically."
+    },
+    {
+      "severity": "minor",
+      "category": "A04-InsecureDesign / native-resource safety",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt",
+      "line": 111,
+      "issue": "initialize(modelName) has no precondition check on current initStatus. If called when the engine is already Ready (e.g. a UI layer re-initializes before cleanup), awaitInitialize() will be invoked a second time against a model whose `model.instance` is already a live LlmModelInstance. LlmChatModelHelper.initialize is expected to overwrite `model.instance`, which drops the reference to the still-allocated native engine without calling cleanUp/stopResponse on it - a native-memory leak and potential use-after-free if another caller still holds the old instance. The mutex protects ordering but not this state transition.",
+      "recommendation": "Guard at the top of initialize(): `if (entry.initStatus === ModelInitStatus.Ready) return@withLock Result.success(Unit); if (entry.initStatus === ModelInitStatus.Initializing) return@withLock Result.failure(IllegalStateException(\"concurrent init\"))`. Alternatively, always call releaseEngine(model) as the first step so re-initialize is idempotent and never leaks the prior engine."
+    },
+    {
+      "severity": "minor",
+      "category": "A01-BrokenAccessControl / path traversal (defense-in-depth)",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/AllowlistLoader.kt",
+      "line": 48,
+      "issue": "AllowlistLoader validates modelId, modelFile, and commitHash against strict regexes, but `name`, `version`, and `description` are not validated. Model.getPath() interpolates `normalizedName` (sanitized via [^a-zA-Z0-9] -> _) and `version` (NOT sanitized) directly into the filesystem path under getExternalFilesDir. If the bundled allowlist JSON ever contained a `version` such as `../../../otherdir`, File.delete() / File.exists() / the download worker would operate on a path outside the model's intended directory. Today the allowlist is bundled in the APK so the attack surface is the build pipeline only, but adding a regex check is cheap and keeps parity with modelFile validation.",
+      "recommendation": "In AllowlistLoader.parse(), validate `version` (when non-null) against Regex(\"^[A-Za-z0-9._-]+$\") with the same !contains(\"..\") guard used for modelFile. Same for `name` if you want to rely less on NORMALIZE_NAME_REGEX. Failing the parse closed on anomalies gives a better signal than silent path normalisation."
+    },
+    {
+      "severity": "minor",
+      "category": "A04-InsecureDesign / startup robustness",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt",
+      "line": 249,
+      "issue": "resumePartialDownloads re-enqueues a download for every .gallerytmp file it finds, with no backoff or failure counter. If the worker fails deterministically (corrupt tmp, mismatched commit hash, revoked HF path), every app launch re-triggers the same failing download. That is not an infinite loop within a session, but it is a recurrent failure-and-retry loop across sessions that also keeps writing to the errors.log (rotation defends this but it is still noise and can mask other errors). Not a security hole per se, but a resilience smell.",
+      "recommendation": "Either (a) delete the .gallerytmp file before re-enqueuing if it is older than N hours / smaller than M bytes, or (b) gate resume on the entry's downloadStatus being IN_PROGRESS/FAILED (not NOT_DOWNLOADED) after scanLocalFiles ran, or (c) add a simple per-model retry counter persisted in SharedPreferences that suppresses auto-resume after K consecutive failures."
+    },
+    {
+      "severity": "nit",
+      "category": "A04-InsecureDesign / cancellation races",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt",
+      "line": 193,
+      "issue": "awaitInitialize's invokeOnCancellation unconditionally calls llmModelHelper.cleanUp(model). If the native initialize has already completed successfully and the onDone callback has already resumed the continuation with err=\"\", cancellation of the surrounding coroutine (e.g. scope cancel) will still trigger cleanUp, which is benign; but if cancellation arrives AFTER the withLock block has released the mutex and another initialize/cleanup is already running, calling cleanUp here is racing with the new lock holder's native ops on the same Model. The stale-instance guard in releaseEngine mitigates this for the post-lock path but does not help here because invokeOnCancellation calls LlmChatModelHelper.cleanUp directly, bypassing releaseEngine.",
+      "recommendation": "Route the cancellation cleanup through releaseEngine(model) (or at minimum capture the instance reference at callback-start and compare === before calling cleanUp). Alternatively, only invoke cleanUp in invokeOnCancellation if the continuation has NOT yet been resumed (track with an AtomicBoolean)."
+    },
+    {
+      "severity": "nit",
+      "category": "A09-Logging",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt",
+      "line": 131,
+      "issue": "errorLog.e(LOG_TAG_INIT, \"GPU init failed: $err1\") logs the raw LiteRT-LM error string. No HF token is used in Phase 1 (bundled allowlist, public HF URLs) so token leakage is not a concrete risk today, but if the err string ever embeds the download URL, the full Hugging Face resolve URL (with commitHash) lands in errors.log. In Phase 1 that URL is public and harmless, but if Phase 2 introduces an auth header or gated repo, err strings from LiteRT-LM / OkHttp layers frequently embed the offending URL. Worth flagging now to avoid a silent regression later.",
+      "recommendation": "Either redact URLs from err strings via a lightweight sanitiser before passing to errorLog, or document in the ErrorLog KDoc that callers must not pass token-bearing strings. A `sanitizeForLog(err)` helper that masks `Bearer <token>` and `?access_token=...` patterns is inexpensive insurance."
+    }
+  ]
+}

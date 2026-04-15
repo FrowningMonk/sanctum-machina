@@ -1,0 +1,37 @@
+{
+  "round": 1,
+  "verdict": "pass",
+  "summary": "Task 2 Gradle infrastructure is secure. No secrets committed, no hardcoded credentials, all Maven repos restricted to trusted sources (google, mavenCentral, gradlePluginPortal), RepositoriesMode.FAIL_ON_PROJECT_REPOS correctly set, all dependency versions pinned explicitly (no + or latest.release), Gradle wrapper URL uses HTTPS on the official services.gradle.org domain, no allowInsecureProtocol / jcenter / mavenLocal / file:// repos, and .gitignore correctly excludes local.properties, .env, keystores, and signing configs. The only findings are supply-chain hardening opportunities (wrapper checksum) and expected follow-ups for later tasks (release signing/minification). No critical or high-severity issues.",
+  "findings": [
+    {
+      "severity": "medium",
+      "file": "gradle/wrapper/gradle-wrapper.properties",
+      "issue": "Missing distributionSha256Sum — Gradle wrapper does not verify the integrity of the downloaded distribution archive. If an attacker compromises services.gradle.org or a developer machine sits behind a hostile TLS-intercepting proxy, a tampered Gradle distribution could execute arbitrary code during any build. Gradle officially recommends pinning the SHA-256 of the distribution for supply-chain protection.",
+      "suggestion": "Add a line `distributionSha256Sum=<sha256-of-gradle-8.11.1-bin.zip>` to gradle-wrapper.properties. The official checksum is published at https://gradle.org/release-checksums/ (for 8.11.1: f397b287023acdba1e9f6fc5ea72d22dd63669d59ed4a289a29b1a76eee151c9). This will cause Gradle to abort the build if the downloaded archive has been tampered with."
+    },
+    {
+      "severity": "low",
+      "file": "gradle/wrapper/gradle-wrapper.jar",
+      "issue": "gradle-wrapper.jar (43764 bytes) was copied from the vendored gallery-source directory without a recorded provenance/checksum note in the commit message or task decision log. Although the upstream source (Google AI Edge Gallery) is trustworthy, there is no audit trail proving the jar was not modified in transit or during the copy. The wrapper jar is executable Java code that runs on every build, so tampering here would be high-impact.",
+      "suggestion": "Either (a) regenerate the wrapper with `gradle wrapper --gradle-version 8.11.1` from a freshly installed Gradle, which produces an official wrapper jar, or (b) record in work/phase-1-foundation/decisions/ the SHA-256 of the copied jar together with the SHA-256 of the same file in the upstream gallery-source commit, so future audits can verify the provenance."
+    },
+    {
+      "severity": "low",
+      "file": "app/build.gradle.kts",
+      "issue": "No buildTypes block defined yet — debug and release configurations rely on AGP defaults. There is no signingConfig, no minifyEnabled/isShrinkResources for release, no ProGuard/R8 rules, and no debuggable flag management. This is expected at Task 2 (infrastructure only) and does not create an immediate vulnerability, but release builds produced from this state would ship unminified and unsigned-by-release-key, which is a distribution risk if anyone accidentally builds a release APK.",
+      "suggestion": "Ensure follow-up tasks (covered by phase-1 Task 7+ per the plan) add: `buildTypes { release { isMinifyEnabled = true; isShrinkResources = true; proguardFiles(...); signingConfig = signingConfigs.getByName(\"release\") } }` and a release signingConfig backed by keystore.properties (already in .gitignore). Until then, do not publish any APK built from this branch."
+    },
+    {
+      "severity": "info",
+      "file": "gradle/libs.versions.toml",
+      "issue": "Dependency versions are pinned cleanly, but CVE surveillance is not yet automated. Notable pins: AGP 8.8.2, Kotlin 2.2.0, Hilt 2.57.1, Gson 2.12.1, Compose BOM 2026.03.00, litertlm 0.10.0. All of these currently have no known high/critical CVEs, but Hilt, AGP, and Gson have had security advisories in the past year.",
+      "suggestion": "In a later phase, add `./gradlew dependencyUpdates` (ben-manes plugin) and/or OWASP Dependency-Check to CI once CI is configured. For now, no action required; flagging only so it is not forgotten."
+    },
+    {
+      "severity": "info",
+      "file": ".gitignore",
+      "issue": "Secrets hygiene is correct. local.properties (contains sdk.dir and can leak developer filesystem layout), .env, *.keystore, *.jks, *.key, *.pem, credentials.json, secrets/, release-keys/, keystore.properties, and signing.properties are all ignored. Gallery-source vendor snapshot is also excluded. No action required.",
+      "suggestion": "No change needed. Consider adding a pre-commit hook (gitleaks or trufflehog) in a later infrastructure task for defense-in-depth against accidentally staged secrets."
+    }
+  ]
+}

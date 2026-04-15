@@ -1,0 +1,90 @@
+{
+  "status": "changes_requested",
+  "summary": "Mechanical port is largely correct: package rename clean, all smoke greps pass (firebase/gallery/accessToken/compose/Task?/Uri.parse/R.string → 0 matches; T6 guard = 1 match), T5/T6 patches applied, ModelAllowlist trimmed, TaskIds.kt created, HF-token plumbing removed, AppLifecycleProvider replaced with ProcessLifecycleOwner. Two substantive issues block approval: (1) FAIL-path notification in DownloadRepository uses the SUCCESS content template (\"%s downloaded\"), so a failed download will tell the user the model was downloaded; (2) ModelHelperExt/ModelAllowlist were trimmed of AICore per D1 but Types.kt/Model.kt still carry dead AICore enum values and fields (RuntimeType.AICORE, AICoreModelReleaseStage, AICoreModelPreference, Model.aicoreReleaseStage/aicorePreference, Consts.MAX_IMAGE_COUNT_AI_CORE) and LlmChatModelHelper still branches on Accelerator.NPU — inconsistent with user-spec D1 GPU/CPU only. Task-spec technically allowed copy-paste-only for Types/Config/Model/LlmChatModelHelper so these are major, not critical, but leaving them is a Wave 2 landmine.",
+  "findings": [
+    {
+      "severity": "critical",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/DownloadRepository.kt",
+      "line": 195,
+      "issue": "FAIL-state notification reuses NOTIFICATION_CONTENT_SUCCESS (\"\\\"%s\\\" downloaded\") as its body text. When a download fails, the user will see title \"Download failed\" with body text '\"ModelName\" downloaded' — a direct contradiction that misinforms the user about the outcome. Task-spec step 3a explicitly listed a distinct NOTIFICATION_CONTENT_FAIL is not mandated, but reusing the SUCCESS template is a correctness regression versus the Gallery original which used R.string.notification_content_fail.",
+      "suggestion": "Introduce `private const val NOTIFICATION_CONTENT_FAIL = \"\\\"%s\\\" failed to download\"` (or similar EN-only Phase 1 string) alongside the other notification constants (lines 49-51) and swap the FAIL branch to use it: `text = NOTIFICATION_CONTENT_FAIL.format(model.name)`. Document the extra Phase 2 i18n debt in decisions.md with the other notification strings."
+    },
+    {
+      "severity": "major",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/Model.kt",
+      "line": 38,
+      "issue": "RuntimeType.AICORE enum value + AICoreModelReleaseStage / AICoreModelPreference enum classes + Model.aicoreReleaseStage / Model.aicorePreference fields survive the port despite user-spec D1 'Phase 1 GPU/CPU only, AICore/NPU убрать' and the explicit AICore stripping applied in ModelHelperExt.kt and ModelAllowlist.kt. This creates an inconsistency: the allowlist/runtime dispatch cannot emit AICORE, but Model/Types still carry AICORE-shaped state. Any Wave 2 code reading `model.runtimeType` or the two aicore* fields will have to defensively handle UNKNOWN/AICORE cases. Task 3 spec said `Types.kt` / `Model.kt` get only package-rename, which is why this is not critical, but leaving it contradicts the decision and invites dead-code drift.",
+      "suggestion": "Either (a) delete the RuntimeType.AICORE value, the two AICoreModel* enum classes, and the two aicore* Model fields now — keeps the data model aligned with D1; or (b) if you want to keep the patch radius minimal, file a Wave 2 follow-up task and note the dead-code intent in decisions.md so Task 6's DefaultModelRegistry author knows not to branch on AICORE. Preference is (a)."
+    },
+    {
+      "severity": "major",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/inference/LlmChatModelHelper.kt",
+      "line": 87,
+      "issue": "LlmChatModelHelper still carries NPU branches — `Accelerator.NPU.label -> Backend.NPU(nativeLibraryDir = ...)` in both preferredBackend (lines 95-99) and visionBackend (lines 84-90), plus the `if (accelerator == Accelerator.NPU.label) null` samplerConfig branch in resetConversation (lines 179-181) and the symmetric `if (preferredBackend is Backend.NPU) null` in initialize (lines 127). Per user-spec D1 Phase 1 is GPU/CPU only; NPU is not a supported path. The branches are dead for Phase 1 allowlist models (allowlist can no longer emit an NPU-shaped model after ModelAllowlist.kt trimming) but they expand the surface of :core-runtime and mislead readers.",
+      "suggestion": "Collapse NPU branches to the GPU default in both backend-selection sites and replace the NPU-specific null samplerConfig path with the normal SamplerConfig(...) construction. If keeping for future flexibility, at minimum add a TODO comment anchored to user-spec D1 so intent is explicit. Also consider dropping Accelerator.NPU from the enum in Types.kt for the same reason (currently unused but referenced by these dead branches)."
+    },
+    {
+      "severity": "major",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/Consts.kt",
+      "line": 53,
+      "issue": "`const val MAX_IMAGE_COUNT_AI_CORE = 1` ported verbatim from Gallery. AICore path was removed, so this constant is dead and contradicts user-spec D1. Task-spec didn't name it explicitly for deletion (only MODEL_INFO_ICON_SIZE), but it's the same class of residue.",
+      "suggestion": "Delete the constant and its comment (lines 52-53). Grep for usages first — should be zero inside :core-runtime/src/."
+    },
+    {
+      "severity": "major",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/DownloadRepository.kt",
+      "line": 88,
+      "issue": "`val totalBytes = model.totalBytes + model.extraDataFiles.sumOf { it.sizeInBytes }` double-counts extra data file size. `Model.preProcess()` (Model.kt:102) already sets `this.totalBytes = this.sizeInBytes + this.extraDataFiles.sumOf { it.sizeInBytes }`. So when `model.preProcess()` has been called, this line produces `sizeInBytes + 2 * extraDataFilesSum`, which in turn is passed into KEY_MODEL_TOTAL_BYTES and used by DownloadWorker to compute `(downloadedBytes * 100 / totalBytes)` for the progress bar — progress will stall at <100% for any model with extra data files. This is a Gallery-original bug carried through the port, but since the entire Worker/Repository chain is now :core-runtime's responsibility, it is worth fixing now.",
+      "suggestion": "Replace with `.putLong(KEY_MODEL_TOTAL_BYTES, model.totalBytes)` (single source of truth from preProcess). If preProcess may not have been called at the call-site, call it before enqueue or inline `model.sizeInBytes + model.extraDataFiles.sumOf { it.sizeInBytes }` (no double-addition). Add a one-line comment explaining the invariant."
+    },
+    {
+      "severity": "minor",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/DownloadRepository.kt",
+      "line": 214,
+      "issue": "Semantic nit on the T5 port: `if (ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return` skips the notification when the app is in foreground. This matches Gallery's original `if (lifecycleProvider.isAppInForeground) return` exactly, but the intent is worth a one-line code comment. A future reader could easily flip the condition 'fixing' an imagined bug.",
+      "suggestion": "Add a comment above the guard: `// Skip user-visible notification while app is in foreground; the UI already shows completion state in-app.` Low effort, high future-maintenance payoff."
+    },
+    {
+      "severity": "minor",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/worker/DownloadWorker.kt",
+      "line": 284,
+      "issue": "Foreground-progress strings are inlined directly (`\"Downloading model\"`, `\"Downloading \\\"$modelName\\\"\"`, `\"Downloading in progress: $progress%\"`) rather than extracted into named companion consts like DownloadRepository did (NOTIFICATION_TITLE_SUCCESS / NOTIFICATION_CONTENT_SUCCESS etc.). Task-spec 3a enumerated NOTIFICATION_TITLE_DOWNLOAD / NOTIFICATION_TEXT_DOWNLOAD as the extraction targets; for symmetry and easier Phase 2 i18n swap these should be hoisted. Not a correctness bug, but a consistency issue between the two files that will complicate the Phase 2 i18n migration.",
+      "suggestion": "Extract at the top of DownloadWorker.kt (file-private consts): `private const val NOTIFICATION_TITLE_DOWNLOAD = \"Downloading model\"`, `private const val NOTIFICATION_TITLE_DOWNLOAD_WITH_NAME = \"Downloading \\\"%s\\\"\"`, `private const val NOTIFICATION_TEXT_DOWNLOAD = \"Downloading in progress: %d%%\"`. Use `.format(modelName)` / `.format(progress)` at the call-sites (lines 284-288)."
+    },
+    {
+      "severity": "minor",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/DownloadRepository.kt",
+      "line": 53,
+      "issue": "`data class AGWorkInfo(val taskId: String, val modelName: String, val workId: String)` is declared but never used in the current module (no producer, no consumer). Its `taskId` field is a vestige of the removed `Task?` parameter plumbing. Likely inert carryover from Gallery where it fed ViewModel observation.",
+      "suggestion": "Either delete (easiest — grep confirms zero use in core-runtime/src/), or, if Wave 3 :app integration needs it, add a TODO-comment referencing the Wave 3 task number and drop the `taskId` field (caller now only has modelName/workId — TASK_ID_LLM_CHAT is the single constant)."
+    },
+    {
+      "severity": "minor",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/Types.kt",
+      "line": 23,
+      "issue": "`Accelerator.NPU` remains in the enum but user-spec D1 is GPU/CPU only and Phase 1 code paths should not construct NPU. Combined with the NPU branches still in LlmChatModelHelper.kt, the enum value invites bugs.",
+      "suggestion": "Drop the NPU enum value (and verify the LlmChatModelHelper NPU branches are removed as part of that change). If you choose to keep it for forward-compatibility, annotate with `@Deprecated(\"Phase 2+; Phase 1 is GPU/CPU only per user-spec D1\")`."
+    },
+    {
+      "severity": "minor",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/runtime/LlmModelHelper.kt",
+      "line": 2,
+      "issue": "Copyright header reads 'Copyright 2026 Google LLC' (both in LlmModelHelper.kt and ModelHelperExt.kt). Gallery's originals say 2025. 2026 is either a typo or a forward-dated edit. Attribution-wise it's still Google LLC-copyrighted Apache-2.0 code, so the year drift is harmless, but it diverges from the Gallery source — reviewers diffing against gallery-source/ will flag the mismatch.",
+      "suggestion": "Restore `Copyright 2025 Google LLC` to match the upstream Gallery file (or whatever year appears in the source file today). Apply consistently across all ported files."
+    },
+    {
+      "severity": "nit",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/TaskIds.kt",
+      "line": 1,
+      "issue": "Apache 2.0 header is truncated (missing the 'Unless required by applicable law ... AS IS BASIS ...' clause present on all other files). For a brand-new Sanctum-Machina-authored file that's fine stylistically, but the rest of the tree uses the full header consistently.",
+      "suggestion": "Either use the short SPDX form (`// SPDX-License-Identifier: Apache-2.0`) or the full Apache-2.0 boilerplate used elsewhere — pick one and apply consistently. Not blocking."
+    },
+    {
+      "severity": "nit",
+      "file": "core-runtime/build.gradle.kts",
+      "line": 4,
+      "issue": "`:core-runtime` applies `libs.plugins.hilt.application` (Hilt). Task 3 spec doesn't mandate Hilt usage inside core-runtime (no @HiltAndroidApp or @InstallIn anchors in any of the 13 ported files). This is harmless — Hilt will just no-op — but it silently expands the module's compile graph and pulls in KSP work on every build. If Wave 2/3 truly needs Hilt bindings inside core-runtime, the plugin stays; otherwise this is accidental scope.",
+      "suggestion": "Confirm with the Wave 2 (Task 6) spec whether DefaultModelRegistry will be `@Singleton`/`@Inject`. If yes, keep the plugin and this is fine. If Hilt bindings live only in `:app`, drop `libs.plugins.hilt.application` + `libs.plugins.ksp` + the hilt-compiler ksp dep from core-runtime/build.gradle.kts to keep the module boundary minimal."
+    }
+  ]
+}

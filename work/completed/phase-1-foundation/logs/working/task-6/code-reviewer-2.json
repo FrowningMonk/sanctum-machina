@@ -1,0 +1,28 @@
+{
+  "verdict": "approved",
+  "summary": "All four round-1 changes hold up. The new top-of-initialize releaseEngine composes cleanly with the GPU-failed cleanUp call (idempotent via instance==null guard). refreshAllowlist switched to _models.update is CAS-correct against download-callback updates. resumePartialDownloads' download().launchIn(scope) has no lifecycle issue under the SupervisorJob-never-cancelled Phase-1 contract. delete()'s cancel-first ordering closes the resurrection window security-auditor SM1 raised, with only a minor (already-acceptable) async-cancel race on .tmp bytes that resolves to the deleted state.",
+  "findings": [
+    {
+      "id": "R2-Min-1",
+      "severity": "minor",
+      "category": "concurrency",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt",
+      "line": 128,
+      "issue": "downloadRepository.cancelDownloadModel(entry.model) returns immediately (WorkManager.cancelAllWorkByTag is fire-and-forget Operation). The subsequent file.delete() on line 133 may race with the worker's last write to the .tmp file.",
+      "impact": "On Android the worker will write to an unlinked inode and the bytes are lost — final on-disk state matches the requested deleted state, and the entry is reset to NOT_DOWNLOADED. No corruption, no resurrection. Acceptable for Phase 1.",
+      "recommendation": "Phase 2: optionally await the cancel Operation (`cancelAllWorkByTag(...).result.get()` on a worker dispatcher) before file.delete() for symmetric semantics. Document or leave as-is.",
+      "blocking": false
+    },
+    {
+      "id": "R2-Min-2",
+      "severity": "minor",
+      "category": "state-visibility",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt",
+      "line": 157,
+      "issue": "When initialize() is invoked on a model already in Ready state, releaseEngine() runs before initStatus is flipped to Initializing (line 158). For a brief window inside the mutex, _models exposes initStatus=Ready while model.instance is null.",
+      "impact": "External readers using getModel() see initStatus=Ready and receive a Model whose .instance was just nulled. Race is bounded to the lifecycleMutex window of one releaseEngine call (microseconds) and only triggers if a caller re-initializes an already-Ready model — not exercised in Phase 1 (registry is the sole caller). Pre-existing pattern.",
+      "recommendation": "Optional: flip initStatus to Initializing before calling releaseEngine to guarantee the StateFlow never advertises Ready over a null instance. Non-blocking.",
+      "blocking": false
+    }
+  ]
+}

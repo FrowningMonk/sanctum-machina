@@ -1,0 +1,175 @@
+{
+  "verdict": "pass-with-findings",
+  "summary": "Phase 1 Android foundation is security-clean at critical/high level: zero hardcoded HF tokens (hf_* regex → 0 hits), zero HF-token plumbing residuals (hfToken|HF_TOKEN|Authorization|Bearer|accessToken|appauth|oauth → 0 hits in :core-runtime and :app), zero Firebase / mlkit-genai / AICore library imports, manifest hardened (allowBackup=false, fullBackupContent=false, usesCleartextTraffic=false), AllowlistLoader schema-guards (TAC-15) and DownloadWorker package-prefix guard (TAC-14) in place. No WebView, no file:// handling, no untrusted deserialization outside Gson-on-bundled-asset. All critical findings from prior between-task audits (Task 3 ZipSlip, Task 4 path-traversal, Task 6 delete-race / init-leak) are verified fixed. Residual findings are 1 medium (defense-in-depth: Class.forName in DownloadRepository lacks the package-prefix guard that DownloadWorker has), 4 low (ErrorLog log-sanitisation gap, mutable @Volatile companion for FQN injection, dev-backdoor /data/local/tmp branch inherited from Gallery, wrapper SHA-256 pin absent) and 2 info-level observations. No blockers for Task 14 (pre-deploy QA).",
+  "findings": [
+    {
+      "severity": "medium",
+      "category": "TAC-14 / OWASP-MASVS-CODE-4 (M8 Code Tampering, defense-in-depth)",
+      "location": "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/DownloadRepository.kt:220-227",
+      "issue": "DefaultDownloadRepository.sendNotification() reads companion DefaultDownloadRepository.mainActivityFqn and calls Class.forName(fqn) without the same startsWith(\"app.sanctum.machina.\") package-prefix guard that protects the symmetric call in DownloadWorker.kt:321. The companion field is declared `@Volatile var mainActivityFqn: String?` (DownloadRepository.kt:81) — in-process code paths could, in principle, overwrite it before a SUCCEEDED/FAILED notification fires. Today the only setter is SanctumApplication.onCreate() (trusted), but the asymmetry means any future refactor that exposes a second setter (or test-seam mutation) could trigger arbitrary class loading via the notification path. TAC-14 literally requires the guard only in DownloadWorker, so this is a gap vs the spirit rather than the letter.",
+      "recommendation": "Add the same guard at DownloadRepository.kt:222, mirroring DownloadWorker.kt:321: `val fqn = mainActivityFqn ?: return; require(fqn.startsWith(\"app.sanctum.machina.\")) { \"Unexpected main activity FQN: $fqn\" }`. Three-line change, zero functional regression."
+    },
+    {
+      "severity": "low",
+      "category": "OWASP-A09 Security Logging (log content sanitisation)",
+      "location": "core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt:74-82",
+      "issue": "ErrorLog.sanitize() strips \\n/\\r/\\t and truncates to 500 chars, but does not redact URLs or auth-like substrings from cause.message. Task 12 scope explicitly lists `Authorization`, `Bearer`, `token=` as forbidden substrings in logs. Phase 1 flows do not send any auth header (TAC-13 verified — no HF token plumbing), so no token can currently reach the logger, but if any future Phase 2 feature introduces signed URLs or bearer auth, exceptions surfacing such strings would land in filesDir/logs/errors.log and stay there until the 2 MB rotation boundary. Defense-in-depth best practice.",
+      "recommendation": "Add a masking step in sanitize(): replace patterns `Authorization:\\s*Bearer\\s+\\S+`, `[?&]access_token=[^&\\s]+`, `[?&]token=[^&\\s]+`, `hf_[A-Za-z0-9]{10,}` with `[REDACTED]` before the take(MAX_FIELD_LEN) call. Phase 2 follow-up is acceptable since Phase 1 has no token producers today; flagging to track."
+    },
+    {
+      "severity": "low",
+      "category": "OWASP-A08 Integrity / insecure design",
+      "location": "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/DownloadRepository.kt:78-82",
+      "issue": "DefaultDownloadRepository.companion holds `@Volatile var mainActivityFqn: String?` as a process-global mutable injection point. Anyone with a reference to the KClass can mutate it. Today only trusted :app code touches it, but the pattern is fragile for a :core-runtime module that aspires to be independent and testable.",
+      "recommendation": "Phase 2 hardening: migrate to a Hilt-provided @Named(\"mainActivityFqn\") String constant bound in :app's DI graph (tech-spec Decision T6 alternative (c) was deliberately rejected for Phase 1 simplicity). Add `private set` and a `configure()` guard that rejects a second non-null call in the short term. Phase-2 debt, does not block Phase 1 sign-off."
+    },
+    {
+      "severity": "low",
+      "category": "OWASP-MASVS-PLATFORM-1 (inherited Gallery behaviour)",
+      "location": "core-runtime/src/main/kotlin/app/sanctum/machina/core/inference/LlmChatModelHelper.kt:111-114",
+      "issue": "LlmChatModelHelper.initialize contains `if (modelPath.startsWith(\"/data/local/tmp\"))` branch — a dev/sideload backdoor inherited verbatim from Gallery that allows LiteRT-LM to load a model pushed via `adb push /data/local/tmp/...`. In debug builds this is fine (already documented in Task 3 decisions as deferred Gallery residue); in a future release build it becomes a code-tampering / local-privilege surface because /data/local/tmp is accessible via adb shell. Not exploitable by unprivileged apps, but Phase 1 ships as debug only, so current risk is zero. Flag to ensure it is revisited before any release build.",
+      "recommendation": "Phase 2 cleanup: gate the /data/local/tmp branch on `BuildConfig.DEBUG` or remove entirely. Also covered by Task 3 `Pending user action` tech-debt list (inherited Gallery bugs)."
+    },
+    {
+      "severity": "low",
+      "category": "Supply-chain hardening (observed in Task 2 audit, not re-verified)",
+      "location": "gradle/wrapper/gradle-wrapper.properties (not read by this audit; Task 2 security-auditor-1.json flagged)",
+      "issue": "Gradle wrapper does not pin `distributionSha256Sum=...`. A compromised Gradle CDN could deliver a tampered distribution; the wrapper's TLS-only integrity check is defense-in-one. Task 2 security-auditor flagged this as deferred Phase-2 hardening. Re-confirming here for the Phase-1 rollup; this audit did not re-read the wrapper file but the Task 2 finding remains open per decisions.md § Task 2 'Pending user action'.",
+      "recommendation": "Add `distributionSha256Sum=<sha256>` to gradle/wrapper/gradle-wrapper.properties matching the Gradle 8.11.1 distribution checksum from https://gradle.org/distributions. One-line change; no functional impact."
+    },
+    {
+      "severity": "info",
+      "category": "OWASP-MASVS-CODE (deferred tech-debt, inherited Gallery)",
+      "location": "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/Model.kt:37-47,65-66",
+      "issue": "Model.kt retains AICore-related enum residues: `RuntimeType.AICORE`, `AICoreModelReleaseStage`, `AICoreModelPreference`, and fields `aicoreReleaseStage`/`aicorePreference`. These are type-level data-class holders only — no AICore runtime is wired, no mlkit-genai imports are present, no dependency on AICore libraries exists (grep `mlkit-genai|aicore` in app/src returns 0 hits). Explicitly deferred in Task 3 deviations (decisions.md § Task 3 'Pending user action'). Not a security issue today; noting for completeness so the Phase-2 cleanup scope is explicit.",
+      "recommendation": "Phase 2 cleanup — remove AICore enum fields and RuntimeType.AICORE alongside the architectural refactor of Model (user-spec D6 which was also deferred). No Phase 1 change needed."
+    },
+    {
+      "severity": "info",
+      "category": "OWASP-A04 Insecure design (robustness, not exploitability)",
+      "location": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt:68",
+      "issue": "ChatViewModel.send() uses `registry.getModel(modelName) ?: error(\"Model not initialized\")`, which throws IllegalStateException on a TOCTOU race (model deleted between navigation and send). Same pattern appears in init{} on line 42 via `savedStateHandle.get<String>(NAV_ARG_MODEL_NAME) ?: error(\"modelName nav-arg is required\")`. Already flagged in Task 10 security-auditor-2 round as 'deferred-appropriately' because the only navigation call-site feeds a registry-sourced name. MainActivity is exported=true (LAUNCHER requirement), so an adversarial launcher intent cannot reach chat/{modelName} route directly, and NavHost won't surface a random deep-link without explicit intent-filter plumbing (none present). So the crash vector is benign today.",
+      "recommendation": "Phase 2: replace `error(...)` with an explicit `_uiState.value = ChatUiState.Failed(\"Model no longer available\")` + navigate-back path so TOCTOU races surface as a user-visible error rather than a process crash."
+    }
+  ],
+  "tacVerification": {
+    "tac4": true,
+    "tac12": true,
+    "tac13": true,
+    "tac14": true,
+    "tac15": true
+  },
+  "tacEvidence": {
+    "tac4": "grep -Ei '(firebase|google-services|mlkit-genai|aicore|AICoreModelHelper|Firebase)' on app/src/main and core-runtime/src/main returns 0 library/import matches. Only hits are (a) deferred AICore enum residues in core-runtime/src/main/kotlin/app/sanctum/machina/core/data/Model.kt:38,41,46,65,66 (type-level only, no runtime wiring), (b) intentional comment 'AICore branch removed' in ModelHelperExt.kt:22 and ModelAllowlist.kt:20. No google-services.json, no Firebase BoM, no mlkit-genai-prompt, no AppAuth in gradle/libs.versions.toml (verified by read).",
+    "tac12": "app/src/main/AndroidManifest.xml:14 android:allowBackup=\"false\"; line 15 android:fullBackupContent=\"false\"; line 16 android:usesCleartextTraffic=\"false\". All three attributes present on <application>. No res/xml/network_security_config.xml exists (verified: directory app/src/main/res/xml does not exist), so usesCleartextTraffic=false is not undermined by an overriding NSC.",
+    "tac13": "grep -Ei '(hfToken|HF_TOKEN|accessToken|bearerToken|refreshToken|huggingface.*token|appauth|net\\.openid|Authorization|Bearer)' on core-runtime/src/main and app/src/main → 0 hits. Hits in repo are confined to work/ documentation and .claude/ skills — never touched by shipped APK code. Anonymous HTTPS download of community Gemma models is the only outbound traffic (DownloadWorker.kt:124 uses HttpURLConnection with no auth headers).",
+    "tac14": "core-runtime/src/main/kotlin/app/sanctum/machina/core/worker/DownloadWorker.kt:321 contains `require(fqn.startsWith(\"app.sanctum.machina.\")) { \"Unexpected main activity FQN: $fqn\" }`. Guard is executed on every buildMainActivityPendingIntent() call, immediately before Class.forName(fqn) on line 324. Throws IllegalArgumentException on mismatch, which CoroutineWorker converts to Result.failure().",
+    "tac15": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/AllowlistLoader.kt:21-24 defines MODEL_ID_REGEX (`^litert-community/[A-Za-z0-9._-]+$`), MODEL_FILE_REGEX, COMMIT_HASH_REGEX, URL_PREFIX (`https://huggingface.co/`), MAX_SIZE_BYTES (10 GB). Parse loop lines 48-64 enforces all of them + explicit '..' path-traversal ban + https:// URL prefix via m.toModel().url. Any violation → Result.failure with descriptive message. Covered by 8 unit tests in AllowlistLoaderTest (core-runtime/src/test/kotlin/.../AllowlistLoaderTest.kt) including negative-path fixtures."
+  },
+  "owaspMobileCoverage": {
+    "M1_ImproperPlatformUsage": "Applicable / clean. Permissions: INTERNET, ACCESS_NETWORK_STATE, FOREGROUND_SERVICE, FOREGROUND_SERVICE_DATA_SYNC, POST_NOTIFICATIONS, WAKE_LOCK — minimally sufficient for download + inference. POST_NOTIFICATIONS runtime request in MainActivity.onCreate (MainActivity.kt:24-32) gated on SDK 33+. SystemForegroundService declared with android:foregroundServiceType=\"dataSync\" (manifest:39) matches ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC used in DownloadWorker.kt:315. No exported components except LAUNCHER-required MainActivity (android:exported=\"true\", manifest:30). MainActivity is a ComponentActivity without any intent-filter accepting user-controlled data; no deep-link surface.",
+    "M2_InsecureDataStorage": "Applicable / clean. ErrorLog writes to context.filesDir/logs/errors.log (internal storage, per-app, not backed up because allowBackup=false). Models stored in context.getExternalFilesDir(null)/{normalizedName}/{commitHash}/{fileName} — accessible via adb shell on debug but no PII, only public community model weights. download_start_time_ms SharedPreferences (DownloadRepository.kt:75-76) stores only System.currentTimeMillis() timestamps keyed by model name — no secrets.",
+    "M3_InsecureCommunication": "Applicable / clean. usesCleartextTraffic=false globally. AllowlistLoader enforces https://huggingface.co/ URL prefix at parse time (AllowlistLoader.kt:61). DownloadWorker uses HttpURLConnection on the allowlist-derived URL; TLS is inherited from the default platform SSLSocketFactory. No custom TrustManager / SSLContext overrides — good. No cleartext fallback path.",
+    "M4_InsufficientInputValidation": "Applicable / clean. AllowlistLoader schema-guards cover every untrusted field derived from the bundled JSON (modelId, modelFile, commitHash, sizeInBytes, URL prefix). ChatViewModel input is plain user-typed string passed to LiteRT-LM; no SQL, no shell-exec, no template interpolation.",
+    "M5_Cryptography": "N/A. Phase 1 uses no cryptographic primitives — no encryption, no signing, no MAC, no key derivation. TLS is platform-provided.",
+    "M6_InsecureAuthorization": "N/A. No auth, no account system, no multi-user model. Single-user on-device app.",
+    "M7_ClientCodeQuality": "Applicable / clean. ErrorLog mutex-serialised, ErrorLog.sanitize strips control whitespace + 500-char truncation (ErrorLog.kt:20,81-82). DefaultModelRegistry uses lifecycleMutex + stale-instance guard (Decision T9). DownloadWorker ZipSlip guard added in Task 3 round 2 (DownloadWorker.kt:243-251) — verified present, uses canonicalPath prefix match on destDir.",
+    "M8_CodeTampering": "Applicable / clean. Only one Class.forName call in worker (DownloadWorker.kt:324) — guarded by require(fqn.startsWith(\"app.sanctum.machina.\")) on line 321. Symmetric call in DownloadRepository.kt:223 lacks the guard — see medium finding #1. No DexClassLoader / PathClassLoader / reflection-based factory patterns. No ProGuard/R8 rules loosened. Debug-build only today.",
+    "M9_ReverseEngineering": "Phase 1 debug-only APK; minifyEnabled=false is the default for debug. No obfuscation expected at this stage. Release signing / R8 out of scope (Phase 5).",
+    "M10_ExtraneousFunctionality": "Applicable / clean. No hidden admin endpoints, no debug commands, no test accounts. The one residue is the /data/local/tmp fallback in LlmChatModelHelper.initialize (see finding #4) — inherited from Gallery, debug-relevant, flagged for Phase 2 removal."
+  },
+  "grepVerifications": {
+    "hf_token_regex": {
+      "pattern": "hf_[A-Za-z0-9]{30,}",
+      "scope": "entire repo (excluding gallery-source)",
+      "hits": 0
+    },
+    "private_key_regex": {
+      "pattern": "BEGIN.*PRIVATE KEY",
+      "scope": "entire repo",
+      "hits": 1,
+      "note": "Single hit is in work/phase-1-foundation/tasks/12.md (this task's own description). Zero hits in any source file, config, or committed artefact."
+    },
+    "hf_token_residuals_core_runtime": {
+      "pattern": "(hfToken|HF_TOKEN|accessToken|bearerToken|refreshToken|huggingface.*token|appauth|net\\.openid)",
+      "scope": "core-runtime/src/main",
+      "hits": 0
+    },
+    "hf_token_residuals_app": {
+      "pattern": "(hfToken|HF_TOKEN|accessToken|bearerToken|refreshToken|huggingface.*token|appauth|net\\.openid)",
+      "scope": "app/src/main",
+      "hits": 0
+    },
+    "authorization_bearer": {
+      "pattern": "(Bearer |Authorization)",
+      "scope": "app/src + core-runtime/src (excluding gallery-source)",
+      "hits": 0,
+      "note": "All repo hits are in work/ documentation, .claude/skills/, or historic logs — never in shipped code."
+    },
+    "firebase_mlkit_aicore": {
+      "pattern": "(firebase|google-services|mlkit-genai|aicore|AICoreModelHelper|Firebase)",
+      "scope": "core-runtime/src/main + app/src/main",
+      "hits": 7,
+      "note": "All 7 hits are AICore enum-type residues in Model.kt and intentional comments ('AICore branch removed') in ModelHelperExt.kt and ModelAllowlist.kt. Zero Firebase references, zero mlkit-genai references, zero AICoreModelHelper references, zero library imports. Documented deferred tech-debt per Task 3 deviations."
+    },
+    "class_forName_call_sites": {
+      "pattern": "Class\\.forName",
+      "scope": "core-runtime/src + app/src",
+      "hits": 2,
+      "locations": [
+        "core-runtime/src/main/kotlin/app/sanctum/machina/core/worker/DownloadWorker.kt:324 — guarded by require(fqn.startsWith(\"app.sanctum.machina.\")) on line 321",
+        "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/DownloadRepository.kt:223 — NOT guarded — see medium finding #1"
+      ]
+    },
+    "webview": {
+      "pattern": "WebView",
+      "scope": "repo (excluding gallery-source)",
+      "hits": 0,
+      "note": "Confirmed no WebView in Phase 1. AC met."
+    },
+    "file_scheme": {
+      "pattern": "file://",
+      "scope": "app/src + core-runtime/src",
+      "hits": 0
+    },
+    "untrusted_deserialization": {
+      "pattern": "(pickle|YAML\\.load|ObjectInputStream|readObject|Serializable)",
+      "scope": "core-runtime/src",
+      "hits": 0,
+      "note": "Only deserialisation is Gson().fromJson on bundled asset (AllowlistLoader.kt:43). No network JSON parsing, no java.io.Serializable, no ObjectInputStream."
+    },
+    "verbose_logging": {
+      "pattern": "Log\\.(i|w|d|v)\\(",
+      "scope": "core-runtime/src/main + app/src/main",
+      "hits": 0,
+      "note": "TAC-5 clean — only Log.e() allowed in production code; spot-checked via grep. 3 Log.e() hits in LlmChatModelHelper.kt / DownloadRepository.kt / DownloadWorker.kt are expected and compliant."
+    },
+    "println": {
+      "pattern": "println\\(",
+      "scope": "app/src/main + core-runtime/src/main",
+      "hits": 0
+    },
+    "http_cleartext": {
+      "pattern": "(http://|cleartext)",
+      "scope": "core-runtime/src/main + app/src/main",
+      "hits": 17,
+      "note": "All 17 hits are either (a) Apache 2.0 license header URLs (Gallery-extracted files), (b) XML namespace declarations in AndroidManifest.xml, or (c) android:usesCleartextTraffic=\"false\" literal in manifest. No runtime cleartext endpoints."
+    }
+  },
+  "priorAuditClosure": {
+    "task3_zipslip": "Closed. DownloadWorker.kt:243-251 canonicalPath prefix guard verified — rejects entries escaping destDir via IOException.",
+    "task3_download_access_token": "Closed. No KEY_MODEL_DOWNLOAD_ACCESS_TOKEN, no Authorization header, no accessToken variable in core-runtime/src.",
+    "task4_path_traversal": "Closed. MODEL_ID_REGEX + MODEL_FILE_REGEX + explicit '..' ban + commitHash hex-only regex.",
+    "task5_errorlog_sanitisation": "Partially closed. Control-whitespace stripping + 500-char truncation in place (ErrorLog.kt:20,81-82). Bearer-token redaction NOT implemented — see low finding #2 (no producer yet, so currently harmless).",
+    "task6_delete_race": "Closed. DefaultModelRegistry.delete() calls cancelDownloadModel before file.delete() (DefaultModelRegistry.kt:129).",
+    "task6_init_leak": "Closed. DefaultModelRegistry.initialize() calls releaseEngine(model) before awaitInitialize to guarantee idempotency (DefaultModelRegistry.kt:165).",
+    "task7_fqn_injection": "Partially addressed. DownloadWorker has the guard (TAC-14). DownloadRepository.sendNotification path (symmetric Class.forName call) does NOT — see medium finding #1."
+  },
+  "attackSurfaceSummary": {
+    "exportedComponents": "1 — MainActivity (android:exported=\"true\" required for LAUNCHER). No intent-filter accepts user data. No ContentProvider. No BroadcastReceiver. No Service except SystemForegroundService (android:exported=\"false\").",
+    "network": "Outbound HTTPS-only to https://huggingface.co/ for model downloads. No inbound sockets. No custom TrustManager.",
+    "fileSystem": "Models: context.getExternalFilesDir(null) (app-private external). Logs: context.filesDir/logs/errors.log (internal, per-app). SharedPreferences: download_start_time_ms (timestamps only).",
+    "ipc": "None in Phase 1. WorkManager uses Android system IPC internally but that is platform-provided.",
+    "nativeCode": "LiteRT-LM native engine loaded via com.google.ai.edge.litertlm:0.10.0 (pinned). libOpenCL.so / libvndksupport.so declared as required=\"false\". No JNI written by project."
+  }
+}

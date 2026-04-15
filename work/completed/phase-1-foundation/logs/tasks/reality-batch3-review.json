@@ -1,0 +1,82 @@
+{
+  "validator": "reality-checker",
+  "batch": [7, 8, 9],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 8,
+      "issue": "Task 8 references R.string keys that do not match the keys defined in Task 7's strings.xml specification. Task 8 uses: status_not_downloaded, status_downloaded, status_error_format, action_download, action_cancel, action_load, progress_bytes_format. Task 7 defines: model_status_not_downloaded, model_status_downloaded, model_status_failed, btn_download, btn_cancel, btn_load, progress_bytes_template. None of the 7 keys match — every string reference in ModelManagerScreen will produce an unresolved R.string.* compile error.",
+      "fix": "Align Task 8 string key names with the keys specified in Task 7 step 6. Replace all occurrences: status_not_downloaded → model_status_not_downloaded, status_downloaded → model_status_downloaded, status_error_format → model_status_failed (with errorMessage appended in code), action_download → btn_download, action_cancel → btn_cancel, action_load → btn_load, progress_bytes_format → progress_bytes_template."
+    },
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 9,
+      "issue": "Task 9 references three R.string keys that do not exist in Task 7's strings.xml specification. Task 9 uses: chat_init_failed_title, back, message_interrupted_suffix. Task 7 defines: chat_load_failed_title, btn_back, chat_message_interrupted_suffix. All three keys are misnamed — every reference in ChatScreen will produce an unresolved R.string.* compile error.",
+      "fix": "Replace: chat_init_failed_title → chat_load_failed_title, back → btn_back, message_interrupted_suffix → chat_message_interrupted_suffix. Update both ChatScreen.kt implementation details and the Context Files note in the task."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 8,
+      "issue": "ModelEntry (per tech-spec Data Models) is defined as data class ModelEntry(val model: Model, val downloadStatus: ModelDownloadStatus, val initStatus: ModelInitStatus) with no top-level name property. Task 8 uses key = { it.name } in items(models, key = { it.name }) which will not compile — ModelEntry has no .name field, only .model.name.",
+      "fix": "Change the key lambda to key = { it.model.name }. Review all other places in ModelCard where model.name is accessed as a direct field and replace with entry.model.name (or use a local val model = entry.model destructuring at the top of ModelCard)."
+    },
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 8,
+      "issue": "Task 8 Details section and status matrix reference model.errorMessage for the FAILED branch (badge-строка status_error_format с model.errorMessage). Per tech-spec Data Models, errorMessage lives in ModelDownloadStatus: data class ModelDownloadStatus(..., errorMessage: String, ...) not directly on Model or ModelEntry. Accessing model.errorMessage will not compile.",
+      "fix": "Change to entry.downloadStatus.errorMessage (or downloadStatus.errorMessage if entry is destructured). Update the FAILED branch accordingly."
+    },
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 8,
+      "issue": "Task 8 step 2 and implementation hints reference string keys model_size_gb_format and unit_gb for displaying model size. Neither key appears in Task 7's explicit list of 20 strings.xml keys. Task 7 step 6 does not include any model_size_gb_format or unit_gb key — these would be unresolved R.string references.",
+      "fix": "Either (a) add model_size_gb_format key to Task 7's strings.xml spec (and update Task 7's 20-key list to 21+), or (b) compute the size string entirely in code without a string resource key (e.g., '%.1f GB'.format(sizeInBytes / 1_073_741_824.0)) which is acceptable since it contains no user-facing Russian text that requires localization."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 init block uses registry.initialize(modelName).fold(onSuccess = {...}, onFailure = { _uiState.value = Failed(it.message ?: it::class.simpleName.orEmpty()) }). The Failed state constructor is data class Failed(val rawCause: String) but the error message used is Throwable.message which may be null and could propagate as the raw JVM exception class name rather than the MediaPipe-cleaned message. The tech-spec and code-research §14 explicitly require cleanUpMediapipeTaskErrorMessage for surfacing readable errors to the user — this function cleans GPU stack trace noise.",
+      "fix": "Wrap the failure message with cleanUpMediapipeTaskErrorMessage: Failed(cleanUpMediapipeTaskErrorMessage(it.message ?: it::class.simpleName.orEmpty())). Import from the copied common/Utils.kt. This aligns with how Gallery surfaces initialize errors (research §4, §14)."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 onCleared() implementation uses GlobalScope.launch { registry.cleanup(modelName) } with a code comment TODO. GlobalScope is an anti-pattern: it creates a non-cancellable coroutine that is not bound to any lifecycle and cannot be tested. The tech-spec mentions @ApplicationScope CoroutineScope as the preferred approach if it exists in DI after Task 6, but Task 6 (CoreRuntimeModule) does not define an @ApplicationScope scope — it only provides DownloadRepository, LlmModelHelper, ModelRegistry, ErrorLog. GlobalScope fallback is therefore the only option, but the task does not acknowledge that @ApplicationScope is not available and does not establish a consistent pattern.",
+      "fix": "Since @ApplicationScope is not wired in CoreRuntimeModule (Task 6), GlobalScope.launch(Dispatchers.IO) is the pragmatic fallback. Update the task text to remove the conditional 'if already exists in DI' phrasing and commit explicitly to GlobalScope.launch(Dispatchers.IO) with a TODO comment. Alternatively, add @ApplicationScope to CoreRuntimeModule in Task 6 (requires dependency update) — but that is out of scope for Task 9."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 9,
+      "issue": "Implementation hints contain a complete algorithm for token accumulation with specific code: 'держи StringBuilder локально в send() через closure, на каждом partial делай sb.append(partial) и копируй в messages через .copy(text = sb.toString()) на последнем элементе. StateFlow update: _messages.update { list -> list.toMutableList().also { it[it.lastIndex] = it.last().copy(text = sb.toString()) } }'. This is a full step-by-step pseudocode implementation, not a pointer to a pattern — crosses the hint→implementation boundary per the checklist.",
+      "fix": "Replace with a pattern reference: 'See Gallery LlmChatViewModel streaming accumulation pattern; key idea is a local accumulator variable that gets appended on each partial callback, with StateFlow update replacing the last message in the list.' Remove the concrete code block."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 7,
+      "issue": "Task 7 step 2 details say: launcher registers as 'private val notificationPermissionLauncher = registerForActivityResult(...)'. This is correct for a property. However, the What to do description (step 2) says 'регистрация ActivityResultContracts.RequestPermission' without specifying it must be a field, while the Details section corrects this. The discrepancy between the top-level step description and the Details note could lead an implementor to declare the launcher as a local variable inside onCreate() and break lifecycle requirements.",
+      "fix": "Add an explicit note in the 'What to do' step 2 that the launcher must be a class-level field (private val), not a local variable inside onCreate(), because ActivityResultContracts must be registered before STARTED lifecycle state."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 details for stop() say: 'достаёт model из registry, вызывает LlmChatModelHelper.stopResponse(model)'. The ModelRegistry interface (per tech-spec §12.1) exposes getInstance(modelName): LlmModelInstance? for ChatViewModel to get the raw LlmModelInstance. But stopResponse takes a Model, not LlmModelInstance. To call LlmChatModelHelper.stopResponse(model) the ViewModel needs access to the underlying Model object, not just the instance. The ModelRegistry interface as specified does not expose a getModel(modelName): Model? method — only getInstance returns LlmModelInstance?.",
+      "fix": "Either (a) add fun getModel(modelName: String): Model? to the ModelRegistry interface so ChatViewModel can retrieve the Model for stopResponse, or (b) add a fun stop(modelName: String) to ModelRegistry that internally calls LlmChatModelHelper.stopResponse, keeping the Model encapsulated in the registry. Option (b) is architecturally cleaner and matches the existing registry delegation pattern."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 38,
+    "issues_found": 10
+  }
+}

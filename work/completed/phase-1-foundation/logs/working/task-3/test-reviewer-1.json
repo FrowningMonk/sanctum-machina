@@ -1,0 +1,30 @@
+{
+  "status": "approved",
+  "summary": "Task 3 is a mechanical port-plus-patch of Gallery core into :core-runtime. The explicit decision to ship zero unit tests here is consistent with user-spec D8 and tech-spec TAC-2 (Phase 1 locks the test surface to exactly one test — AllowlistLoaderTest in Task 4). The specified verification — compileDebugKotlin BUILD SUCCESSFUL plus seven targeted smoke greps — is adequate for what this task actually produces: mechanical deletions, renames, and package moves, not new behavior. No coverage slippage into Task 4 was found: Task 4 scope is narrowly bound to AllowlistLoader parsing, not to verifying Task 3's patched units. Two trivial pure-Kotlin units (cleanUpMediapipeTaskErrorMessage, AllowedModel.toModel / ModelAllowlist simplification) are technically cheap to unit-test but are correctly deferred under D8 scope-lock; noted as optional, not required.",
+  "findings": [
+    {
+      "severity": "nit",
+      "file": "work/phase-1-foundation/tasks/3.md (Verification Steps — Smoke)",
+      "issue": "Smoke greps cover the removal-side invariants (0 hits for firebase/accessToken/Gallery URIs/R.string/Task?/Uri.parse/ACTION_VIEW) and the single positive guard (startsWith(\"app.sanctum.machina.\") == exactly 1 hit), but there is no positive-assertion grep that confirms the T5 replacement actually landed — i.e., that ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) is present in DownloadRepository.kt. A commented-out or accidentally-dropped replacement would still pass the existing greps (AppLifecycleProvider absence is not asserted either). This is low-value because compile would catch an undeclared reference downstream, but a positive grep costs nothing and closes the loop explicitly.",
+      "suggestion": "Add two positive smoke greps to Verification Steps: (1) `grep -rE 'ProcessLifecycleOwner\\.get\\(\\)\\.lifecycle' core-runtime/src/main/kotlin/app/sanctum/machina/core/data/DownloadRepository.kt` → ≥1 hit (T5 replacement landed). (2) `grep -rE 'AppLifecycleProvider' core-runtime/src/` → 0 hits (old interface fully excised, not just unreferenced). Neither requires new code and both strengthen the compile-plus-grep verification envelope."
+    },
+    {
+      "severity": "nit",
+      "file": "work/phase-1-foundation/tasks/3.md (Verification Steps — Smoke)",
+      "issue": "The companion `@Volatile var mainActivityFqn: String? = null` and the `workDataOf(KEY_MAIN_ACTIVITY_FQN to mainActivityFqn)` wiring are asserted only in Acceptance Criteria prose, not by any smoke grep. If either half is forgotten (e.g., companion declared but bundle wiring omitted, or vice versa), the FQN guard grep still returns 1 match because the guard lives in DownloadWorker, not in the call-site. This is the one place in Task 3 where two pieces of code in different files must agree, and neither side is grep-verified.",
+      "suggestion": "Add: `grep -rE 'KEY_MAIN_ACTIVITY_FQN' core-runtime/src/main/kotlin/app/sanctum/machina/core/data/DownloadRepository.kt` → ≥1 hit, AND `grep -rE 'mainActivityFqn' core-runtime/src/main/kotlin/app/sanctum/machina/core/data/DownloadRepository.kt` → ≥1 hit. Confirms both ends of the T6 bundle are wired in the same file."
+    },
+    {
+      "severity": "nit",
+      "file": "work/phase-1-foundation/tasks/3.md (TDD Anchor section)",
+      "issue": "Two tiny pure-Kotlin units ported in this task are trivially unit-testable with zero extra infrastructure (plain JUnit4 is already on the :core-runtime test sourceSet per Task 4): (1) `cleanUpMediapipeTaskErrorMessage` — pure String -> String sanitizer, 7 LoC, testable with 3 assertions (typical MediaPipe error input -> expected cleaned output; empty input -> empty output; no-prefix input -> unchanged). (2) `ModelAllowlist.isLlmModel`-style predicate after the D1 trim (`taskTypes.contains(\"llm_chat\") || taskTypes.isEmpty()`) — a 1-line predicate with exactly three branches. Both would also exercise the simplified `AllowedModel.toModel()` path along the way. Leaving them untested is explicitly in-scope per user-spec D8 (\"в Phase 1 тестом покрывается только AllowlistLoader\") and tech-spec TAC-2 (\"ровно 1 тест пройден\"), so this is not a gate-blocker. Flagged as optional-awareness only: if D8 scope-lock is ever loosened in Phase 2, these two are the cheapest wins and the most regression-prone (both are directly in the UI error path — AC-15 — and the download gating path). No action required for Task 3 approval.",
+      "suggestion": "No change required. If the team wants to record this as explicit Phase 2 test debt rather than leaving it implicit, add a one-line bullet to Post-completion in 3.md or to decisions.md: \"Phase 2 test debt: cleanUpMediapipeTaskErrorMessage and ModelAllowlist LLM-predicate are trivially unit-testable and should be covered when D8 scope-lock lifts.\""
+    },
+    {
+      "severity": "nit",
+      "file": "work/phase-1-foundation/tasks/4.md (scope boundary with Task 3)",
+      "issue": "Checked for coverage-slippage risk from Task 3 into Task 4: none found. Task 4's AllowlistLoaderTest is scoped to parse-from-assets + schema guards (modelId prefix, URL prefix, sizeInBytes range, exactly 2 models, required fields populated, accelerators[0] == 'gpu'). It does NOT attempt to re-verify Task 3's mechanical patches (HF-token removal, Firebase removal, T5/T6 rewiring). This is the correct boundary — those patches are structural/compile-level invariants, not behavioral invariants that a unit test can meaningfully catch. No finding; recording this as an explicit non-issue so future reviewers don't re-litigate it.",
+      "suggestion": "No change required. Boundary is correctly drawn."
+    }
+  ]
+}
