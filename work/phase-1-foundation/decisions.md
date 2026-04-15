@@ -444,7 +444,7 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 ## Task 14: Pre-deploy QA
 
 **Status:** Done — **Phase 1 verdict = PASS** 🟢
-**Commit:** (fix + chore — см. ниже)
+**Commit:** 54ee139 (fix) + 40e5435 (chore)
 **Agent:** main agent
 **Summary:** Финальная приёмка Phase 1 на Honor 200 (Snapdragon 7 Gen 3). Автоматика: `./gradlew build` → BUILD SUCCESSFUL (0 lint errors в обоих модулях), `./gradlew :core-runtime:test` → 8/8 passed (AllowlistLoaderTest). Все **TAC-1…TAC-16 pass (16/16)**. Ручная проверка: clean install (adb uninstall + installDebug + re-download обеих моделей); 13/15 шагов pass, 2 шага skipped (12 — PSS через adb не верифицирован, функциональных проблем нет; 15 — corrupted-model опционален, пользователь отказался портить модель). **AC-14 TTFT**: на промпте «Объясни третий закон ньютона. Отвечай на русском», Gallery median = **44,9 с**, Phase 1 median = **40,1 с**, ratio = **0,893** — Phase 1 быстрее Gallery во всех 3 прогонах, гейт `≤ 1,5` пройден с запасом. Полный отчёт: [logs/qa-report.json](logs/qa-report.json).
 
