@@ -240,20 +240,26 @@ class DownloadWorker(context: Context, params: WorkerParameters) :
               val zipIn = ZipInputStream(BufferedInputStream(FileInputStream(zipFilePath)))
               var zipEntry: ZipEntry? = zipIn.nextEntry
 
+              // Canonicalize the destination prefix for ZipSlip defense.
+              val destCanonicalPrefix = destDir.canonicalPath + File.separator
+
               while (zipEntry != null) {
-                val filePath = destDir.absolutePath + File.separator + zipEntry.name
+                val outFile = File(destDir, zipEntry.name)
+                // ZipSlip guard (CWE-22): reject entries that canonicalize outside destDir.
+                if (!outFile.canonicalPath.startsWith(destCanonicalPrefix)) {
+                  throw IOException("Zip entry escapes destination: ${zipEntry.name}")
+                }
 
                 if (!zipEntry.isDirectory) {
-                  val bos = FileOutputStream(filePath)
-                  bos.use { curBos ->
+                  outFile.parentFile?.mkdirs()
+                  FileOutputStream(outFile).use { curBos ->
                     var len: Int
                     while (zipIn.read(unzipBuffer).also { len = it } > 0) {
                       curBos.write(unzipBuffer, 0, len)
                     }
                   }
                 } else {
-                  val dir = File(filePath)
-                  dir.mkdirs()
+                  outFile.mkdirs()
                 }
 
                 zipIn.closeEntry()

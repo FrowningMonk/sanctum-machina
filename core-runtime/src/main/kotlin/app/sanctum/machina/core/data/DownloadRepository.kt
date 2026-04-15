@@ -49,6 +49,7 @@ private const val MODEL_NAME_TAG = "modelName"
 private const val NOTIFICATION_TITLE_SUCCESS = "Download complete"
 private const val NOTIFICATION_CONTENT_SUCCESS = "\"%s\" downloaded"
 private const val NOTIFICATION_TITLE_FAIL = "Download failed"
+private const val NOTIFICATION_CONTENT_FAIL = "Failed to download \"%s\""
 
 data class AGWorkInfo(val taskId: String, val modelName: String, val workId: String)
 
@@ -192,7 +193,7 @@ class DefaultDownloadRepository(private val context: Context) : DownloadReposito
             } else {
               sendNotification(
                 title = NOTIFICATION_TITLE_FAIL,
-                text = NOTIFICATION_CONTENT_SUCCESS.format(model.name),
+                text = NOTIFICATION_CONTENT_FAIL.format(model.name),
               )
             }
             onStatusUpdated(
