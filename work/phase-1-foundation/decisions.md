@@ -391,3 +391,19 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
   - Системный back → возврат на `ModelManagerScreen`; повторный «Загрузить» снова показывает индикатор и открывает чат без краша. ✅ (step 10)
 - Известные ограничения, не покрытые AC Task 10 (не блокируют Phase 1 → Phase 2 debt):
   - Ответ модели иногда дрейфует в неожиданный язык (в одном прогоне — иврит) и содержит сырой markdown/LaTeX. Причины: нет chat-template Gemma (`<start_of_turn>user ... <end_of_turn>`) и нет system-prompt (user-spec D10 явно исключает polish'ировку UI; markdown-рендер + prompt-templating — Phase 2).
+
+---
+
+## Task 11: Code Audit
+
+**Status:** Done
+**Commit:** (to be filled on completion)
+**Agent:** main agent
+**Summary:** Холистический code-quality аудит всей Phase 1 (app/src/main + core-runtime/src/main + тесты + build-контур) по 7 измерениям из task spec и скиллу code-reviewing. Результат — `status: pass` (0 critical, 0 high, 3 medium, 5 low) в [logs/audit/code-review.json](logs/audit/code-review.json). Module boundary чист (0 запретных импортов в :core-runtime), production-код не использует Log.i/w/d (TAC-5 зелёный), `Model.instance: Any?` живёт только в Gallery-extracted `Model.kt` под approved D6-deviation, single-active-engine сериализован через lifecycleMutex + stale-instance guard, все D1-D12 и T1-T11 реализованы или покрыты User-Spec Deviations. Medium findings (M1 — download-worker FAILED бypasses ErrorLog, M2 — ErrorLog не в CoreRuntimeModule @Provides списке, M3 — `Log.e` вместо ErrorLog в `DefaultDownloadRepository.sendNotification` ClassNotFound-ветке) — functional-quality улучшения, не блокирующие Phase 1 (AC-16 — желательный). Fixer-task оркестратору не требуется (0 critical/high).
+**Deviations:** None.
+
+**Reviews:** none (аудит-таска сама по себе ревью).
+
+**Verification:**
+- `python -c "json.load(...)"` по `logs/audit/code-review.json` → валидная схема, `status=pass`, 8 findings (3 medium / 5 low).
+- Все 7 измерений покрыты findings + явным вердиктом в summary. D1-D12 + T1-T11 — все `implemented` кроме D6 (approved deviation, зафиксирована в tech-spec § User-Spec Deviations).
