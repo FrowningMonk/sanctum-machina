@@ -8,7 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
-import app.sanctum.machina.ui.modelmanager.ModelManagerScreen
+import app.sanctum.machina.ui.SanctumApp
 import app.sanctum.machina.ui.theme.SanctumTheme
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -33,9 +33,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             SanctumTheme {
-                // TODO(Task 10): replace with SanctumApp() NavHost. Temporary direct mount of
-                // ModelManagerScreen so Task 8 can be user-verified before Task 10 wires nav.
-                ModelManagerScreen(onLoad = {})
+                SanctumApp()
             }
         }
     }
