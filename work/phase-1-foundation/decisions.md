@@ -192,3 +192,61 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 - Redaction sensitive data в `cause.message` (HF tokens, filesystem paths). Закрывается в Task 6 когда появятся реальные call-sites с HF-auth failure path.
 - `component` не санитизируется — при расширении whitelist за Phase 1 рассмотреть defence-in-depth (sanitize + length cap) если появятся non-literal вызовы.
 - Broader sanitize regex (`\u2028`, `\u2029`, `\v`, `\f`, `\u0000`) — если появятся log-lines из UTF-8 потоков извне.
+
+---
+
+## Task 6: `DefaultModelRegistry` — lifecycle координатор
+
+**Status:** Done
+**Commit:** a499729 (implementation 19da39a → r1 3da75e6 → r2 a499729 → completion-update next commit)
+**Agent:** main agent
+**Summary:** Реализовал ядро lifecycle-слоя `:core-runtime`: `ModelRegistry` (interface) + `DefaultModelRegistry` (Hilt `@Singleton`) плюс view-типы `ModelEntry` / `ModelInitStatus`. Все четыре lifecycle-операции (`initialize`, `cleanup`, `resetConversation`, `delete`) идут под `lifecycleMutex.withLock` (4 × grep OK) — заменяет антипаттерн Gallery из `Model.initializing` + `cleanUpAfterInit` (user-spec R3, Decision T9). Безусловный GPU→CPU fallback в `initialize()` без парсинга текста ошибки, с `cleanUp`-гардом от partial-engine leak перед CPU retry (Decision T8). Stale-instance guard `currentInstance === model.instance` в release-пути + `stopResponse` перед `cleanUp` от SIGSEGV (research §4). Старт: `refreshAllowlist()` → `scanLocalFiles()` → `resumePartialDownloads()`; каждая ошибка в `runCatching` + `errorLog.e("download", …)`, старт не валится. `download()` — callback→Flow мост через `callbackFlow`, каждое событие синхронно зеркалится в `_models: StateFlow<List<ModelEntry>>`. DI: `CoreRuntimeModule` теперь `@Provides` `DownloadRepository`, `LlmModelHelper` (object `LlmChatModelHelper`), `ModelRegistry`; `AllowlistLoader` и `ErrorLog` — auto-binding через `@Inject constructor`.
+
+**Deviations:**
+- **`AllowedModel.toModel()` теперь требует `preProcess()` после загрузки.** Task 4 выдаёт `Model` с пустым `configValues: mapOf()`. Чтобы Decision T8 смог читать/мутировать ключ `ConfigKeys.ACCELERATOR.label`, в `refreshAllowlist` добавлен `loaded.forEach { it.preProcess() }` — вне буквальной формулировки спека, но без этого GPU→CPU fallback не умеет найти исходное значение `"GPU"` для модификации. Семантика идентична Gallery, где `preProcess` вызывается при первой инициализации list-а моделей.
+- **`initialize()` стал идемпотентным по SM2:** на входе вызывается `releaseEngine(model)` (после flip `initStatus = Initializing`). Если кто-то позовёт `initialize` на уже `Ready` модели — предыдущий native-engine корректно освобождается до выделения нового, избегая native-leak / use-after-free. В задаче spec edge-case требовал только KDoc-документацию про «caller должен cleanup first»; я добавил и KDoc-контракт, и защиту в реализации (по security-auditor-1 SM2).
+- **`delete()` вызывает `cancelDownloadModel` первым** — перед release и `file.delete()`. Не было в spec steps, но закрывает race «delete во время активного download» (worker мог бы воссоздать файл сразу после delete). Исправлено по security-auditor-1 SM1. Остаточный async-cancel race на `.tmp` bytes (WorkManager `cancelAllWorkByTag` fire-and-forget) вынесен в Phase 2 debt.
+- **`resumePartialDownloads` теперь маршрутизирует через публичный `download().launchIn(scope)`**, а не через direct `downloadRepository.downloadModel(...)` с inline-callback. Spec формально разрешал direct-вызов, но это приводило к тому, что поздние подписчики `download(model)` не видели прогресс resumed-загрузок (code-reviewer-1 CR-M3). Теперь contract симметричный.
+- **`LOG_TAG_CLEANUP` объявлен, но не используется** — `LlmChatModelHelper.cleanUp` глушит свои исключения внутри; внешнего failure-пути пока нет. Константа оставлена с KDoc о Phase-2 debt вместо удаления: сохраняет readability D11 whitelist в модуле (code-reviewer-1 minor).
+- **Stale-instance guard `currentInstance === model.instance` под текущей Mutex-схемой структурно мёртв** (никто не может поменять `model.instance` между capture и check). Оставлен по task spec + для защиты от будущего рефактора, который вынесет release-путь из-под Mutex. Задокументировано в комментарии (code-reviewer-1 CR-M1).
+- **`awaitClose { }` в `download()` callbackFlow пустой** — не отменяет WorkManager и не убирает LiveData-observer. Это тянется из Task 3 (inherited Gallery bug про `observeForever`). Cross-ref в KDoc, Phase-2 debt (code-reviewer-1 CR-M2).
+- **AllowlistLoader-level валидация `version` и `description` полей не добавлена** — SM3 из security-auditor-1 вне scope Task 6 (это surface Task 4). Вынесено в Phase-2 debt list.
+- **`resumePartialDownloads` не имеет backoff/failure-counter** — при корраптном `.gallerytmp` каждый старт будет re-enqueue'ить ту же упавшую загрузку (SM4). Phase-2 resilience debt.
+- **Тестовый долг Phase 2** (test-reviewer-1 minor enumeration): `initialize_retriesOnCpu_whenGpuFails`, `cleanup_isNoOp_whenInstanceNull`, `cleanup_abortsClose_whenInstanceSwapped`, `parallelInitializeCleanup_serialisedByMutex`, `resumePartialDownloads_reenqueuesGallertemp`, `download_callbackFlow_mirrorsStatusIntoStateFlow`. Testability posture: все коллабораторы (`LlmModelHelper`, `DownloadRepository`, `AllowlistLoader`, `ErrorLog`) — interface-injected через Hilt-ctor; JUnit5+MockK добавим без рефактора source.
+- **Tech-spec не имеет per-task checkbox list** (только TAC-секции) — шаг «- [ ] Task 6 → - [x] Task 6» workflow'а — no-op, как и для Tasks 1-5.
+
+**Reviews:**
+
+*Round 1 (commit 19da39a):*
+- code-reviewer: approved_with_suggestions (0 critical, 3 major, 5 minor, 2 nit — стейл-гвард structurally dead, awaitClose leak, resume bypasses callbackFlow) → [logs/working/task-6/code-reviewer-1.json](logs/working/task-6/code-reviewer-1.json)
+- security-auditor: approved_with_suggestions (0 critical, 0 major, 4 minor — SM1 delete-race, SM2 init-leak, SM3 version-regex, SM4 resume-backoff; 2 nit) → [logs/working/task-6/security-auditor-1.json](logs/working/task-6/security-auditor-1.json)
+- test-reviewer: passed (2 minor: Phase-2 test-debt enumeration, `stopResponse`-before-`cleanUp` grep anchor; 1 nit) → [logs/working/task-6/test-reviewer-1.json](logs/working/task-6/test-reviewer-1.json)
+
+*Round 2 (commit 3da75e6 — SM1, SM2, CR-M3, CR-refreshAllowlist-race, CR-M1/M2/LOG_TAG_CLEANUP docs):*
+- code-reviewer: approved (2 non-blocking minors — async cancel race on .tmp bytes, brief Ready-over-null-instance window) → [logs/working/task-6/code-reviewer-2.json](logs/working/task-6/code-reviewer-2.json)
+- security-auditor: approved (0 findings — SM1/SM2 verified fixed, GPU-failed cleanUp path confirmed not-redundant) → [logs/working/task-6/security-auditor-2.json](logs/working/task-6/security-auditor-2.json)
+
+*Round 3 (commit a499729 — code-reviewer-2 R2-Min-2 state-visibility fix):*
+- Flip `initStatus = Initializing` ДО `releaseEngine(model)` — StateFlow больше не показывает `Ready` поверх null-instance в течение microsecond-окна idempotent-release.
+
+**Verification:**
+- `./gradlew :core-runtime:compileDebugKotlin` → `BUILD SUCCESSFUL in 1s` (warnings only — `-Xcontext-receivers` deprecation + annotation-target default — tech-debt из Task 2).
+- `grep -c "lifecycleMutex.withLock" core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt` → **4** (initialize, cleanup, resetConversation, delete).
+- `grep -c "currentInstance === model.instance" core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt` → **1** (stale-instance guard literal).
+- `grep -c "KEY_MAIN_ACTIVITY_FQN" core-runtime/src/main/kotlin/app/sanctum/machina/core/data/DownloadRepository.kt` → **1** (T6 плумбинг жив).
+- `grep -rE "androidx\.(compose|activity)\." core-runtime/src/main/kotlin/` → 0 совпадений (граница модуля целая).
+- `grep -rn '"inference-run"' core-runtime/src/main/kotlin/` → 0; `grep -rn '"allowlist"' core-runtime/src/main/kotlin/` → 0 (D11 whitelist соблюдён).
+- `grep -c "callbackFlow" core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt` → **2** (download() + refactored awaitInitialize path).
+- Unit-тестов не добавлено — user-spec D8 + task 6 TDD Anchor (Phase-1 substitute — smoke greps + reviews; Phase-2 test debt перечислен выше).
+- Поведенческие AC (повторный `initialize` после `cleanup`, параллельные `initialize(A)`+`cleanup(A)`, двойной `cleanup`) — review-target, подтверждены code-reviewer-2 evidence-секцией и Task 10 full-scenario smoke.
+
+**Pending user action (Phase 2 tech-debt):**
+- Native `conversation.close()` / `engine.close()` failure-surface в `ErrorLog` через `LOG_TAG_CLEANUP` когда `LlmChatModelHelper.cleanUp` получит throwing-path.
+- Async cancel race в `delete()`: `await cancelAllWorkByTag(...).result.get()` на worker-dispatcher перед `file.delete()` для симметричной семантики (code-reviewer-2 R2-Min-1).
+- Allowlist `version` / `description` regex (SM3): `^[A-Za-z0-9._-]+$` + `..`-ban в `AllowlistLoader.parse()`.
+- `resumePartialDownloads` backoff/failure-counter (SM4): SharedPreferences-counter после K упавших попыток + stale-tmp TTL.
+- URL-redaction в `errorLog` (SA nit): `sanitizeForLog(err)` маскирующий `Bearer`/`access_token=` паттерны — на случай Phase-2 gated HF repos.
+- `callbackFlow` awaitClose: завершить LiveData-observer cleanup в `DownloadRepository.observerWorkerProgress` (inherited Gallery bug, Task 3 debt); опционально awaitClose { cancelDownloadModel(model) } после решения по «UI-nav cancels download» UX-политике.
+- `resetConversation` silent no-op при non-Ready — вернуть `Result<Unit>` или `throw IllegalStateException` после Task 9 clarifications.
+- `awaitInitialize` `invokeOnCancellation` сейчас идёт в `LlmChatModelHelper.cleanUp` напрямую, минуя `releaseEngine` — защитить через `releaseEngine` или AtomicBoolean already-resumed guard (SA nit).
+- Phase-2 JUnit5+MockK добавить тесты из test-debt списка выше.
