@@ -316,3 +316,31 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
   - «Отмена» в середине загрузки → возврат к «Не скачано» + «Скачать»; `.gallerytmp` остаётся в `/storage/emulated/0/Android/data/app.sanctum.machina/files/...` (пользователь проверил в файл-менеджере). ✅ (user-spec step 6)
   - Дождаться SUCCEEDED → карточка переходит в «Скачано» + появляется «Загрузить». Нажатие «Загрузить» эмитит `NavEvent.OpenChat` в SharedFlow; текущий `onLoad = {}` игнорирует событие — навигация будет подключена Task 10. ✅ (user-spec step 4 часть 2)
   - Повторный запуск приложения (cold start) → карточка сразу в корректном состоянии SUCCEEDED / NOT_DOWNLOADED на основе `DefaultModelRegistry.scanLocalFiles()` (без «мигания»). ✅
+
+---
+
+## Task 9: ChatScreen + ChatViewModel (streaming, TTFT, reset, stop, init-error UI)
+
+**Status:** Done
+**Commit:** a15e27c
+**Agent:** main agent
+**Summary:** Реализован чат-экран над `ModelRegistry` в трёх файлах под `app/src/main/kotlin/app/sanctum/machina/ui/chat/` (`Message.kt`, `ChatViewModel.kt`, `ChatScreen.kt`). ViewModel читает `modelName` из `SavedStateHandle`, в `init` запускает `registry.initialize(...)` и переводит UI в `Ready` / `Failed`; `send` вызывает `helper.runInference` с именованными параметрами (9 аргументов), accumulate токенов через `StringBuilder`, на `done=true` строит TTFT-footer через `context.getString(R.string.ttft_footer_format, …)`; `stop` зовёт `helper.stopResponse(model)` напрямую (Decision T10) + помечает последнее assistant-сообщение `interrupted=true`; `reset` делает `registry.resetConversation(modelName)` + очищает список (engine не пересоздаётся, AC-10); `onCleared` освобождает native-память через `CoroutineScope(SupervisorJob() + Dispatchers.IO)` вне `viewModelScope`. UI: Loading / Failed (`Icon + monospace raw-cause + btn_back`, без Retry — AC-15) / Ready (`TopAppBar` с именем модели + Refresh, `LazyColumn` с автоскроллом, `ChatInputRow` с Send↔Stop). Все строки из `res/values/strings.xml` — без hardcoded литералов.
+**Deviations:**
+- Инжектится `LlmModelHelper` (interface), а не object `LlmChatModelHelper` — через DI-биндинг из `CoreRuntimeModule.provideLlmModelHelper()`. API-сигнатуры идентичны; интерфейс предпочтительнее для тестируемости.
+- Кнопка Refresh в TopAppBar дизейблится при `isGenerating=true` (учтена Edge case из task §Details «Reset во время стрима»).
+- `onCleared()` делает fire-and-forget cleanup через локальный `SupervisorJob`-scope строго как указано в task spec. Security-auditor рекомендовал вынести в application-scoped component — отклонено: вне скоупа Task 9, требует новой DI-абстракции.
+- **User-verification deferred to Task 10**: шаги из §Verification Steps → User (Load → ChatScreen → send/stop/reset/corrupt-file) физически не прогоняются до подключения NavHost с маршрутом `chat/{modelName}`. Task 10 покрывает ровно те же user-spec шаги 7–11 и 15 (AC-8, AC-10, AC-11, AC-15) — верификация Task 9 будет засчитана в рамках прогона Task 10.
+
+**Reviews:**
+
+*Round 1 (commit 19f0d56):*
+- code-reviewer: 7 findings (0 critical/high, 2 medium, 3 low, 2 info) → [logs/working/task-9/code-reviewer-1.json](logs/working/task-9/code-reviewer-1.json)
+- security-auditor: OK (0 critical/major, 6 minor — offline-only threat model) → [logs/working/task-9/security-auditor-1.json](logs/working/task-9/security-auditor-1.json)
+- test-reviewer: OK (отсутствие unit-тестов обосновано user-spec D8 + TAC-2; 4 minor-рекомендации для Phase 2) → [logs/working/task-9/test-reviewer-1.json](logs/working/task-9/test-reviewer-1.json)
+
+*Round 2 (after fixes, commit a15e27c):*
+- Применены только spec-совместимые фиксы без нового прогона ревью: M1 (не-анимированный автоскролл во время стрима) + L2 (guard от поздних emissions после `stop()`). Остальные findings либо противоречат task spec (context.getString для TTFT-footer; `error()` для missing nav-arg; фиксированный `CoroutineScope(SupervisorJob())` в `onCleared`), либо относятся к Phase 2 debt (unit-тесты, unbounded messages, application-scoped cleanup).
+
+**Verification:**
+- `./gradlew :app:compileDebugKotlin` → `BUILD SUCCESSFUL` (только pre-existing warnings: `-Xcontext-receivers` + `hiltViewModel()` deprecation — shared tech-debt, не затрагивает функциональность).
+- User-verification на Honor 200 → **отложено в Task 10** (см. Deviations). Task 10 выполнит все шаги user-spec § «Пользователь проверяет» 7–11 и 15; там же будет зафиксирован результат для Task 9.
