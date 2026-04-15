@@ -407,3 +407,34 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 **Verification:**
 - `python -c "json.load(...)"` по `logs/audit/code-review.json` → валидная схема, `status=pass`, 8 findings (3 medium / 5 low).
 - Все 7 измерений покрыты findings + явным вердиктом в summary. D1-D12 + T1-T11 — все `implemented` кроме D6 (approved deviation, зафиксирована в tech-spec § User-Spec Deviations).
+
+---
+
+## Task 12: Security Audit
+
+**Status:** Done
+**Commit:** (to be filled on completion)
+**Agent:** security-auditor subagent (parallel)
+**Summary:** Полный OWASP Mobile Top 10 аудит всей Phase 1 (манифест + `:app` + `:core-runtime` + build-контур + bundled allowlist + .gitignore). Результат — `verdict: pass-with-findings` (0 critical, 0 high, 1 medium, 4 low, 2 info) в [logs/audit/security-review.json](logs/audit/security-review.json). Все 5 TAC-проверок зелёные: TAC-4 (no Firebase/mlkit-genai/AICore imports), TAC-12 (allowBackup/fullBackupContent/usesCleartextTraffic = false), TAC-13 (0 HF-token residuals в `:core-runtime` и `:app`), TAC-14 (package-prefix guard в `DownloadWorker`), TAC-15 (https + litert-community prefix + bounded size в `AllowlistLoader`). Grep'ы на hardcoded secrets: `hf_[A-Za-z0-9]{30,}` → 0, `BEGIN...PRIVATE KEY` → 0 в исходном коде. Единственный medium — асимметричный `Class.forName` guard: `DownloadWorker.kt:321` защищён `startsWith("app.sanctum.machina.")`, `DefaultDownloadRepository.kt:223` — нет (defense-in-depth; `mainActivityFqn` ставится только из trusted `:app`-кода). Critical/high отсутствуют → Task 14 (Pre-deploy QA) не блокируется, эскалация пользователю не требуется.
+**Deviations:** None.
+
+**Reviews:** none (аудит-таска сама по себе ревью).
+
+**Verification:**
+- `python -c "json.load(...)"` по `logs/audit/security-review.json` → валидная схема, `verdict=pass-with-findings`, `tacVerification` все `true`, 7 findings (1 medium / 4 low / 2 info).
+- TAC-13 подтверждён grep'ом: `(hfToken|HF_TOKEN|Authorization|Bearer|accessToken|appauth|oauth)` → 0 hits в `:core-runtime/src/` и `:app/src/`.
+
+---
+
+## Task 13: Test Audit
+
+**Status:** Done
+**Commit:** (to be filled on completion)
+**Agent:** test-reviewer subagent (parallel)
+**Summary:** Аудит test-качества Phase 1 по user-spec D8 (scope-lock: ровно 1 test-класс на всю фазу). Результат — `verdict: pass` (0 high, 0 medium, 0 low, 3 info) в [logs/audit/test-review.json](logs/audit/test-review.json). Scope-lock соблюдён: Glob по `**/*Test.kt|**/*Tests.kt|**/*Spec.kt` в `core-runtime/src/test/`, `core-runtime/src/androidTest/`, `app/src/test/`, `app/src/androidTest/` → ровно 1 класс (`AllowlistLoaderTest` с 8 методами; расширение с 1 до 8 методов согласовано в раундах Task 4, scope-lock — про классы, не методы). Fixture побайтно совпадает с prod-ассетом (сам тест `fixtureMatchesProductionAsset` делает `readBytes().toList()` equality check). TAC-15 schema-guard покрыт 4 негативными сценариями (bad modelId prefix, path traversal, malformed commitHash, oversized). Decision T8 invariant (`accelerators[0] == "gpu"`) явно ассертится. Test и prod идут через общий `AllowlistLoader.parse(InputStream)` companion-метод. Phase 2 testing-debt (Mutex T9, GPU→CPU T8, ErrorLog rotation T11/TAC-9, DownloadWorker renameTo R4) документирован в tech-spec + decisions.md + tasks/6.md. Info findings — стилистические (Scenario 3 формально не закрыт, но покрыт через empty-list guard; testing-debt разбросан по 4 местам — можно консолидировать в Phase 2 backlog).
+**Deviations:** None.
+
+**Reviews:** none (аудит-таска сама по себе ревью).
+
+**Verification:**
+- `python -c "json.load(...)"` по `logs/audit/test-review.json` → валидная схема, `verdict=pass`, `metrics.test_files_found=1`, `fixture_matches_prod=true`, `tac15_covered=true`, `t8_invariant_covered=true`, `phase2_debt_documented=true`.
