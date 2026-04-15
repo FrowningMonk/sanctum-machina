@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.launch
 
 sealed interface NavEvent {
@@ -27,7 +28,11 @@ constructor(private val registry: ModelRegistry) : ViewModel() {
     val navEvents: SharedFlow<NavEvent> = _navEvents.asSharedFlow()
 
     fun onDownload(entry: ModelEntry) {
-        registry.download(entry.model)
+        // registry.download() is a cold callbackFlow — without a terminal subscriber the
+        // WorkManager enqueue inside the producer never runs. Subscribe in viewModelScope.
+        // Status updates reach the UI via registry.models StateFlow; we only need to keep
+        // the flow alive for the duration of the download.
+        registry.download(entry.model).launchIn(viewModelScope)
     }
 
     fun onCancel(modelName: String) {

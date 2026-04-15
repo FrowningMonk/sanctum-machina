@@ -3,11 +3,8 @@ package app.sanctum.machina.ui.modelmanager
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -118,7 +115,7 @@ private fun ModelCard(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            ModelStatusRow(
+            ModelStatusSection(
                 downloadStatus = entry.downloadStatus,
                 onDownload = onDownload,
                 onCancel = onCancel,
@@ -129,7 +126,7 @@ private fun ModelCard(
 }
 
 @Composable
-private fun ModelStatusRow(
+private fun ModelStatusSection(
     downloadStatus: ModelDownloadStatus,
     onDownload: () -> Unit,
     onCancel: () -> Unit,
@@ -139,7 +136,6 @@ private fun ModelStatusRow(
         ModelDownloadStatusType.NOT_DOWNLOADED,
         ModelDownloadStatusType.PARTIALLY_DOWNLOADED -> {
             StatusBadge(text = stringResource(R.string.model_status_not_downloaded))
-            Spacer(Modifier.height(4.dp))
             Button(onClick = onDownload) {
                 Text(stringResource(R.string.btn_download))
             }
@@ -150,8 +146,7 @@ private fun ModelStatusRow(
             if (downloadStatus.totalBytes > 0L) {
                 LinearProgressIndicator(
                     progress = {
-                        (downloadStatus.receivedBytes.toFloat() /
-                            downloadStatus.totalBytes.coerceAtLeast(1))
+                        (downloadStatus.receivedBytes.toFloat() / downloadStatus.totalBytes)
                             .coerceIn(0f, 1f)
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -174,7 +169,7 @@ private fun ModelStatusRow(
         }
         ModelDownloadStatusType.SUCCEEDED -> {
             StatusBadge(text = stringResource(R.string.model_status_downloaded))
-            Button(onClick = onLoad, enabled = true) {
+            Button(onClick = onLoad) {
                 Text(stringResource(R.string.btn_load))
             }
         }
@@ -202,11 +197,9 @@ private fun StatusBadge(
     text: String,
     color: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.onSurfaceVariant,
 ) {
-    Row {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelMedium,
-            color = color,
-        )
-    }
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelMedium,
+        color = color,
+    )
 }
