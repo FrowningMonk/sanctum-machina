@@ -1,0 +1,77 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "Task 4 implementation is correct, idiomatic, and aligns with the task spec, tech-spec (TAC-15), Decision T7 (bundled asset, no runtime fetch) and Decision T8 (GPU-first guard). The AllowlistLoader is a clean Hilt singleton with a testable internal parse helper; the schema-guard covers all four TAC-15 checks; the JSON asset and fixture are byte-identical and match `gallery-source/model_allowlists/1_0_11.json`. The re-introduction of `AllowedModelConfig` in `ModelAllowlist.kt` does not conflict with task-3 decisions.md — task 3 dropped it as out-of-scope, task 4 explicitly needs it to honor user-spec defaultConfig. Two non-blocking concerns: an unbound `Gson` dependency in the `@Inject` constructor that will fail Hilt graph resolution as soon as a consumer is wired, and a tautological URL prefix check that matches TAC-15 in letter but not in spirit.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/AllowlistLoader.kt",
+      "line": 23,
+      "severity": "major",
+      "category": "best-practices",
+      "suggestion": "`@Inject constructor(@ApplicationContext private val context: Context, private val gson: Gson = Gson())` mixes `@Inject` with a Kotlin default value for `gson`. Hilt does not honor Kotlin default arguments — it generates a Provider that calls the full-arity constructor and therefore requires a `Gson` binding in the DI graph. Right now the graph is incomplete (no `@HiltAndroidApp` in `:app`, nobody injects `AllowlistLoader`), so it compiles. The moment Task 6 wires `ModelRegistry` to inject `AllowlistLoader` the build will fail with `[Dagger/MissingBinding] Gson cannot be provided without an @Inject constructor or an @Provides-annotated method`. Two clean fixes: (a) drop the `gson` ctor parameter and instantiate `Gson()` inside `parse` directly — production never needs a custom Gson, and the test already passes its own; or (b) add `@Provides @Singleton fun provideGson(): Gson = Gson()` to `CoreRuntimeModule` (this also un-blocks future consumers and matches patterns.md's 'Hilt module organization: one module per concern').",
+      "benefit": "Prevents a deferred build break when Wave 2 wires consumers; clarifies whether Gson is a shared resource or a parse-local helper.",
+      "optional": false
+    },
+    {
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/AllowlistLoader.kt",
+      "line": 53,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "The download-URL guard `require(url.startsWith(URL_PREFIX))` is tautological: `url` is built two lines above as `\"$URL_PREFIX${m.modelId}/...\"` from a hard-coded constant, so the check can never fail. TAC-15 wants this guard to defend against a future where URL construction is refactored or moved. Either (a) call `AllowedModel.toModel().url` (the production code path) and validate that string — this catches drift if `toModel()` ever switches to a different host or scheme; or (b) leave a comment that this is intentional defense-in-depth in case the URL builder is moved upstream. As written today the line is dead defensive code.",
+      "benefit": "Makes the guard meaningful instead of trivially true; aligns with TAC-15 intent (catch URL drift, not assert a literal constant).",
+      "optional": true
+    },
+    {
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/AllowlistLoader.kt",
+      "line": 39,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "`internal fun parse(...)` returns `Result<List<AllowedModel>>` but the public `load()` expects `Result<List<Model>>` and applies `AllowedModel::toModel` after the fact (line 29). The mapping happens outside the runCatching wrapper of parse(), so if `toModel()` ever throws (e.g., URL building hits a malformed input — see code-research notes about unencoded URL interpolation flagged in task-3 decisions), the exception escapes `load()` instead of being captured as `Result.failure`. Move the `.map(AllowedModel::toModel)` inside `parse` (or wrap line 29 in another `runCatching`) so all conversion failures are uniformly captured. Today `toModel()` is pure string concat so this is theoretical, but the contract `suspend fun load(): Result<List<Model>>` promises no leaked exceptions.",
+      "benefit": "Hardens the Result-failure contract end-to-end; removes a latent path where the documented `Result.failure` wrapping is bypassed.",
+      "optional": true
+    },
+    {
+      "file": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/AllowlistLoaderTest.kt",
+      "line": 17,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "The test asserts on `AllowedModel` (raw parsed type) instead of the mapped `Model` returned by production `load()`. The acceptance criterion 'два ассершен-блока' is satisfied, and asserting on `defaultConfig.accelerators` requires the raw type, so this is correct as far as Decision T8 is concerned. However it leaves the `AllowedModel.toModel()` mapping completely uncovered by the only Phase 1 unit test — and that mapper now contains non-trivial logic (parseAccelerators, defaultConfig fallbacks, URL composition). Consider adding a third assertion block that calls `AllowedModel::toModel` on each parsed entry and verifies `model.url.startsWith(\"https://huggingface.co/\")`, `model.accelerators.first() == Accelerator.GPU`, `model.llmMaxToken == 4000`. This is the natural place for it because Decision T8 is fundamentally about what reaches the runtime, not what sits in the JSON.",
+      "benefit": "Closes the gap between fixture and the consumer-facing `Model` type; makes the T8 guard guard the actual runtime path.",
+      "optional": true
+    },
+    {
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/AllowlistLoader.kt",
+      "line": 43,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "`@Suppress(\"SENSELESS_COMPARISON\")` followed by `allowlist.models ?: error(...)` works around Gson's ability to deserialize a missing `models` field into `null` despite the non-nullable Kotlin type. The suppression is correct but the intent is opaque to a reader. Either (a) make `ModelAllowlist.models` nullable in `ModelAllowlist.kt` (`val models: List<AllowedModel>? = null`) and drop the suppression — this is the honest type given Gson's runtime behavior; or (b) keep the suppression but add a one-line comment explaining 'Gson can populate non-null Kotlin fields with null when the JSON key is absent'. Today the `@Suppress` reads as a fight with the compiler instead of documented defensive coding.",
+      "benefit": "Removes warning-suppression code smell; makes the Gson-vs-Kotlin-nullability mismatch explicit.",
+      "optional": true
+    },
+    {
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/ModelAllowlist.kt",
+      "line": 46,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "Inherited Gallery bug noted in task-3 decisions.md still present: `\"https://huggingface.co/$modelId/resolve/$commitHash/$modelFile?download=true\"` does no URL-encoding of `modelId`, `commitHash`, or `modelFile`. For the current allowlist values these are URL-safe, but TAC-15's schema-guard is specifically there to catch drift. Out of Task 4 scope (decisions.md flags this as Phase 2 tech-debt for Wave 3) — flagging only because Task 4 added `parseAccelerators` etc. into the same file, so the temptation to address neighbouring issues is real. Leave as-is and let the Phase 2 tech-debt sweep handle it.",
+      "benefit": "Visibility — confirms reviewer noticed the inherited bug without scope creep.",
+      "optional": true
+    },
+    {
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/AllowlistLoader.kt",
+      "line": 27,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "The two-step `runCatching { context.assets.open(...) }.fold(...)` plus a nested `stream.use { parse(...) }` is harder to read than necessary. A flat version: `runCatching { context.assets.open(ASSET_NAME).use { parse(it, gson).getOrThrow() }.map(AllowedModel::toModel) }`. Same semantics (assets.open failure becomes Result.failure, parse failure becomes Result.failure, mapping is captured), six lines shorter, no fold/map ladder. Optional — current code works; this is purely about eyeballing.",
+      "benefit": "Reduces nesting and indirection; one expression instead of nested fold + use + map.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 7,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 1,
+    "minorIssuesCount": 6,
+    "testCoverageAssessment": "adequate"
+  }
+}

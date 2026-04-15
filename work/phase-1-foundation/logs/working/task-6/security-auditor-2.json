@@ -1,0 +1,36 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 0,
+    "critical": 0,
+    "major": 0,
+    "minor": 0
+  },
+  "findings": [],
+  "verification": {
+    "round": 2,
+    "commit": "3da75e6 fix: address review round 1 for task 6",
+    "scope": "DefaultModelRegistry.kt — verify round-1 SM1 and SM2 fixes",
+    "checks": [
+      {
+        "id": "SA-Min-SM1",
+        "title": "delete() must cancel in-flight download before removing file",
+        "status": "verified-fixed",
+        "evidence": "DefaultModelRegistry.kt:123-145. `downloadRepository.cancelDownloadModel(entry.model)` is the first action inside `lifecycleMutex.withLock`, before `releaseEngine` and before `file.delete()`. The same `entry.model` reference is reused for file-path derivation, so there is no model-mismatch risk. Ordering is correct: cancel → releaseEngine (if not Idle) → file.delete → clear entry state. A late write from a mid-cancel worker cannot resurrect the deleted final-path file because the worker writes to the `.part` tmp file; the cancel call reaches the WorkManager before the Java-level `file.delete()`. Worst case is a harmless write to a deleted tmp path. No new race introduced."
+      },
+      {
+        "id": "SA-Min-SM2",
+        "title": "initialize() must be idempotent — release prior engine before re-initializing",
+        "status": "verified-fixed",
+        "evidence": "DefaultModelRegistry.kt:147-182. `releaseEngine(model)` is invoked at the top of the critical section, before `awaitInitialize`. `releaseEngine` itself (lines 215-234) guards on `model.instance == null` and returns early, making the call a safe no-op in the Idle state and in the Failed-without-instance case. For a Failed-with-partial-instance or already-Ready model, the guard proceeds to `stopResponse` + `cleanUp`, preventing a native leak on re-initialize. The stale-instance guard (`currentInstance === model.instance`) is trivially true under the mutex, so behaviour is deterministic."
+      },
+      {
+        "id": "GPU-failed-branch-redundancy",
+        "title": "Is the explicit cleanUp on GPU-failure path now redundant?",
+        "status": "not-redundant",
+        "evidence": "DefaultModelRegistry.kt:169. The top-of-function `releaseEngine(model)` cleans up the caller's PRIOR native instance (if any). The GPU-failure `cleanUp` at line 169 cleans up the JUST-FAILED PARTIAL allocation produced by the first `awaitInitialize(model)` call. These are two distinct native allocations at different points in the function; removing the second would leak any partial GPU native state before the CPU retry. The direct `llmModelHelper.cleanUp` call (instead of `releaseEngine`) skips the `stopResponse` step, which is acceptable here because a just-failed-to-initialize engine has no in-flight inference. No security impact."
+      }
+    ],
+    "phase1_context": "Offline-first, bundled allowlist, no network auth, no user input at registry. SM3 (allowlist version unvalidated) and SM4 (resume-retries no backoff) remain out-of-scope Phase-2 debt as agreed. awaitInitialize invokeOnCancellation bypassing releaseEngine and URL redaction in ErrorLog remain low-risk Phase-2 debt."
+  }
+}

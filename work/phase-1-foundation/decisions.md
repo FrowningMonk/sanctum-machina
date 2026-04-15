@@ -250,3 +250,34 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 - `resetConversation` silent no-op при non-Ready — вернуть `Result<Unit>` или `throw IllegalStateException` после Task 9 clarifications.
 - `awaitInitialize` `invokeOnCancellation` сейчас идёт в `LlmChatModelHelper.cleanUp` напрямую, минуя `releaseEngine` — защитить через `releaseEngine` или AtomicBoolean already-resumed guard (SA nit).
 - Phase-2 JUnit5+MockK добавить тесты из test-debt списка выше.
+
+---
+
+## Task 7: `:app` bootstrap — SanctumApplication, AndroidManifest, MainActivity-stub, Theme, strings.xml
+
+**Status:** Done
+**Commit:** 77e1c27 (impl), 73a031a (review round 1 fix)
+**Agent:** main agent
+**Summary:** Поднят каркас `:app`: `SanctumApplication` с `@HiltAndroidApp` устанавливает `DefaultDownloadRepository.mainActivityFqn` в `onCreate()` (TAC-14), `MainActivity` (`@AndroidEntryPoint ComponentActivity`) делает runtime-запрос `POST_NOTIFICATIONS` на SDK 33+ и показывает Compose-stub в `SanctumTheme` (Material 3 с dynamic colors на S+), `AndroidManifest.xml` содержит все 6 permissions + uses-native-library для OpenCL/vndksupport + hardening-атрибуты (TAC-7/8/12) + `SystemForegroundService` с `tools:node="merge"`, `strings.xml` содержит **ровно 22 канонических ключа** Phase 1 как контракт для Task 8/9.
+**Deviations:** Manifest-theme parent — `Theme.Material3.DayNight.NoActionBar` (по букве task-hint). Потребовал добавить `com.google.android.material:material:1.12.0` в `:app` deps, поскольку Compose-Material3 библиотека предоставляет только Kotlin API, но не XML-ресурсы стилей; DayNight-вариант необходим по ux-guidelines («Dark-first»). Альтернативы (`android:Theme.Material.Light.NoActionBar`, `android:Theme.DeviceDefault.DayNight.NoActionBar`) отклонены: первая Light-only, вторая не существует как platform-ресурс. Тех-долг не создаётся — material-XML-lib weights ~180 KB и используется только для single theme handoff до инфляции Compose tree.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: changes_requested (1 high + 2 low) → [logs/working/task-7/code-reviewer-1.json](logs/working/task-7/code-reviewer-1.json)
+- security-auditor: approve (3 low observations) → [logs/working/task-7/security-auditor-1.json](logs/working/task-7/security-auditor-1.json)
+- test-reviewer: approve (4 recommendations, non-blocking) → [logs/working/task-7/test-reviewer-1.json](logs/working/task-7/test-reviewer-1.json)
+
+*Round 2 (after fixes, commit 73a031a):*
+- code-reviewer: approve → [logs/working/task-7/code-reviewer-2.json](logs/working/task-7/code-reviewer-2.json)
+
+**Verification:**
+- `./gradlew :app:compileDebugKotlin` → `BUILD SUCCESSFUL` (warnings only — `-Xcontext-receivers` deprecation, tech-debt из Task 2).
+- `grep -cE "(INTERNET|ACCESS_NETWORK_STATE|FOREGROUND_SERVICE|POST_NOTIFICATIONS|WAKE_LOCK)" app/src/main/AndroidManifest.xml` → **6** (TAC-7, все permissions на месте; task-spec smoke-pattern пропускает `ACCESS_NETWORK_STATE`, но манифест содержит полный набор).
+- `grep -cE 'android:allowBackup="false"|android:usesCleartextTraffic="false"|android:fullBackupContent="false"' app/src/main/AndroidManifest.xml` → **3** (TAC-12).
+- `grep -c "app.sanctum.machina.MainActivity" app/src/main/kotlin/app/sanctum/machina/SanctumApplication.kt` → **1** (TAC-14 со стороны `:app`).
+- `grep -cE "libOpenCL\.so|libvndksupport\.so" app/src/main/AndroidManifest.xml` → **2** (uses-native-library обе с `required="false"`).
+- `grep -c '<string name=' app/src/main/res/values/strings.xml` → **22** (канонический Phase-1 комплект).
+- `grep -cE 'name="(app_name|model_manager_title|model_status_not_downloaded|model_status_downloading|model_status_downloaded|model_status_failed|model_size_gb_format|model_download_progress_format|model_error_prefix|btn_download|btn_cancel|btn_load|btn_retry|btn_send|btn_stop|btn_reset|btn_back|chat_loading_model|chat_load_failed_title|chat_input_placeholder|chat_message_interrupted_suffix|ttft_footer_format)"' app/src/main/res/values/strings.xml` → **22** (канонические имена под Task 8/9 без отклонений).
+- `grep -c "SystemForegroundService" app/src/main/AndroidManifest.xml` → **1** (TAC-8 с `foregroundServiceType="dataSync"` и `tools:node="merge"`).
+- On-device smoke (installDebug + запуск) — **отложен до Task 10**: текущий `setContent` — stub, экран отрисует только «Sanctum loading…», UI-verification не имеет смысла до ModelManagerScreen/ChatScreen.

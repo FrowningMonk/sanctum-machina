@@ -1,0 +1,61 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 5,
+    "critical": 0,
+    "major": 2,
+    "minor": 3
+  },
+  "findings": [
+    {
+      "severity": "major",
+      "category": "A03: Injection",
+      "title": "modelId schema-guard does not block path-traversal segments — URL host can be effectively bypassed",
+      "description": "AllowlistLoader.parse validates `modelId.startsWith(\"litert-community/\")` and then asserts the constructed download URL `startsWith(\"https://huggingface.co/\")`. The second `require` is tautological: the URL is built as `\"$URL_PREFIX${m.modelId}/resolve/${m.commitHash}/${m.modelFile}\"`, so `startsWith(URL_PREFIX)` is satisfied for ANY value of `modelId`/`modelFile`/`commitHash`, including ones containing `..` or `\\`. A malicious `modelId` like `\"litert-community/foo/../../attacker-org/evil-repo\"` passes the prefix check; once the resulting URL is dereferenced by an HTTP client / CDN that performs path normalization (HuggingFace's Cloudflare front, or any intermediary, or `okhttp`'s URL canonicalization), the effective path collapses to `/attacker-org/evil-repo/resolve/...`. Net effect: the host-pinning intent of TAC-15 is not enforced — the guard pins the literal scheme+host string at position 0 but does not pin the org segment. Phase 1 ships a trusted bundled JSON, so exploitability is currently nil; however TAC-15 is the architectural barrier guarding any future code path (Phase 2 OTA/user-imported allowlist) and it has a defense-in-depth hole today.",
+      "location": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/AllowlistLoader.kt:47-56",
+      "impact": "If a Phase 2 feature (per task spec note: `if a Phase 2 path writes here`) ever populates this allowlist from non-bundled input — OTA update, user-imported config, debug flag — a crafted modelId silently redirects model downloads to an attacker-controlled HuggingFace org. The user sees no warning; the bytes get written to disk and loaded into LiteRT. Even within Phase 1 the assertion provides false confidence to reviewers that host-pinning is enforced.",
+      "recommendation": "Strengthen the modelId regex and reject path traversal explicitly. Example:\n```kotlin\nprivate val MODEL_ID_REGEX = Regex(\"^litert-community/[A-Za-z0-9._-]+$\")\nprivate val MODEL_FILE_REGEX = Regex(\"^[A-Za-z0-9._-]+$\")\nprivate val COMMIT_HASH_REGEX = Regex(\"^[0-9a-f]{40}$\")\n// ...\nrequire(MODEL_ID_REGEX.matches(m.modelId)) { \"modelId fails schema: ${m.modelId}\" }\nrequire(MODEL_FILE_REGEX.matches(m.modelFile)) { \"modelFile fails schema: ${m.modelFile}\" }\nrequire(COMMIT_HASH_REGEX.matches(m.commitHash)) { \"commitHash must be 40-char hex: ${m.commitHash}\" }\nrequire(!m.modelId.contains(\"..\") && !m.modelFile.contains(\"..\")) { \"path traversal denied\" }\n```\nThe URL `startsWith` check then becomes a real defense-in-depth assertion rather than a tautology.",
+      "cwe": "CWE-22"
+    },
+    {
+      "severity": "major",
+      "category": "A04: Insecure Design",
+      "title": "Test fixture is a hand-maintained duplicate of the production asset — silent drift defeats the schema-guard test",
+      "description": "`core-runtime/src/test/resources/model_allowlist_fixture.json` is byte-identical to `core-runtime/src/main/assets/model_allowlist.json` today, but the build does not enforce that. AllowlistLoaderTest only validates the fixture; if the production asset is ever mutated (legitimately or adversarially via a malicious commit / tampered PR) without updating the fixture, the test still passes green. The TAC-15 schema-guard regression test therefore protects the fixture, not the shipping artifact. The smoke check `jq '.models | length'` is documented but is not part of `gradlew test` — it is run by a human/agent out-of-band.",
+      "location": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/AllowlistLoaderTest.kt:14",
+      "impact": "An attacker (or a careless contributor) who modifies `model_allowlist.json` to swap `commitHash` to a HEAD that contains a backdoored model weight, change `modelId` to a typosquatted org, or relax `defaultConfig.accelerators` to `\"cpu,gpu\"` (silently breaking Decision T8) — all pass CI because the fixture is unchanged. The supply-chain integrity story for the bundled JSON rests entirely on git review; there is no automated guard.",
+      "recommendation": "Either (a) drop the fixture and load `model_allowlist.json` from the production asset directory in the unit test (e.g., via `getResourceAsStream(\"/assets/model_allowlist.json\")` after wiring source-set, or by reading the file directly with a relative path resolved against `project.rootDir`), or (b) add a third `@Test` that asserts the fixture and the production asset are byte-identical:\n```kotlin\n@Test fun fixture_matches_production_asset() {\n  val prod = File(\"src/main/assets/model_allowlist.json\").readBytes()\n  val fixture = javaClass.getResourceAsStream(\"/model_allowlist_fixture.json\")!!.readBytes()\n  assertArrayEquals(prod, fixture)\n}\n```\nOption (b) is the smaller diff and aligns with the task's stated invariant (\"если продовский JSON поменяется — фикстуру обновить синхронно\").",
+      "cwe": "CWE-1395"
+    },
+    {
+      "severity": "minor",
+      "category": "A03: Injection",
+      "title": "modelFile and commitHash interpolated into URL without validation or encoding",
+      "description": "Inherited Gallery URL construction (acknowledged in the task brief as \"flagged but deferred\"): `AllowedModel.toModel()` builds `https://huggingface.co/$modelId/resolve/$commitHash/$modelFile?download=true` with raw string interpolation. AllowlistLoader.parse mirrors this in its guard. If a future allowlist contains `modelFile = \"weights.bin?backdoor=1\"` or `commitHash = \"abc#frag\"`, the resulting URL semantics shift (query/fragment injection). Within Phase 1 the bundled JSON contains only safe values, but no schema rule pins `commitHash` to 40-char hex or restricts `modelFile` to a safe filename character set, so the guard accepts arbitrary characters.",
+      "location": "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/ModelAllowlist.kt:46, core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/AllowlistLoader.kt:53",
+      "impact": "Defense-in-depth gap; couples to finding #1. Combined with a writable allowlist source in Phase 2, an attacker controls URL structure (query params, fragment, embedded path segments). For Phase 1 alone — no exploitability.",
+      "recommendation": "Add the same regex guards proposed in finding #1 (`MODEL_FILE_REGEX`, `COMMIT_HASH_REGEX`). Bonus: use `okhttp3.HttpUrl.Builder().addPathSegments(...)` in the production download path so segments are URL-encoded rather than concatenated.",
+      "cwe": "CWE-20"
+    },
+    {
+      "severity": "minor",
+      "category": "A08: Software and Data Integrity",
+      "title": "Gson deserialization can produce null in non-null Kotlin fields; only `models` checked",
+      "description": "Kotlin reflection-via-Gson does not enforce non-null on `data class` properties — Gson uses Unsafe/setAccessible and will populate a missing JSON field with `null` even when the Kotlin signature says `val modelId: String`. AllowlistLoader handles this for `models` (line 43-44, with `@Suppress(\"SENSELESS_COMPARISON\")` showing awareness), but not for per-entry fields. A JSON entry missing `modelId` will throw `NullPointerException` on line 47 (`m.modelId.startsWith(...)`), which is caught by `runCatching` and returned as `Result.failure(NullPointerException)`. The whole-load failure semantics (TAC-15) are preserved, but the failure message is uninformative — it does not tell an operator which field was missing.",
+      "location": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/AllowlistLoader.kt:39-58",
+      "impact": "Operational/diagnostic only — load fails closed (good), but ErrorLog (Task 5) will record a bare NPE rather than a schema-violation message, slowing post-mortem and weakening A09 (Security Logging) for Phase 2 OTA scenarios.",
+      "recommendation": "Add explicit null/empty checks before the `startsWith`/range checks:\n```kotlin\nrequire(!m.modelId.isNullOrBlank()) { \"modelId missing in allowlist entry\" }\nrequire(!m.modelFile.isNullOrBlank()) { \"modelFile missing\" }\nrequire(!m.commitHash.isNullOrBlank()) { \"commitHash missing\" }\n```\nAlternatively, swap Gson for kotlinx.serialization which honors Kotlin nullability natively, or use a TypeAdapter that fails fast on missing required fields. Low priority — current behavior is fail-closed.",
+      "cwe": "CWE-20"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Gson instance constructor default `gson: Gson = Gson()` defeats Hilt singleton scoping",
+      "description": "`AllowlistLoader @Inject constructor(@ApplicationContext private val context: Context, private val gson: Gson = Gson())` uses a Kotlin default value for the `gson` parameter. Hilt does not honor Kotlin defaults; it requires either an `@Inject`-able binding or a `@Provides` in `CoreRuntimeModule`. There is no `@Provides Gson` in `CoreRuntimeModule` (verified — module is empty per the Task 4 spec). Hilt code-gen will likely fail at compile time once anything actually injects `AllowlistLoader`, OR it will silently construct a fresh `Gson()` per call to the constructor (which, since the class is `@Singleton`, happens once — so functionally fine but architecturally fragile). Not a security vulnerability today; flagged because it touches the trust-boundary parser and any future change (e.g., custom TypeAdapters for stricter validation per finding #4) needs a real DI binding.",
+      "location": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/AllowlistLoader.kt:23",
+      "impact": "If Task 5/6 add `@Provides Gson` in CoreRuntimeModule with a configured instance (e.g., strict mode, custom adapters for security validation), AllowlistLoader will not pick it up because Hilt prefers the explicit binding once present, but if mis-wired it could end up parsing with the lax default Gson while the rest of the module uses the hardened one — silent inconsistency at the trust boundary.",
+      "recommendation": "Drop the default value and either (a) add `@Provides @Singleton fun provideGson(): Gson = GsonBuilder().disableHtmlEscaping().create()` (or stricter) to `CoreRuntimeModule`, or (b) construct Gson inside `parse()` since the loader runs once at startup. Option (a) is preferred so the same Gson is shared across the module.",
+      "cwe": "CWE-1188"
+    }
+  ]
+}
