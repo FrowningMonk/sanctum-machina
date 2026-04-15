@@ -81,6 +81,9 @@ constructor(
             model = model,
             input = text,
             resultListener = { partial, done, _ ->
+                // Drop emissions that arrive after stop() — LiteRT-LM may deliver a trailing
+                // partial/done pair between cancelProcess() and actual thread teardown.
+                if (_messages.value.lastOrNull()?.interrupted == true) return@runInference
                 if (firstTokenMs == 0L && partial.isNotEmpty()) {
                     firstTokenMs = System.currentTimeMillis()
                 }

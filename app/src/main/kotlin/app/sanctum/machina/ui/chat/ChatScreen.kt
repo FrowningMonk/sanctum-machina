@@ -158,9 +158,15 @@ private fun ReadyContent(
 @Composable
 private fun MessageList(messages: List<Message>, modifier: Modifier = Modifier) {
     val listState = rememberLazyListState()
-    LaunchedEffect(messages.size, messages.lastOrNull()?.text?.length) {
+    LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.lastIndex.coerceAtLeast(0))
+        }
+    }
+    LaunchedEffect(messages.lastOrNull()?.text?.length) {
+        // Non-animated follow during streaming avoids main-thread jitter on every token.
+        if (messages.isNotEmpty()) {
+            listState.scrollToItem(messages.lastIndex.coerceAtLeast(0))
         }
     }
     LazyColumn(
