@@ -281,3 +281,38 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 - `grep -cE 'name="(app_name|model_manager_title|model_status_not_downloaded|model_status_downloading|model_status_downloaded|model_status_failed|model_size_gb_format|model_download_progress_format|model_error_prefix|btn_download|btn_cancel|btn_load|btn_retry|btn_send|btn_stop|btn_reset|btn_back|chat_loading_model|chat_load_failed_title|chat_input_placeholder|chat_message_interrupted_suffix|ttft_footer_format)"' app/src/main/res/values/strings.xml` → **22** (канонические имена под Task 8/9 без отклонений).
 - `grep -c "SystemForegroundService" app/src/main/AndroidManifest.xml` → **1** (TAC-8 с `foregroundServiceType="dataSync"` и `tools:node="merge"`).
 - On-device smoke (installDebug + запуск) — **отложен до Task 10**: текущий `setContent` — stub, экран отрисует только «Sanctum loading…», UI-verification не имеет смысла до ModelManagerScreen/ChatScreen.
+
+---
+
+## Task 8: ModelManagerScreen + ModelManagerViewModel
+
+**Status:** Done
+**Commit:** faf6b2f
+**Agent:** main agent
+**Summary:** Собрал первый живой экран Phase 1: `ModelManagerViewModel` — тонкий `@HiltViewModel` поверх `ModelRegistry` (прямая проекция `registry.models: StateFlow`, делегирование download/cancel и эмиссия `NavEvent.OpenChat` через `SharedFlow`). `ModelManagerScreen` — Scaffold + TopAppBar + LazyColumn карточек с детерминированной status-matrix по `ModelDownloadStatusType`. Все строки — через `R.string.*` из `strings.xml` Task 7 (без модификации). Сборка `:app:compileDebugKotlin` зелёная, ручная верификация на Honor 200 пройдена.
+
+**Deviations:**
+- Task spec в § «What to do → 1» предлагал `onDownload` fire-and-forget (`registry.download(entry.model)` без подписки). Это противоречит реализации Task 6: `DefaultModelRegistry.download()` — cold `callbackFlow`, без терминального subscriber'а producer-блок (и сам `downloadRepository.downloadModel`, который enqueue'ит WorkManager) никогда не запускается. Принял второй вариант, явно указанный в том же пункте: `registry.download(entry.model).launchIn(viewModelScope)`. Найдено code-reviewer-1 как CRITICAL, подтверждено adb-логами на устройстве (без `launchIn` кнопка «Скачать» визуально срабатывала, но загрузка не стартовала).
+- Добавлена зависимость `androidx.lifecycle:lifecycle-runtime-compose:2.8.7` в `gradle/libs.versions.toml` + `app/build.gradle.kts`. Task 7 должен был её подключить (имплицитно требуется task-8 spec'ом для `collectAsStateWithLifecycle`), но пропустил. Версия переиспользует существующий ref `lifecycle = "2.8.7"`, поэтому никакого version drift.
+- `MainActivity.setContent` временно переключён с stub-заглушки «Sanctum loading…» на прямой mount `ModelManagerScreen(onLoad = {})` (2 строки), чтобы провести ручную user-verification до Task 10 — Task 10 всё равно перепишет этот блок на `SanctumApp()` NavHost, так что это временная правка в теле того же `setContent`, который Task 10 владеет целиком. Комментарий `TODO(Task 10)` сохранён.
+- Status-matrix когда-выражение группирует `PARTIALLY_DOWNLOADED` с `NOT_DOWNLOADED` и `UNZIPPING` с `IN_PROGRESS` — оба «лишних» варианта enum'а в Phase 1 registry не эмитятся (`DefaultModelRegistry`/`DownloadRepository` используют только 4 из 6), но `when` должен быть exhaustive. Поведение консистентно со спецификацией (partial file → кнопка «Скачать»; unzipping → прогресс-бар).
+- Tech-spec не содержит per-task checkbox'а для Task 8 (как и для Task 1–7), поэтому шаг «`- [ ] Task N` → `- [x] Task N`» — no-op.
+
+**Reviews:**
+
+*Round 1 (commit 18880e3):*
+- code-reviewer: 1 critical + 3 minor + 2 nit → [logs/working/task-8/code-reviewer-1.json](logs/working/task-8/code-reviewer-1.json)
+- security-auditor: OK (1 low info-disclosure на error-message rendering — вне скоупа Task 8, принадлежит download-layer'у; 1 info про `SharedFlow` extraBufferCapacity) → [logs/working/task-8/security-auditor-1.json](logs/working/task-8/security-auditor-1.json)
+- test-reviewer: OK (D8 + patterns.md §Test Infrastructure подтверждают отказ от Compose UI тестов; 1 minor — gap покрытия user-spec step 4 закрыт ручной верификацией) → [logs/working/task-8/test-reviewer-1.json](logs/working/task-8/test-reviewer-1.json)
+
+*Round 2 (after fixes, commit faf6b2f):*
+- code-reviewer: OK → [logs/working/task-8/code-reviewer-2.json](logs/working/task-8/code-reviewer-2.json)
+
+**Verification:**
+- `./gradlew :app:compileDebugKotlin` → `BUILD SUCCESSFUL` (только pre-existing warnings: `-Xcontext-receivers` deprecation из Task 2 + `hiltViewModel()` deprecation — вынесено в общий tech-debt, затрагивает также Task 9).
+- Manual on-device (Honor 200, `adb install` debug APK):
+  - Запуск → ровно 2 карточки: «Gemma-4-E2B-it», «Gemma-4-E4B-it», обе «Не скачано» + «Скачать». Заголовок «Модели». ✅ (user-spec step 3)
+  - «Скачать» на E2B → прогресс-бар + «{received}/{total} МБ», значения растут; foreground-нотификация WorkManager. ✅ (user-spec step 4 часть 1)
+  - «Отмена» в середине загрузки → возврат к «Не скачано» + «Скачать»; `.gallerytmp` остаётся в `/storage/emulated/0/Android/data/app.sanctum.machina/files/...` (пользователь проверил в файл-менеджере). ✅ (user-spec step 6)
+  - Дождаться SUCCEEDED → карточка переходит в «Скачано» + появляется «Загрузить». Нажатие «Загрузить» эмитит `NavEvent.OpenChat` в SharedFlow; текущий `onLoad = {}` игнорирует событие — навигация будет подключена Task 10. ✅ (user-spec step 4 часть 2)
+  - Повторный запуск приложения (cold start) → карточка сразу в корректном состоянии SUCCEEDED / NOT_DOWNLOADED на основе `DefaultModelRegistry.scanLocalFiles()` (без «мигания»). ✅

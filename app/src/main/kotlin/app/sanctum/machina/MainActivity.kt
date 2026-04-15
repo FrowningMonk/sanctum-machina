@@ -7,12 +7,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.Text
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import app.sanctum.machina.ui.modelmanager.ModelManagerScreen
 import app.sanctum.machina.ui.theme.SanctumTheme
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -37,10 +33,9 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             SanctumTheme {
-                // TODO(Task 10): replace stub with SanctumApp() NavHost.
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("Sanctum loading…")
-                }
+                // TODO(Task 10): replace with SanctumApp() NavHost. Temporary direct mount of
+                // ModelManagerScreen so Task 8 can be user-verified before Task 10 wires nav.
+                ModelManagerScreen(onLoad = {})
             }
         }
     }
