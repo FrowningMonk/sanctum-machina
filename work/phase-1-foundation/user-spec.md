@@ -106,6 +106,7 @@ size: L
 - **Firebase / `google-services` / FCM** — по манифесту, никогда.
 - **Рефакторинг god-object `ModelManagerViewModel`** (1411 строк) — отложен на Phase 2. В Phase 1 пишется тонкий `ModelRegistry` (~100 строк), покрывающий только list/download/load/unload.
 - **Customtasks Gallery** — Agent Skills, Mobile Actions, Tiny Garden, Prompt Lab, Benchmark — не портируются.
+- **Persistent хранилище моделей между uninstall'ами** — в Phase 1 модели лежат в `getExternalFilesDir(null)` (app-private external storage), Android вайпит этот каталог при удалении приложения. Философски правильный подход — модель должна жить отдельно от обёртки (пользователь качал 2.4 ГБ, обидно терять). Решение требует выбора стратегии (Scoped Storage + MediaStore / `Environment.DIRECTORY_DOCUMENTS` + runtime permissions / SAF с `ACTION_OPEN_DOCUMENT_TREE`) и нетривиально с LiteRT-LM, который грузит модель по absolute path (SAF-URI не подойдёт — либо копировать в cache, либо mmap через fd). Отложено в Phase 2 как отдельное architectural decision.
 - **Автоматические тесты** (unit, integration, instrumentation, Compose UI) — **в Phase 1 почти не пишутся**, кроме одного узкого исключения (см. D8 и секцию «Тестирование» ниже): один unit-тест на парсер встроенного allowlist-JSON. Всё остальное покрытие — исключение из стандартной практики `patterns.md`: Phase 1 — валидационный спайк, его архитектура может быть переделана в Phase 2, покрытие тестами текущей архитектуры было бы преждевременным. Инфраструктура JUnit 5 + MockK появляется в Phase 2.
 
 ### Прочие ограничения

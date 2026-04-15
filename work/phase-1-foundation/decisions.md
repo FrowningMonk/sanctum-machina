@@ -344,3 +344,50 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 **Verification:**
 - `./gradlew :app:compileDebugKotlin` → `BUILD SUCCESSFUL` (только pre-existing warnings: `-Xcontext-receivers` + `hiltViewModel()` deprecation — shared tech-debt, не затрагивает функциональность).
 - User-verification на Honor 200 → **отложено в Task 10** (см. Deviations). Task 10 выполнит все шаги user-spec § «Пользователь проверяет» 7–11 и 15; там же будет зафиксирован результат для Task 9.
+
+---
+
+## Task 10: Navigation + финальная wiring MainActivity
+
+**Status:** Done
+**Commit:** 488e65b (impl) + f6a8137 (review R1 fix) + 664e389 (Main-freeze fix) + 5d41185 (style)
+**Agent:** main agent
+**Summary:** Создал `ui/SanctumApp.kt` с `NavHost` и двумя route'ами (`model_manager` start + `chat/{modelName}` с `navArgument NavType.StringType`) и заменил stub в `MainActivity.setContent` на `SanctumTheme { SanctumApp() }`. NavHost сшивает готовые `ModelManagerScreen` (Task 8) и `ChatScreen` (Task 9) — никакой `NavController` в экраны не передаётся, `viewModel` по дефолту через `hiltViewModel()`. Во время on-device верификации обнаружен кросс-таск баг: `DefaultModelRegistry.initialize` / `cleanup` / `resetConversation` работали на Main (`viewModelScope.launch` из `ChatViewModel`), а `LlmChatModelHelper.initialize` — синхронный native-вызов на 5-30 сек → Main замораживался, `ChatScreen.LoadingContent` не успевал отрендериться. Фикс: обернул эти три метода в `withContext(Dispatchers.Default)`. Полный сценарий user-spec пп. 1–10 прошёл на Honor 200; `./gradlew :app:installDebug` корректно переустановил APK без потери моделей.
+
+**Deviations:**
+- **Main-freeze фикс в `DefaultModelRegistry` (commit 664e389)** формально вне file-scope Task 10 (task оригинально трогает только `ui/SanctumApp.kt` и `MainActivity.setContent`), но баг стал видимым только после подключения NavHost — в Task 9 пути к нему не было, а AC-5 Task 10 требует «полный сценарий user-spec пп. 1-10 проходит», где п.6 — «Показывается индикатор "Загрузка модели…"». Индикатор физически существовал в `ChatScreen.kt:73-86`, но без dispatcher hop'а не получал кадр. Выбран вариант (a) — фикс в scope Task 10 перед закрытием, а не отдельный follow-up, чтобы AC был честно выполнен.
+- Применён `Uri.encode` / `Uri.decode` вокруг `modelName` в route (commit f6a8137) — task spec § Edge cases (L120) предполагал, что Compose Navigation декодирует `StringType` автоматически, но `navController.navigate(String)` этого не делает. Модели allowlist содержат `/` (HF-формат `litert-community/...`) — без encode роутинг бы сломался при интеграции.
+- Tech-spec не содержит per-task checkbox'а, поэтому шаг «`- [ ] Task 10` → `- [x] Task 10`» — no-op.
+- В `user-spec.md § Вне скоупа Phase 1` добавлен follow-up про persistent хранилище моделей между uninstall'ами (Android вайпит `getExternalFilesDir`) — отложено в Phase 2 как architectural decision, решение нетривиально из-за absolute-path требования LiteRT.
+
+**Reviews:**
+
+*Round 1 (commit 488e65b):*
+- code-reviewer: OK → [logs/working/task-10/code-reviewer-1.json](logs/working/task-10/code-reviewer-1.json)
+- security-auditor: 2 minor (missing URL-encoding на `modelName`; route-arg без валидации в `ChatViewModel` — защита в глубину) → [logs/working/task-10/security-auditor-1.json](logs/working/task-10/security-auditor-1.json)
+- test-reviewer: OK (TDD Anchor N/A обоснован tech-spec § Testing Strategy + user-spec D8) → [logs/working/task-10/test-reviewer-1.json](logs/working/task-10/test-reviewer-1.json)
+
+*Round 2 (after fixes, commit f6a8137):*
+- code-reviewer: OK → [logs/working/task-10/code-reviewer-2.json](logs/working/task-10/code-reviewer-2.json)
+- security-auditor: OK (finding #1 resolved; finding #2 — `ChatViewModel` validation — приемлемо deferred как Task 9 defense-in-depth follow-up) → [logs/working/task-10/security-auditor-2.json](logs/working/task-10/security-auditor-2.json)
+
+*Round 3 (after Main-freeze fix, commit 664e389):*
+- code-reviewer: OK (`Dispatchers.Default` верный выбор vs `IO` — LiteRT warmup = CPU+native; mutex-семантика не изменилась; StateFlow emits from non-Main safe) → [logs/working/task-10/code-reviewer-3.json](logs/working/task-10/code-reviewer-3.json)
+
+**Verification:**
+- `./gradlew :app:assembleDebug` → `BUILD SUCCESSFUL` (только pre-existing `-Xcontext-receivers` warning).
+- `./gradlew :core-runtime:testDebugUnitTest` → `BUILD SUCCESSFUL` (1 existing test passes: `AllowlistLoaderTest`).
+- `./gradlew :app:installDebug` на Honor 200 → APK переустановился, модели сохранились в `/Android/data/app.sanctum.machina/files/` (не пришлось качать заново).
+- Manual on-device (Honor 200, полный сценарий user-spec § Основной сценарий пп. 1-10):
+  - Запуск → `ModelManagerScreen` как start destination. ✅ (step 1)
+  - Runtime-prompt `POST_NOTIFICATIONS` появляется + accept. ✅ (step 2)
+  - Обе карточки отрисованы с именем/размером/статусом. ✅ (step 3)
+  - «Скачать» на Gemma → foreground-download с прогресс-баром. ✅ (step 4)
+  - SUCCEEDED → статус «Скачано». ✅ (step 5)
+  - Тап «Загрузить» → **сразу** видим `LoadingContent` с индикатором «Загрузка модели…» (Main более не замёрзнут). ✅ (step 6 — был фикс).
+  - Ввод промпта → стрим токенов. ✅ (step 7)
+  - TTFT footer под ответом — TTFT 1381 ms, 80.3 s total. ✅ (step 8)
+  - Повторный промпт работает. ✅ (step 9)
+  - Системный back → возврат на `ModelManagerScreen`; повторный «Загрузить» снова показывает индикатор и открывает чат без краша. ✅ (step 10)
+- Известные ограничения, не покрытые AC Task 10 (не блокируют Phase 1 → Phase 2 debt):
+  - Ответ модели иногда дрейфует в неожиданный язык (в одном прогоне — иврит) и содержит сырой markdown/LaTeX. Причины: нет chat-template Gemma (`<start_of_turn>user ... <end_of_turn>`) и нет system-prompt (user-spec D10 явно исключает polish'ировку UI; markdown-рендер + prompt-templating — Phase 2).
