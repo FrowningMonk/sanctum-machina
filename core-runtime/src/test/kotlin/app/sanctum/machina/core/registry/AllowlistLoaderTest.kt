@@ -90,10 +90,35 @@ class AllowlistLoaderTest {
   }
 
   @Test
+  fun parse_rejectsModelFilePathTraversal() {
+    val json =
+      """{"models":[{"name":"x","modelId":"litert-community/ok","modelFile":"../evil.lm",
+      "commitHash":"7fa1d78473894f7e736a21d920c3aa80f950c0db","sizeInBytes":1,"taskTypes":["llm_chat"]}]}"""
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    assertTrue(
+      result.exceptionOrNull()?.message.orEmpty().contains("modelFile must match"),
+    )
+  }
+
+  @Test
+  fun parse_rejectsMalformedCommitHash() {
+    val json =
+      """{"models":[{"name":"x","modelId":"litert-community/ok","modelFile":"a.lm",
+      "commitHash":"HEAD","sizeInBytes":1,"taskTypes":["llm_chat"]}]}"""
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    assertTrue(
+      result.exceptionOrNull()?.message.orEmpty().contains("commitHash must match"),
+    )
+  }
+
+  @Test
   fun parse_rejectsOversizedModel() {
     val json =
       """{"models":[{"name":"x","modelId":"litert-community/ok","modelFile":"a.lm",
-      "commitHash":"abc","sizeInBytes":10737418241,"taskTypes":["llm_chat"]}]}"""
+      "commitHash":"7fa1d78473894f7e736a21d920c3aa80f950c0db","sizeInBytes":10737418241,
+      "taskTypes":["llm_chat"]}]}"""
     val result = parseRaw(json)
     assertTrue(result.isFailure)
     assertTrue(

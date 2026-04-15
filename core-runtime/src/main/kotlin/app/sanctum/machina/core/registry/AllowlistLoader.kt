@@ -15,8 +15,13 @@ import kotlinx.coroutines.withContext
 private const val ASSET_NAME = "model_allowlist.json"
 private const val MAX_SIZE_BYTES: Long = 10_737_418_240L // 10 GB
 private const val URL_PREFIX = "https://huggingface.co/"
-private const val MODEL_ID_PREFIX = "litert-community/"
+
+// Each segment: one or more of [A-Za-z0-9._-], but never contains ".." — prevents
+// post-normalization escape from the litert-community org pin (e.g. `..`, `foo/..`).
 private val MODEL_ID_REGEX = Regex("^litert-community/[A-Za-z0-9._-]+$")
+private val MODEL_FILE_REGEX = Regex("^[A-Za-z0-9._-]+$")
+private val COMMIT_HASH_REGEX = Regex("^[a-f0-9]{40}$")
+private const val PATH_TRAVERSAL = ".."
 
 @Singleton
 class AllowlistLoader @Inject constructor(@ApplicationContext private val context: Context) {
@@ -41,8 +46,14 @@ class AllowlistLoader @Inject constructor(@ApplicationContext private val contex
       val models: List<AllowedModel>? = allowlist.models
       require(!models.isNullOrEmpty()) { "Empty allowlist" }
       for (m in models) {
-        require(MODEL_ID_REGEX.matches(m.modelId)) {
-          "modelId must match $MODEL_ID_REGEX: ${m.modelId}"
+        require(MODEL_ID_REGEX.matches(m.modelId) && !m.modelId.contains(PATH_TRAVERSAL)) {
+          "modelId must match $MODEL_ID_REGEX without '$PATH_TRAVERSAL': ${m.modelId}"
+        }
+        require(MODEL_FILE_REGEX.matches(m.modelFile) && !m.modelFile.contains(PATH_TRAVERSAL)) {
+          "modelFile must match $MODEL_FILE_REGEX without '$PATH_TRAVERSAL': ${m.modelFile}"
+        }
+        require(COMMIT_HASH_REGEX.matches(m.commitHash)) {
+          "commitHash must match $COMMIT_HASH_REGEX: ${m.commitHash}"
         }
         require(m.sizeInBytes in 1..MAX_SIZE_BYTES) {
           "sizeInBytes out of range (1..$MAX_SIZE_BYTES): ${m.modelId} has ${m.sizeInBytes}"
