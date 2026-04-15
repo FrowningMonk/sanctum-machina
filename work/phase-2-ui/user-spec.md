@@ -85,24 +85,38 @@ Phase 2 делает приложение пригодным для ежедне
 - [ ] **AC-13.** Multimodal inference end-to-end: отправка «текст + 1–3 фото» возвращает осмысленный стримящийся ответ на Gemma-4-E2B-it и Gemma-4-E4B-it. Отправка «текст + аудио» возвращает осмысленный ответ на обеих моделях. Проверяется manual smoke на Honor 200.
 - [ ] **AC-14.** Thinking-канал: при `enableThinking=true` и поддерживающей модели — `partialThinkingResult` из `ResultListener` накапливается в `Message.thinkingText` и отображается collapsible-блоком над текстом ответа. При `enableThinking=false` или `llmSupportThinking=false` для модели — блок скрыт, thinking не накапливается.
 - [ ] **AC-15.** Runtime permissions: CAMERA и RECORD_AUDIO запрашиваются on-demand при первом тапе соответствующей иконки. При отказе — snackbar "Разрешите доступ к камере" / "Разрешите доступ к микрофону". При выборе "Не спрашивать снова" — snackbar со ссылкой в системные настройки. Photo Picker permissions не требует.
-- [ ] **AC-16.** Регрессия Phase 1: текстовый чат (без вложений) на обеих моделях работает как в Phase 1; скачивание/возобновление/отмена работают; переключение между моделями работает; AC-14 Phase 1 (паритет скорости с Gallery) продолжает соблюдаться.
+- [ ] **AC-16.** Регрессия Phase 1: текстовый чат (без вложений) на обеих моделях отвечает стримящимся ответом без краша; скачивание/возобновление/отмена работают; переключение между моделями работает (предыдущий engine выгружается без краша, новый инициализируется, новый ChatScreen открывается пустым, текстовый запрос получает ответ); AC-14 Phase 1 (паритет скорости с Gallery — TTFT Phase 2 ≤ 1.5× TTFT Gallery на той же модели и том же промпте) продолжает соблюдаться.
 - [ ] **AC-17.** Юнит-тесты `:core-runtime` остаются зелёными. Добавлены новые юнит-тесты:
   - `AppSettingsRepositoryTest` (в `:core-settings`) — save/read round-trip через in-memory DataStore, merge defaults ∪ overrides, reset удаляет запись по `modelId`.
   - `AllowlistLoaderTest` расширен кейсами для полей `llmSupportImage/Audio/Thinking` (каждое true/false и сочетания).
   - `EffectiveConfigTest` — корректность слияния allowlist-defaults с per-model overrides.
-- [ ] **AC-18.** Phase 2 считается закрытой, когда пользователь на Honor 200 субъективно подтверждает «UI масштабируемый, удобный, современный и быстрый», AC-1..17 зелёные, регрессии Phase 1 нет. Точный численный порог (TTFT, latency) в Phase 2 не требуется — это не валидационная фаза.
+  - Multimodal preparation layer (новые тесты в `:core-runtime/src/test/`):
+    - `MediaUtilsTest` — `decodeSampledBitmapFromUri` возвращает Bitmap корректного разрешения при разных `reqWidth/reqHeight` для тестовых PNG/JPEG, `rotateBitmap` применяет ExifInterface orientation корректно.
+    - `AudioClipTest` — round-trip raw-PCM ByteArray через `AudioClip(audioData, sampleRate)`, граничные случаи (пустой массив, нечётный размер).
+    - `MultimodalContentsBuilderTest` — сборка `Contents` из `(text, List<Bitmap>, List<ByteArray>)`: корректное число `Content.ImageBytes + Content.AudioBytes + Content.Text`, пустой текст не добавляет `Content.Text`.
+- [ ] **AC-18.** Поведение при ограниченных возможностях модели:
+  - Если `Model.llmSupportImage = false` — иконки камеры и галереи в input bar **скрыты**.
+  - Если `Model.llmSupportAudio = false` — иконка микрофона в input bar **скрыта**.
+  - Если `Model.llmSupportThinking = false` — toggle `enableThinking` в bottom sheet настроек **отсутствует**; thinking-блок в чате не показывается даже если пришли данные.
+- [ ] **AC-19.** Прерывание аудиозаписи: при входящем звонке, переводе приложения в фон (onPause) или сворачивании во время активной записи — `AudioRecord.release()` вызывается, незавершённый буфер отбрасывается, bottom sheet закрывается, вложение не добавляется. При возврате в приложение — input bar в исходном состоянии без «залипшей» записи.
+- [ ] **AC-20.** Микрофон при уже вложенном аудио: `MAX_AUDIO_CLIP_COUNT = 1` (Consts.kt). Если уже есть прикреплённый аудио-клип, иконка микрофона либо **disabled**, либо её тап вызывает snackbar "Максимум один аудио-клип на сообщение. Удалите текущий, чтобы записать новый." Выбор механики — за tech-spec.
+- [ ] **AC-21.** Timing применения настроек:
+  - **Лёгкие** поля (`temperature, topK, topP, maxTokens, systemPromptDefault`): override сохраняется в DataStore немедленно, применяется начиная со **следующего пользовательского хода**; не прерывает активный стрим.
+  - **Тяжёлые** поля (`accelerator`; статус `enableThinking` подтвердится ручным тестом на Honor 200 и может быть перенесён в «лёгкие», если litertlm поддерживает смену на лету): после подтверждения диалога-предупреждения — `cleanup` + `initialize` engine (5–30 сек индикатор), история чата в UI сохраняется, контекст внутри engine сбрасывается.
+  - `systemPromptDefault`: применяется при следующей переинициализации engine (через `resetConversation(systemPrompt = ...)`); в рамках текущей engine-сессии изменение видно с ближайшего `resetConversation` (триггер — тап Reset в TopAppBar или тяжёлое изменение настроек).
+- [ ] **AC-22.** Финальный гейт Phase 2: AC-1..21 выполнены; регрессии Phase 1 (AC-16) отсутствуют; пользователь явно проставил апрув на Honor 200 после ручного прохождения US-1..US-7. Численный гейт TTFT/latency отдельно не замеряется (это не валидационная фаза) — достаточно AC-16 backstop'а.
 
 ### Желательные (не блокируют выпуск Phase 2)
 
-- [ ] **AC-19.** Миниатюры аудио-вложений показывают длительность в секундах.
-- [ ] **AC-20.** Индикатор уровня звука при записи аудио (peak amplitude — порт helper'а из Gallery `common/Utils.kt`).
-- [ ] **AC-21.** Input bar умеет рендерить строку миниатюр в две строки или с горизонтальным скроллом, если вложений больше, чем помещается в одну строку.
+- [ ] **AC-23.** Миниатюры аудио-вложений показывают длительность в секундах.
+- [ ] **AC-24.** Индикатор уровня звука при записи аудио (peak amplitude — порт helper'а из Gallery `common/Utils.kt`).
+- [ ] **AC-25.** Input bar умеет рендерить строку миниатюр в две строки или с горизонтальным скроллом, если вложений больше, чем помещается в одну строку.
 
 ## Ограничения
 
 **Технические:**
 - Без Room — чаты и сообщения в `:app` живут только в памяти `ChatViewModel.StateFlow`. Room (Phase 3), Projects (Phase 4), HuggingFace OAuth (пока не нужен, откладываем до появления gated-моделей) — **не в этой фазе**.
-- `:core-runtime` в Phase 2 **можно расширять**, но **только портированием** компонентов из `gallery-source/` (image helpers, audio helpers, media utils). Никакой реархитектуры ядра, никаких собственных изобретений в ядре.
+- `:core-runtime` в Phase 2 — **только три типа изменений**: (1) AC-1 (починка парсинга allowlist `AllowedModel.toModel()` для полей `llmSupportImage/Audio/Thinking`), (2) портирование media-утилит из `gallery-source/` в `:core-runtime/common/` (`decodeSampledBitmapFromUri`, `rotateBitmap`, `convertWavToMonoWithMaxSeconds`, `calculatePeakAmplitude`, тип `AudioClip`), (3) новые unit-тесты (AC-17). **Никакой реархитектуры ядра**, никакого переписывания `LlmChatModelHelper`, никакого изобретения собственных абстракций. Multimodal Contents API в `LlmChatModelHelper.runInference` уже готов из Phase 1 и принимает `List<Bitmap>` + `List<ByteArray>`.
 - `:core-runtime` должен оставаться без Compose / Activity / ViewModel (по `patterns.md`). Все UI Compose и DataStore hooks живут в `:app`/`:core-settings`.
 - Bitmap → litertlm остаётся PNG (как в Gallery) — ядро не трогаем.
 - Аудио — AudioRecord (не MediaRecorder): raw PCM 16 kHz mono прямо в litertlm, без промежуточной конверсии файла.
@@ -183,5 +197,5 @@ Phase 2 делает приложение пригодным для ежедне
 - **AC-14 (thinking).** Включаю `enableThinking=true` через bottom sheet настроек — под ответом появляется collapsible блок с текстом ризонинга. Выключаю — блок исчезает.
 - **AC-4 (настройки применяются).** Меняю `temperature` с 1.0 на 0.2 → следующий ответ заметно менее разнообразный. Меняю `accelerator` с GPU на CPU → появляется диалог-предупреждение → после подтверждения engine переинициализируется (5–30 сек), чат продолжает работу с новым backend.
 - **AC-16 (регрессия Phase 1).** Текстовый чат на Gemma-4-E2B-it работает со скоростью не хуже Gallery (субъективно + TTFT из футера Phase 1 не регрессировал относительно Phase 1 AC-14).
-- **Edge cases:** отказ в CAMERA / RECORD_AUDIO → snackbar; выбор 15 фото в Photo Picker → берутся 10 + snackbar; аудио-запись 30+ сек → автостоп; back во время стрима → стрим останавливается, сессия уничтожается.
+- **Edge cases:** отказ в CAMERA / RECORD_AUDIO → snackbar; выбор 15 фото в Photo Picker → берутся 10 + snackbar; аудио-запись 30+ сек → автостоп; back во время стрима → стрим останавливается, сессия уничтожается; входящий звонок во время записи → запись отбрасывается (AC-19); тап микрофона при уже прикреплённом аудио → disabled либо snackbar (AC-20); открытие bottom sheet настроек во время стрима — допустимо, настройки принимаются, но применяются только к следующему ходу; тяжёлое изменение во время стрима — диалог предупреждает, что стрим будет прерван, при подтверждении вызывается `stopResponse` + reinit.
 - **AC-6 (About).** Открываю `AboutScreen` → текст отображается, версия в футере корректная. Меняю `assets/about.md`, пересобираю APK, ставлю — текст обновился.
