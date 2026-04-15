@@ -21,6 +21,16 @@ package app.sanctum.machina.core.data
  * D1. The allowlist carries the minimum fields consumed by AllowlistLoader (Task 4) and the
  * downstream runtime.
  */
+data class AllowedModelConfig(
+  val topK: Int? = null,
+  val topP: Float? = null,
+  val temperature: Float? = null,
+  val maxContextLength: Int? = null,
+  val maxTokens: Int? = null,
+  val accelerators: String? = null,
+  val visionAccelerator: String? = null,
+)
+
 data class AllowedModel(
   val name: String,
   val modelId: String,
@@ -30,6 +40,7 @@ data class AllowedModel(
   val taskTypes: List<String>,
   val description: String = "",
   val version: String = "",
+  val defaultConfig: AllowedModelConfig? = null,
 ) {
   fun toModel(): Model {
     val downloadUrl = "https://huggingface.co/$modelId/resolve/$commitHash/$modelFile?download=true"
@@ -37,9 +48,21 @@ data class AllowedModel(
 
     val isLlmModel = taskTypes.contains(TASK_ID_LLM_CHAT) || taskTypes.isEmpty()
 
+    val accelerators: List<Accelerator> =
+      defaultConfig?.accelerators?.let { parseAccelerators(it) } ?: DEFAULT_ACCELERATORS
+    val visionAccelerator: Accelerator =
+      defaultConfig?.visionAccelerator?.let { parseAccelerator(it) } ?: DEFAULT_VISION_ACCELERATOR
+    val maxToken: Int = defaultConfig?.maxTokens ?: DEFAULT_MAX_TOKEN
+
     val configs: List<Config> =
       if (isLlmModel) {
-        createLlmChatConfigs(accelerators = DEFAULT_ACCELERATORS)
+        createLlmChatConfigs(
+          defaultTopK = defaultConfig?.topK ?: DEFAULT_TOPK,
+          defaultTopP = defaultConfig?.topP ?: DEFAULT_TOPP,
+          defaultTemperature = defaultConfig?.temperature ?: DEFAULT_TEMPERATURE,
+          defaultMaxToken = maxToken,
+          accelerators = accelerators,
+        )
       } else {
         listOf()
       }
@@ -55,9 +78,9 @@ data class AllowedModel(
       showBenchmarkButton = !isLlmModel,
       showRunAgainButton = !isLlmModel,
       learnMoreUrl = learnMoreUrl,
-      accelerators = DEFAULT_ACCELERATORS,
-      visionAccelerator = DEFAULT_VISION_ACCELERATOR,
-      llmMaxToken = DEFAULT_MAX_TOKEN,
+      accelerators = accelerators,
+      visionAccelerator = visionAccelerator,
+      llmMaxToken = maxToken,
       isLlm = isLlmModel,
       runtimeType = RuntimeType.LITERT_LM,
     )
@@ -70,3 +93,18 @@ data class AllowedModel(
 
 /** The model allowlist. */
 data class ModelAllowlist(val models: List<AllowedModel>)
+
+private fun parseAccelerators(raw: String): List<Accelerator> =
+  raw.split(",").mapNotNull { token ->
+    parseAcceleratorOrNull(token)
+  }.ifEmpty { DEFAULT_ACCELERATORS }
+
+private fun parseAccelerator(raw: String): Accelerator =
+  parseAcceleratorOrNull(raw) ?: DEFAULT_VISION_ACCELERATOR
+
+private fun parseAcceleratorOrNull(raw: String): Accelerator? =
+  when (raw.trim().lowercase()) {
+    "gpu" -> Accelerator.GPU
+    "cpu" -> Accelerator.CPU
+    else -> null
+  }
