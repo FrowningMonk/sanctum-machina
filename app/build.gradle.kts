@@ -42,6 +42,7 @@ android {
 
 dependencies {
     implementation(project(":core-runtime"))
+    implementation(project(":core-settings"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

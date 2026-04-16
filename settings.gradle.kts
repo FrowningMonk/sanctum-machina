@@ -22,4 +22,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "PhoneWrap"
 
-include(":app", ":core-runtime")
+include(":app", ":core-runtime", ":core-settings")
