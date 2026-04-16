@@ -19,6 +19,11 @@ import kotlin.math.roundToInt
  * Decodes a sampled bitmap from a content or file URI, downscaling to fit within
  * [reqWidth] × [reqHeight]. Returns `null` if the stream cannot be opened or
  * the image cannot be decoded. Ports Gallery `common/Utils.kt`.
+ *
+ * Two-pass decode: first pass with `inJustDecodeBounds = true` populates
+ * `options.outWidth/outHeight` and returns `null` **by API contract** — we
+ * must not treat that null as a failure signal. The stream-open null check
+ * and the bounds-validity check are kept separate for that reason.
  */
 fun decodeSampledBitmapFromUri(
   context: Context,
@@ -27,8 +32,8 @@ fun decodeSampledBitmapFromUri(
   reqHeight: Int,
 ): Bitmap? {
   val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-  openStream(context, uri)?.use { BitmapFactory.decodeStream(it, null, options) }
-    ?: return null
+  val boundsStream = openStream(context, uri) ?: return null
+  boundsStream.use { BitmapFactory.decodeStream(it, null, options) }
 
   if (options.outWidth <= 0 || options.outHeight <= 0) return null
 
@@ -40,7 +45,8 @@ fun decodeSampledBitmapFromUri(
   )
   options.inJustDecodeBounds = false
 
-  return openStream(context, uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+  val decodeStream = openStream(context, uri) ?: return null
+  return decodeStream.use { BitmapFactory.decodeStream(it, null, options) }
 }
 
 /**
