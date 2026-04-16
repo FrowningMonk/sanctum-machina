@@ -1,0 +1,21 @@
+{
+  "round": 1,
+  "verdict": "pass",
+  "findings": [
+    {
+      "severity": "low",
+      "file": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/AllowlistLoaderTest.kt",
+      "line": 140,
+      "description": "Each of the three llmSupport*_true_parsedCorrectly tests asserts only the flag it sets (e.g. llmSupportImage true), but does not assert that the other two remain false. A wiring bug that accidentally routes one JSON field to the wrong Model property (e.g. llmSupportAudio = llmSupportImage) could still make a 'true' test pass while the code is broken. The llmSupport_missing_defaultsFalse test gives partial protection, but cross-field contamination on the 'true' path would slip through.",
+      "fix": "In each llmSupport*_true_parsedCorrectly test, add assertFalse for the other two llmSupport* fields. Example for llmSupportImage: assertTrue(model.llmSupportImage); assertFalse(model.llmSupportAudio); assertFalse(model.llmSupportThinking). Cheap, catches routing mistakes."
+    },
+    {
+      "severity": "low",
+      "file": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/AllowlistLoaderTest.kt",
+      "line": 180,
+      "description": "Task spec 'Edge cases' lists two scenarios not explicitly exercised: (a) defaultConfig.systemPromptDefault present but JSON null -> '', (b) defaultConfig missing entirely -> systemPromptDefault = ''. The current tests cover only 'field missing'. The implementation uses defaultConfig?.systemPromptDefault.orEmpty() which handles both, but there is no regression fence for the explicit null literal. Missing-field and explicit-null go through different Gson codepaths.",
+      "fix": "Add one test: defaultConfig_systemPromptDefault_nullLiteral_defaultsEmpty — JSON body \"defaultConfig\":{... ,\"systemPromptDefault\":null}. Assert model.configValues[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label] == \"\". Optionally add defaultConfig_missing_entirely test to fence the outer null-safety. Both are one-liners built on the existing minimalModelJson helper."
+    }
+  ],
+  "notes": "All 6 required TDD-anchor tests are present with the exact names from task 1 (llmSupportImage_true_parsedCorrectly, llmSupportAudio_true_parsedCorrectly, llmSupportThinking_true_parsedCorrectly, llmSupport_missing_defaultsFalse, defaultConfig_systemPromptDefault_parsed, defaultConfig_systemPromptDefault_missing_defaultsEmpty). Pre-existing fixtureMatchesProductionAsset is untouched. Litmus test: all 6 new tests pass — removing the production wiring line (llmSupportImage = llmSupportImage, .orEmpty() fallback, or the LabelConfig emission in createLlmChatConfigs) makes the relevant test fail. No mock-return anti-pattern (no mocks used). Tests exercise the full real chain AllowlistLoader.parse -> Gson -> AllowedModel.toModel() -> preProcess() -> configValues. Isolation is clean: each test builds its own JSON via minimalModelJson, no @Before mutable state, no ordering dependency. Naming matches task spec verbatim. Assertion quality is good — the systemPromptDefault_parsed test asserts both sysConfig.defaultValue and model.configValues[key.label], covering the Config object and the post-preProcess map. Two low-severity issues found (cross-field contamination not fenced in the 'true' tests, and explicit-null edge case not tested) — neither blocks the task. Unit test type is correct for this logic (pure parsing, no I/O beyond in-memory streams). Pyramid placement healthy."
+}
