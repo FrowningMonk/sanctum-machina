@@ -19,6 +19,7 @@ package app.sanctum.machina.core.inference
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
+import app.sanctum.machina.core.common.MultimodalContentsBuilder
 import app.sanctum.machina.core.common.cleanUpMediapipeTaskErrorMessage
 import app.sanctum.machina.core.data.Accelerator
 import app.sanctum.machina.core.data.ConfigKeys
@@ -32,7 +33,6 @@ import app.sanctum.machina.core.runtime.CleanUpListener
 import app.sanctum.machina.core.runtime.LlmModelHelper
 import app.sanctum.machina.core.runtime.ResultListener
 import com.google.ai.edge.litertlm.Backend
-import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
@@ -44,7 +44,6 @@ import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.MessageCallback
 import com.google.ai.edge.litertlm.SamplerConfig
 import com.google.ai.edge.litertlm.ToolProvider
-import java.io.ByteArrayOutputStream
 import java.util.concurrent.CancellationException
 import kotlinx.coroutines.CoroutineScope
 
@@ -252,16 +251,11 @@ object LlmChatModelHelper : LlmModelHelper {
 
     val conversation = instance.conversation
 
-    val contents = mutableListOf<Content>()
-    for (image in images) {
-      contents.add(Content.ImageBytes(image.toPngByteArray()))
-    }
-    for (audioClip in audioClips) {
-      contents.add(Content.AudioBytes(audioClip))
-    }
-    if (input.trim().isNotEmpty()) {
-      contents.add(Content.Text(input))
-    }
+    val contents = MultimodalContentsBuilder.build(
+      text = input,
+      images = images,
+      audio = audioClips,
+    )
 
     conversation.sendMessageAsync(
       Contents.of(contents),
@@ -286,11 +280,5 @@ object LlmChatModelHelper : LlmModelHelper {
       },
       extraContext ?: emptyMap(),
     )
-  }
-
-  private fun Bitmap.toPngByteArray(): ByteArray {
-    val stream = ByteArrayOutputStream()
-    this.compress(Bitmap.CompressFormat.PNG, 100, stream)
-    return stream.toByteArray()
   }
 }

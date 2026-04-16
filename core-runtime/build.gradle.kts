@@ -22,6 +22,10 @@ android {
         jvmTarget = "11"
         freeCompilerArgs += "-Xcontext-receivers"
     }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
 }
 
 dependencies {
@@ -35,4 +39,5 @@ dependencies {
     ksp(libs.hilt.android.compiler)
 
     testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
 }
