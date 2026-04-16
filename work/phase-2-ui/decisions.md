@@ -160,7 +160,7 @@ Fixes applied in round 1 (commit 50262f3): case-insensitive scheme check in `Saf
 **Verification:**
 - `./gradlew :app:testDebugUnitTest --tests "*.SafeUriHandlerTest"` → 14 passed, 0 failures (11 TDD anchors + `empty_blocked`, `http_uppercase_allowed`, `https_mixedcase_allowed`)
 - `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL (TAC-9 smoke)
-- User-verify on Honor 200 (AC-5, AC-6, US-7): deferred — agent cannot install APK / interact with UI on physical device; manual check-list is part of AC-22 final gate in Task 15 pre-deploy QA.
+- User-verify on Honor 200: AC-5 (AboutScreen as independent destination), AC-6 (markdown from assets/about.md + BuildConfig.VERSION_NAME footer + attribution), US-7 (entry from ModelManagerScreen TopAppBar Info action) — confirmed working.
 
 ---
 
