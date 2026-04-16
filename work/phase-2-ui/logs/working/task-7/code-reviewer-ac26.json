@@ -1,0 +1,42 @@
+{
+  "verdict": "approved_with_suggestions",
+  "summary": "AC-26 delta is small, correct, and on-contract. Data shape (`Message.attachments: List<Attachment>`) is right for Phase 2: it reuses the same sealed type the VM already stages, and the same Bitmap refs flow through `send()` into both the Message and the inference call without duplication. `ChatViewModel.send` correctly snapshots `_attachments` before clearing, assistant messages never receive attachments by construction (`updateLastAssistant` + default `emptyList()`), and the `if (text.isNotEmpty() || interrupted)` branch cleanly handles attachment-only bubbles without layout glitches. Spec drift is acceptable: D28 pins the UX contract, D1 still owns the in-memory constraint, and Phase 3's future `@TypeConverter` migration is explicitly called out. One real UX bug: `MessageAttachmentsRow` is a plain `Row` with no scroll, but the bubble is capped at `widthIn(max = 320.dp)` — 10 × 72.dp tiles + spacing = 756.dp, so anything past ~4 attachments will render outside the bubble and be clipped by the parent `clip(RoundedCornerShape(12.dp))`. The new `send_transfersPendingAttachmentsIntoUserMessageAndClearsStaging` test pins the contract cleanly with `assertSame` on the Bitmap ref.",
+  "findings": [
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatScreen.kt",
+      "line": 298,
+      "severity": "major",
+      "category": "ui-correctness",
+      "issue": "MessageAttachmentsRow uses a plain Row with a for-loop and no horizontal scroll, but the enclosing MessageBubble is constrained to `widthIn(max = 320.dp)`. Each tile is 72.dp fixed, spacing 4.dp — a message with ≥5 attachments already exceeds the bubble width, and at the AC-10 maximum of 10 images the Row is 756.dp wide. The tiles past the cap are drawn outside the bubble and clipped by the bubble's `clip(RoundedCornerShape(12.dp))` — the user silently loses visibility of ≥half of their own attached photos, which defeats the AC-26 consistency promise (\"пользователь видит, что именно он отправил модели\").",
+      "impact": "AC-26 is only partially satisfied: history shows attachments, but not all of them when ≥5 are attached. A user who sent 10 photos sees 4, matching the pre-AC-26 failure mode for attachments 5..10. The same ThumbnailStrip (pre-send) uses LazyRow for exactly this reason — the two paths should stay symmetric.",
+      "recommendation": "Either (a) switch MessageAttachmentsRow to LazyRow with `items(attachments, key = { it.id })` so the row scrolls horizontally inside the bubble (mirrors ThumbnailStrip, already a proven pattern here), or (b) keep Row but add `Modifier.horizontalScroll(rememberScrollState())` to the Row. LazyRow is preferable — it keeps the memory footprint bounded even if per-bubble attachment counts grow in Phase 3/4, and matches the existing ThumbnailStrip key-by-id pattern. Whichever is chosen, also give the row `Modifier.fillMaxWidth()` so it occupies the bubble width; the bubble itself should retain its widthIn cap."
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatScreen.kt",
+      "line": 298,
+      "severity": "minor",
+      "category": "readability",
+      "issue": "MessageAudioTile in ChatScreen.kt duplicates the AudioTile code in ThumbnailStrip.kt almost verbatim (same icon, same seconds formula, same surfaceVariant background). Only cosmetic differences: 2.dp vs 4.dp inter-element spacing and label placement. Two source-of-truths for the same visual element.",
+      "impact": "Next time the audio chip style is tweaked (e.g., waveform instead of GraphicEq, or relative-time formatting), both files need identical edits; drift is a matter of when, not if.",
+      "recommendation": "Extract a shared internal `@Composable fun AudioAttachmentTile(durationMs: Long, modifier: Modifier = Modifier)` in a new file (e.g., `AudioAttachmentTile.kt` in the same package) and call it from both ThumbnailStrip and MessageBubble. This is optional — the current duplication is small and the two tiles diverge on spacing intentionally. If you keep the duplication, add a code comment in both places noting the sibling exists so a future maintainer edits both."
+    },
+    {
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "line": 187,
+      "severity": "minor",
+      "category": "testing",
+      "issue": "The new test pins the happy path (one image → USER gets one attachment, staging empties) but doesn't cover two adjacent edges the AC-26 / D28 contract implies: (a) attachment-only send — `vm.send(\"\")` with a staged bitmap should still create a USER message carrying the bitmap and clear staging; (b) assistant message never mutates its attachments field through the streaming callbacks — asserting `vm.messages.value.last { it.role == MessageRole.ASSISTANT }.attachments.isEmpty()` after a full stream would pin that invariant against future refactors of updateLastAssistant.",
+      "impact": "Both are low-probability regressions given the current code (guard allows empty text + non-empty attachments; updateLastAssistant's .copy() preserves the default). But AC-26 explicitly calls out the consistency contract, and these assertions are one-liners that lock it in.",
+      "recommendation": "Add two short tests next to the new one: `send_attachmentOnlyNoText_stillCreatesUserMessageWithAttachments` and `assistantMessageNeverCarriesAttachments` (drive a fake streaming response to completion, then assert the last ASSISTANT message's `attachments` is empty). Optional — not blocking."
+    },
+    {
+      "file": "work/phase-2-ui/tech-spec.md",
+      "line": 267,
+      "severity": "minor",
+      "category": "spec-clarity",
+      "issue": "D28 states \"Phase-3 Room перейдёт на сериализованные file-refs через `@TypeConverter` без изменения публичной UX\" — UX-level forward compatibility is covered. But the Kotlin-level contract (`Message.attachments: List<Attachment>`) is tied to `Attachment.Image(bitmap: Bitmap)` / `Attachment.Audio(pcm: ByteArray, durationMs: Long)`. Phase 3 will either extend the sealed class with file-ref variants (backward-compatible, the idiomatic path) or change the field type (breaking). D28 doesn't spell out which — not a review blocker, but leaves a small decision point open for the Phase 3 planner.",
+      "impact": "Minimal. D1 already pins Phase 2 as in-memory, and a sealed-class extension is the obvious Phase 3 move. A Phase-3 planner would reach the same conclusion in 30 seconds.",
+      "recommendation": "Optional: add one sentence to D28 such as \"Phase-3 will extend the Attachment sealed class with FileRef variants (no change to Message contract), not replace it\" to remove the ambiguity. Not required for AC-26 approval."
+    }
+  ]
+}

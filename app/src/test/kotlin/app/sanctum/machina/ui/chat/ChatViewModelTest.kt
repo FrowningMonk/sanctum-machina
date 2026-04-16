@@ -205,6 +205,23 @@ class ChatViewModelTest {
     }
 
     @Test
+    fun send_attachmentOnlyBlankText_stillProceedsAndClears() = runTest(dispatcher) {
+        fakeRegistry.model = Model(name = "m", llmSupportImage = true)
+        val vm = buildViewModel()
+        advanceUntilIdle()
+        vm.addImageBitmap(stubBitmap())
+        advanceUntilIdle()
+
+        vm.send("")  // blank text, attachments present — AC-9 + AC-26 contract
+        advanceUntilIdle()
+
+        assertTrue(vm.attachments.value.isEmpty())
+        val user = vm.messages.value.first { it.role == MessageRole.USER }
+        assertEquals("", user.text)
+        assertEquals(1, user.attachments.size)
+    }
+
+    @Test
     fun modelCaps_initFails_keepsDefaultCaps() = runTest(dispatcher) {
         fakeRegistry.initResult = Result.failure(IOException("boom"))
         fakeRegistry.model = Model(

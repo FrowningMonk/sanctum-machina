@@ -7,20 +7,20 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -296,10 +296,15 @@ private val MessageAttachmentSize = 72.dp
 
 @Composable
 private fun MessageAttachmentsRow(attachments: List<Attachment>) {
-    Row(
+    // LazyRow: bubble width is capped (320.dp); 10 × 72dp tiles = 720dp and
+    // would be silently clipped by a non-scrolling Row, defeating AC-26.
+    LazyRow(
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        for (attachment in attachments) {
+        itemsIndexed(
+            items = attachments,
+            key = { _, attachment -> attachment.id },
+        ) { _, attachment ->
             Box(
                 modifier = Modifier
                     .size(MessageAttachmentSize)
@@ -317,36 +322,9 @@ private fun MessageAttachmentsRow(attachments: List<Attachment>) {
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop,
                     )
-                    is Attachment.Audio -> MessageAudioTile(durationMs = attachment.durationMs)
+                    is Attachment.Audio -> AudioAttachmentTile(durationMs = attachment.durationMs)
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun MessageAudioTile(durationMs: Long) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceVariant),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            Icon(
-                imageVector = Icons.Outlined.GraphicEq,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            val seconds = (durationMs / 1000L).toInt().coerceAtLeast(0)
-            Text(
-                text = stringResource(R.string.audio_record_timer_format, seconds),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }

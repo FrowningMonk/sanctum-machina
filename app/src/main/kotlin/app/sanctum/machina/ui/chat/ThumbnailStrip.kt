@@ -85,7 +85,7 @@ private fun ThumbnailItem(
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
             )
-            is Attachment.Audio -> AudioTile(durationMs = attachment.durationMs)
+            is Attachment.Audio -> AudioAttachmentTile(durationMs = attachment.durationMs)
         }
         IconButton(
             onClick = onRemove,
@@ -108,8 +108,13 @@ private fun ThumbnailItem(
     }
 }
 
+/**
+ * Audio-attachment tile: waveform icon + "N с" label, sized to `fillMaxSize`.
+ * Shared between `ThumbnailStrip` (staging area with ✕) and `MessageBubble`
+ * (history rendering, no ✕). Expects to be placed inside a sized `Box`.
+ */
 @Composable
-private fun AudioTile(durationMs: Long) {
+internal fun AudioAttachmentTile(durationMs: Long) {
     Box(
         modifier = Modifier
             .fillMaxSize()
