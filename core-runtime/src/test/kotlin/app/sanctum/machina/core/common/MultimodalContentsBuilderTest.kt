@@ -64,8 +64,10 @@ class MultimodalContentsBuilderTest {
 
   @Test
   fun multipleImagesAndAudio_preservesInputOrderWithinGroup() {
-    val img1 = makeBitmap()
-    val img2 = makeBitmap()
+    // Different dimensions → different PNG payload sizes, so image order is
+    // pinned independently (byte-identical bitmaps would pass even if swapped).
+    val img1 = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+    val img2 = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888)
     val audio1 = byteArrayOf(10, 11, 12)
     val audio2 = byteArrayOf(20, 21, 22)
 
@@ -81,6 +83,10 @@ class MultimodalContentsBuilderTest {
     assertTrue(result[2] is Content.AudioBytes)
     assertTrue(result[3] is Content.AudioBytes)
     assertTrue(result[4] is Content.Text)
+
+    val img1Bytes = (result[0] as Content.ImageBytes).bytes
+    val img2Bytes = (result[1] as Content.ImageBytes).bytes
+    assertTrue("img1 PNG payload must be smaller than img2", img1Bytes.size < img2Bytes.size)
 
     assertArrayEquals(audio1, (result[2] as Content.AudioBytes).bytes)
     assertArrayEquals(audio2, (result[3] as Content.AudioBytes).bytes)
