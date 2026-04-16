@@ -1,5 +1,10 @@
 package app.sanctum.machina.ui.chat
 
+import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
+import android.net.Uri
+import android.provider.Settings
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -26,8 +31,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -36,6 +43,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -51,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.sanctum.machina.R
+import kotlinx.coroutines.launch
 
 @Composable
 fun ChatScreen(
@@ -87,6 +96,8 @@ fun ChatScreen(
                 onRemoveAttachment = viewModel::removeAttachment,
                 onStop = viewModel::stop,
                 onReset = viewModel::reset,
+                onImageCaptured = viewModel::addImageBitmap,
+                onCameraInitError = viewModel::reportCameraError,
             )
     }
 }
@@ -147,15 +158,25 @@ private fun ReadyContent(
     isGenerating: Boolean,
     snackbarHostState: SnackbarHostState,
     onSend: (String) -> Unit,
-    onPickImages: (List<android.net.Uri>) -> Unit,
+    onPickImages: (List<Uri>) -> Unit,
     onRemoveAttachment: (Int) -> Unit,
     onStop: () -> Unit,
     onReset: () -> Unit,
+    onImageCaptured: (Bitmap) -> Unit,
+    onCameraInitError: (String, Throwable?) -> Unit,
 ) {
     // rememberSaveable survives rotation / process death restore so a half-typed
     // prompt isn't lost on configuration change.
     var text by rememberSaveable { mutableStateOf("") }
+    // rememberSaveable so a rotation mid-capture doesn't silently dismiss the
+    // camera sheet — composition rebuilds with the sheet still open and
+    // CameraX rebinds to the new lifecycle (R8).
+    var showCameraSheet by rememberSaveable { mutableStateOf(false) }
     val hasAudioAttachment = attachments.any { it is Attachment.Audio }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val cameraDeniedMsg = stringResource(R.string.permission_camera_denied)
+    val openSettingsLabel = stringResource(R.string.permission_open_settings)
 
     // Capture callers via rememberUpdatedState so the remembered callbacks
     // holder sees the latest lambdas without being re-allocated each recomposition.
@@ -174,7 +195,7 @@ private fun ReadyContent(
             },
             onStop = { stopRef.value() },
             onPickImages = { uris -> pickImagesRef.value(uris) },
-            onOpenCamera = { /* task 8 */ },
+            onOpenCamera = { showCameraSheet = true },
             onOpenAudioRecorder = { /* task 9 */ },
         )
     }
@@ -222,6 +243,43 @@ private fun ReadyContent(
             )
         }
     }
+
+    if (showCameraSheet) {
+        CameraBottomSheet(
+            onDismiss = { showCameraSheet = false },
+            onImageCaptured = onImageCaptured,
+            onCameraInitError = onCameraInitError,
+            onPermissionDenied = { permanent ->
+                scope.launch {
+                    if (permanent) {
+                        val result = snackbarHostState.showSnackbar(
+                            message = cameraDeniedMsg,
+                            actionLabel = openSettingsLabel,
+                            duration = SnackbarDuration.Long,
+                        )
+                        if (result == SnackbarResult.ActionPerformed) {
+                            context.openAppSettings()
+                        }
+                    } else {
+                        snackbarHostState.showSnackbar(cameraDeniedMsg)
+                    }
+                }
+            },
+        )
+    }
+}
+
+/**
+ * Launches the system "App info" screen so the user can re-enable a
+ * permission they permanently denied. `FLAG_ACTIVITY_NEW_TASK` is required
+ * because `startActivity` may be called from a non-Activity context.
+ */
+private fun Context.openAppSettings() {
+    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+        data = Uri.fromParts("package", packageName, null)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    startActivity(intent)
 }
 
 @Composable

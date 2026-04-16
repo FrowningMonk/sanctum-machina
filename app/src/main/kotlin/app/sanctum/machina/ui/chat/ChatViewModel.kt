@@ -258,6 +258,17 @@ constructor(
         }
     }
 
+    /**
+     * Called from [CameraBottomSheet] when CameraX bind/takePicture fails
+     * (D27 — "camera" component). Logs via [ErrorLog] and surfaces a user-
+     * visible snackbar. The sheet dismisses itself; no state reset needed
+     * here because no attachment was added.
+     */
+    fun reportCameraError(description: String, cause: Throwable?) {
+        viewModelScope.launch { errorLog.e("camera", description, cause) }
+        _snackbar.tryEmit(R.string.camera_init_failed)
+    }
+
     override fun onCleared() {
         super.onCleared()
         // viewModelScope is already cancelled here; GlobalScope is lint-discouraged.
