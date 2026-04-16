@@ -1,0 +1,201 @@
+{
+  "batch": 4,
+  "tasks": [10, 11, 12],
+  "iteration": 1,
+  "reviewer": "reality-checker-agent",
+  "date": "2026-04-16",
+  "summary": "Tasks 10 and 11 are largely feasible. Key findings: ConfigKey is correctly 2-arg (id+label); awaitInitialize does NOT currently pass systemInstruction (needs adding — confirmed gap, not hallucination); SafeMarkdown does NOT yet exist in the codebase (task 10 depends on it being created first, likely in an earlier wave task — verify task ordering); core-settings module does not yet exist in settings.gradle.kts; EffectiveConfig proto 'hasField' hint is a hallucination — project uses a plain Map<String,Any> config, no proto on the app/core-runtime side; Task 12 audit scope is correctly aligned with tasks 1-11.",
+
+  "task_10": {
+    "status": "feasible_with_notes",
+    "file_checks": {
+      "app/src/main/kotlin/app/sanctum/machina/ui/chat/Message.kt": {
+        "exists": true,
+        "current_fields": ["role: MessageRole", "text: String", "streaming: Boolean = false", "interrupted: Boolean = false", "footer: String? = null"],
+        "modification_feasible": true,
+        "note": "Adding thinkingText: String? is straightforward — standard data class extension"
+      },
+      "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/Config.kt": {
+        "exists": true,
+        "ConfigKey_signature": "data class ConfigKey(val id: String, val label: String)",
+        "ConfigKey_is_2arg": true,
+        "SYSTEM_PROMPT_DEFAULT_present": false,
+        "createLlmChatConfigs_signature": "fun createLlmChatConfigs(defaultMaxToken, defaultMaxContextLength, defaultTopK, defaultTopP, defaultTemperature, accelerators, supportThinking)",
+        "task_code_uses_ConfigKeys.SYSTEM_PROMPT_DEFAULT.label": true,
+        "modification_feasible": true,
+        "note": "ConfigKey 2-arg signature matches task code. SYSTEM_PROMPT_DEFAULT not present yet — needs adding. createLlmChatConfigs extension with defaultSystemPrompt param is straightforward."
+      },
+      "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt": {
+        "exists": true,
+        "awaitInitialize_exists": true,
+        "awaitInitialize_current_signature": "private suspend fun awaitInitialize(model: Model): String",
+        "awaitInitialize_current_calls_systemInstruction": false,
+        "systemInstruction_param_available_in_LlmModelHelper.initialize": true,
+        "modification_feasible": true,
+        "note": "awaitInitialize currently calls llmModelHelper.initialize WITHOUT systemInstruction — confirmed gap D24 is real and needs filling. LlmModelHelper.initialize already accepts systemInstruction: Contents? = null (optional param). The task code snippet is correct and feasible."
+      },
+      "gallery-source/Android/src/app/src/main/java/com/google/ai/edge/gallery/ui/common/chat/MessageBodyThinking.kt": {
+        "exists": true,
+        "note": "File exists, valid reference. Uses MarkdownText (gallery's component), drawBehind for left line, AnimatedVisibility for collapse. Pattern is sound and portable to ThinkingBlock.kt with SafeMarkdown substitution."
+      },
+      "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatScreen.kt": {
+        "exists": true,
+        "MessageBubble_composable_present": true,
+        "MessageBubble_is_private": true,
+        "extraction_feasible": true,
+        "note": "Private MessageBubble composable exists at line 183. Currently renders plain Text, no SafeMarkdown. Extraction to separate file is straightforward."
+      },
+      "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/ModelAllowlist.kt": {
+        "exists": true,
+        "AllowedModelConfig_fields": ["topK", "topP", "temperature", "maxContextLength", "maxTokens", "accelerators", "visionAccelerator"],
+        "defaultSystemPrompt_field_present": false,
+        "supportThinking_field_present": false,
+        "createLlmChatConfigs_call_missing_supportThinking": true,
+        "modification_feasible": true,
+        "note": "AllowedModelConfig does not have defaultSystemPrompt or supportThinking fields yet — both need adding. The toModel() call to createLlmChatConfigs() also does not pass supportThinking, which means llmSupportThinking on Model.kt already exists but is not plumbed through AllowedModelConfig. Task correctly identifies this gap."
+      }
+    },
+    "issues": [
+      {
+        "severity": "medium",
+        "description": "SafeMarkdown does not exist in the app codebase — no SafeMarkdown.kt or SafeMarkdown composable found anywhere in app/ or core-runtime/",
+        "detail": "Task 10 references 'SafeMarkdown — уже существует в проекте, использовать как есть'. This is INCORRECT — SafeMarkdown.kt is listed in tech-spec as a new file to create in Phase 2 (see tech-spec Architecture section). It must be created before or alongside Task 10 (likely in tasks 5-7 range per wave ordering). If SafeMarkdown is not yet created when Task 10 runs, compilation will fail.",
+        "recommendation": "Verify which earlier task creates SafeMarkdown.kt. If it belongs to an earlier wave task that is a dependency, ensure task ordering is enforced. The 'already exists' comment in task 10 implementation hints is a hallucination/error."
+      },
+      {
+        "severity": "low",
+        "description": "AllowedModelConfig missing supportThinking and defaultSystemPrompt fields",
+        "detail": "Both fields need to be added to AllowedModelConfig before toModel() can pass them to createLlmChatConfigs(). The task correctly calls out both, but the current AllowedModelConfig struct has neither.",
+        "recommendation": "No action needed — task 10 correctly handles this by specifying ModelAllowlist.kt as a file to modify."
+      },
+      {
+        "severity": "low",
+        "description": "resultListener 3rd argument already exists in LlmModelHelper interface",
+        "detail": "typealias ResultListener = (partialResult: String, done: Boolean, partialThinkingResult: String?) -> Unit is already defined in LlmModelHelper.kt. ChatViewModel currently ignores the 3rd arg (uses _ in lambda). Task 10 correctly identifies accumulation of this 3rd arg as the work to be done.",
+        "recommendation": "No action needed — consistent with task description."
+      }
+    ],
+    "feasibility_verdict": "FEASIBLE — all referenced files exist, all referenced APIs/patterns are real. One genuine concern: SafeMarkdown must exist before Task 10 can compile. Confirm task wave ordering ensures SafeMarkdown is available."
+  },
+
+  "task_11": {
+    "status": "feasible_with_notes",
+    "file_checks": {
+      "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatScreen.kt": {
+        "exists": true,
+        "autoscroll_already_present": true,
+        "note": "ChatScreen already has LaunchedEffect autoscroll (lines 161-170) with two triggers: messages.size and messages.lastOrNull()?.text?.length. Task 11 modifies this to a LaunchedEffect(messages.size, lastMessageLength) two-key pattern — current implementation already uses a similar two-LaunchedEffect pattern. TopAppBar with Settings/Reset/Back needs adding."
+      },
+      "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt": {
+        "exists": true,
+        "reset_method_present": true,
+        "reset_calls_registry_resetConversation": true,
+        "attachment_state_present": false,
+        "note": "ChatViewModel has reset() method but no attachments state. Task 11 modifies the ViewModel substantially (state machines for attach/send/applyLight/applyHeavy/etc). The existing structure (StateFlow<ChatUiState>, StateFlow<List<Message>>) is a clean base for extension."
+      },
+      "app/src/main/res/values/strings.xml": {
+        "exists": true,
+        "modification_feasible": true
+      }
+    },
+    "issues": [
+      {
+        "severity": "high",
+        "description": "core-settings module does not exist — observePerModelSettings() is not implemented anywhere",
+        "detail": "Task 11 requires InferenceSettingsBottomSheet to read from repository.observePerModelSettings(modelId). The core-settings module (AppSettingsRepository, DataStore, proto) is not present in the codebase — settings.gradle.kts includes only :app and :core-runtime. Task 11 depends_on [10] but core-settings setup must happen in earlier tasks (1-7 range per tech-spec). If core-settings tasks haven't completed, Task 11 compilation will fail.",
+        "recommendation": "Verify that earlier tasks (1-7) create and wire :core-settings. Task 11 depends_on [10] only — if core-settings is expected from an earlier wave, the depends_on chain implicitly covers it. This is an ordering concern, not a task 11 design error."
+      },
+      {
+        "severity": "medium",
+        "description": "EffectiveConfig implementation hint references proto 'hasField' — hallucination",
+        "detail": "Task 11 says: 'EffectiveConfig.merge — использовать proto hasField или kotlin sealed для различения explicit false от отсутствия значения'. The proto hasField approach is valid for the PerModelSettings proto (in core-settings). However, EffectiveConfig itself operates in :app and merges proto-generated PerModelSettings with allowlist Config defaults (which are plain Kotlin types / Map<String,Any>). The 'hasField' reference is valid IF PerModelSettings uses proto3 explicit optional fields (D4 in tech-spec confirms this). This is NOT a hallucination — it's valid proto3 API.",
+        "recommendation": "No action needed — proto3 explicit optional fields support hasField(). Tech-spec D4 confirms this design."
+      },
+      {
+        "severity": "low",
+        "description": "ChatViewModelTest references applyLightOverrides, applyHeavySetting, applySystemPromptAndReset — these methods don't exist yet in ChatViewModel",
+        "detail": "These are NEW methods to be added by Task 11. TDD approach: tests written first (red), implementation makes them green. This is by design.",
+        "recommendation": "No action needed — consistent with TDD-first approach."
+      },
+      {
+        "severity": "low",
+        "description": "autoscroll already partially implemented — task 11 should not introduce duplicate LaunchedEffect",
+        "detail": "ChatScreen currently has TWO separate LaunchedEffects for autoscroll (lines 161-170). Task 11 describes implementing 'autoscroll via LaunchedEffect(messages.size, lastLength)' as a single 2-key effect. The implementor should consolidate the two existing LaunchedEffects into one, not add a third.",
+        "recommendation": "Add note to implementor: consolidate existing two autoscroll LaunchedEffects into the single 2-key form specified in task 11."
+      }
+    ],
+    "feasibility_verdict": "FEASIBLE — design is sound. Main risk is dependency on core-settings module from earlier tasks. Task 11 itself correctly identifies all files to create/modify."
+  },
+
+  "task_12": {
+    "status": "feasible",
+    "audit_scope_check": {
+      "description": "Task 12 audits all Phase 2 source files from tasks 1-11. Cross-checked against tech-spec Architecture section.",
+      "files_expected_to_exist_after_tasks_1_11": [
+        "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/ModelAllowlist.kt (modified)",
+        "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/Config.kt (modified)",
+        "core-runtime/src/main/kotlin/app/sanctum/machina/core/common/MediaUtils.kt (new)",
+        "core-runtime/src/main/kotlin/app/sanctum/machina/core/common/AudioClip.kt (new)",
+        "core-runtime/src/main/kotlin/app/sanctum/machina/core/common/MultimodalContentsBuilder.kt (new)",
+        "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt (modified)",
+        "core-settings module (new): proto, AppSettingsSerializer, AppSettingsRepository, DefaultAppSettingsRepository, CoreSettingsModule",
+        "app/src/main/kotlin/app/sanctum/machina/ui/chat/Message.kt (modified)",
+        "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatScreen.kt (modified)",
+        "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt (modified)",
+        "app/src/main/kotlin/app/sanctum/machina/ui/chat/SafeMarkdown.kt (new)",
+        "app/src/main/kotlin/app/sanctum/machina/ui/chat/MessageBubble.kt (new)",
+        "app/src/main/kotlin/app/sanctum/machina/ui/chat/ThinkingBlock.kt (new)",
+        "app/src/main/kotlin/app/sanctum/machina/ui/chat/Attachment.kt (new)",
+        "app/src/main/kotlin/app/sanctum/machina/ui/chat/ThumbnailStrip.kt (new)",
+        "app/src/main/kotlin/app/sanctum/machina/ui/chat/MultimodalInputBar.kt (new)",
+        "app/src/main/kotlin/app/sanctum/machina/ui/chat/CameraBottomSheet.kt (new)",
+        "app/src/main/kotlin/app/sanctum/machina/ui/chat/AudioRecorderBottomSheet.kt (new)",
+        "app/src/main/kotlin/app/sanctum/machina/ui/chat/InferenceSettingsBottomSheet.kt (new)",
+        "app/src/main/kotlin/app/sanctum/machina/ui/chat/HeavyChangeDialog.kt (new)",
+        "app/src/main/kotlin/app/sanctum/machina/ui/chat/ReinitProgressDialog.kt (new)",
+        "app/src/main/kotlin/app/sanctum/machina/ui/chat/EffectiveConfig.kt (new)",
+        "app/src/main/kotlin/app/sanctum/machina/ui/about/AboutScreen.kt (new)",
+        "app/src/main/res/values/strings.xml (modified)",
+        "app/src/main/assets/about.md (new)",
+        "app/src/main/res/xml/data_extraction_rules.xml (new)",
+        "app/src/main/AndroidManifest.xml (modified)"
+      ],
+      "scope_alignment": "Task 12 audit scope ('all Kotlin/XML/Compose files in modules touched by tasks 1-11') correctly covers all the above. No hallucinated files referenced."
+    },
+    "audit_axes_feasibility": {
+      "module_boundary": "Feasible — grep for 'import androidx.compose' and 'import android.app.Activity' in :core-runtime and :core-settings is straightforward",
+      "lifecycle_hygiene": "Feasible — grep for bindToLifecycle/unbindAll and AudioRecord/release() patterns",
+      "autoscroll_performance": "Feasible — check for LazyListState usage patterns",
+      "permission_flow_consistency": "Feasible — Camera (task 8) and Microphone (task 9) both use same permission launcher pattern",
+      "markdown_safety": "Feasible — SafeMarkdown.kt is the single whitelisted renderer; grep for MarkdownText/Markdown usage outside of it",
+      "cross_component_duplicate_init": "Feasible — grep for initialize() call sites",
+      "shared_resources_compliance": "Feasible — 5 resources in tech-spec table, each with single owner"
+    },
+    "issues": [],
+    "feasibility_verdict": "FEASIBLE — audit task is correctly scoped to Phase 2 output. Audit report output path (work/phase-2-ui/logs/audit/task-12-audit-report.md) is reasonable."
+  },
+
+  "cross_cutting_findings": [
+    {
+      "severity": "high",
+      "affects": ["task_10", "task_11"],
+      "description": "SafeMarkdown.kt does not exist in codebase yet",
+      "detail": "Both tasks 10 and 11 depend on SafeMarkdown. Task 10 uses it inside ThinkingBlock and MessageBubble. Tech-spec lists it as a new file to create in Phase 2. It must be created in an earlier task (likely task 5 or 6 based on wave ordering). The reality-checker found zero occurrences of 'SafeMarkdown' in the app/ or core-runtime/ source tree.",
+      "recommendation": "Confirm SafeMarkdown.kt creation is part of an earlier wave task and that task 10's depends_on chain ensures it exists. If not, add SafeMarkdown creation to task 10's 'Files to create' list."
+    },
+    {
+      "severity": "medium",
+      "affects": ["task_11"],
+      "description": "core-settings module not registered in settings.gradle.kts",
+      "detail": "settings.gradle.kts currently only includes ':app' and ':core-runtime'. The :core-settings module (required by InferenceSettingsBottomSheet via AppSettingsRepository) must be created and registered in an earlier task.",
+      "recommendation": "Verify earlier task (likely task 1 or 2) creates :core-settings and adds it to settings.gradle.kts. Task 11's implicit dependency chain should cover this."
+    },
+    {
+      "severity": "low",
+      "affects": ["task_10"],
+      "description": "ModelAllowlist.AllowedModelConfig missing supportThinking field — llmSupportThinking not plumbed from JSON",
+      "detail": "Model.kt has llmSupportThinking: Boolean = false, and ConfigKeys has SUPPORT_THINKING, but AllowedModelConfig (the JSON parsing struct) does not have a supportThinking field. AllowedModel.toModel() hardcodes supportThinking=false by not passing it. Task 10 correctly calls out ModelAllowlist.kt as a file to modify.",
+      "recommendation": "No action needed — task 10 handles this."
+    }
+  ]
+}
