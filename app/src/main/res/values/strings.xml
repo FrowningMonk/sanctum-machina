@@ -1,5 +1,5 @@
 <resources>
-  <string name="app_name">Sanctum</string>
+  <string name="app_name">Sanctum Machina</string>
 
   <!-- ModelManager screen -->
   <string name="model_manager_title">Модели</string>
@@ -11,7 +11,7 @@
   <string name="model_download_progress_format">%1$d / %2$d МБ</string>
   <string name="model_error_prefix">Ошибка: %1$s</string>
 
-  <!-- Buttons -->
+  <!-- Buttons (generic) -->
   <string name="btn_download">Скачать</string>
   <string name="btn_cancel">Отмена</string>
   <string name="btn_load">Загрузить</string>
@@ -20,6 +20,9 @@
   <string name="btn_stop">Стоп</string>
   <string name="btn_reset">Сбросить</string>
   <string name="btn_back">Назад</string>
+  <string name="btn_apply">Применить</string>
+  <string name="btn_default">По умолчанию</string>
+  <string name="btn_close">Закрыть</string>
 
   <!-- Chat screen -->
   <string name="chat_loading_model">Загрузка модели…</string>
@@ -29,4 +32,63 @@
 
   <!-- Chat TTFT footer -->
   <string name="ttft_footer_format">TTFT %1$dms · %2$.1fs total</string>
+
+  <!-- ChatScreen TopAppBar actions -->
+  <string name="chat_action_settings">Настройки модели</string>
+  <string name="chat_action_reset">Сбросить чат</string>
+  <string name="chat_action_about">О приложении</string>
+
+  <!-- Inference settings (InferenceSettingsBottomSheet, 7 fields) -->
+  <string name="settings_title">Настройки модели</string>
+  <string name="settings_system_prompt_label">Системный промпт</string>
+  <string name="settings_temperature_label">Температура</string>
+  <string name="settings_top_k_label">Top-K</string>
+  <string name="settings_top_p_label">Top-P</string>
+  <string name="settings_max_tokens_label">Максимум токенов</string>
+  <string name="settings_enable_thinking_label">Ризонинг</string>
+  <string name="settings_accelerator_label">Ускоритель</string>
+  <string name="settings_accelerator_gpu">GPU</string>
+  <string name="settings_accelerator_cpu">CPU</string>
+  <string name="settings_systemprompt_applied_snackbar">Системный промпт применён, контекст чата сброшен</string>
+
+  <!-- Heavy-change confirmation dialog (D12) -->
+  <string name="heavy_change_dialog_title">Изменить параметр модели</string>
+  <string name="heavy_change_dialog_body">Применение займёт примерно 5–30 секунд. Контекст чата будет сброшен.</string>
+
+  <!-- Reinit progress dialog (D12) -->
+  <string name="reinit_progress_message">Переинициализация модели…</string>
+
+  <!-- Runtime permissions (D11) -->
+  <string name="permission_camera_denied">Доступ к камере не предоставлен.</string>
+  <string name="permission_audio_denied">Доступ к микрофону не предоставлен.</string>
+  <string name="permission_open_settings">Открыть настройки</string>
+
+  <!-- Attachments (Photo Picker, ThumbnailStrip) -->
+  <string name="attachment_photo_picker">Добавить фото</string>
+  <string name="attachment_camera">Сделать фото</string>
+  <string name="attachment_audio">Записать аудио</string>
+  <string name="attachment_remove">Убрать вложение</string>
+  <string name="attachment_image_label">Фото</string>
+  <string name="attachment_audio_label">Аудио</string>
+  <string name="attachment_max_images_reached">Максимум 10 фото в одном сообщении.</string>
+  <string name="attachment_audio_disabled">Максимум один аудио-клип на сообщение</string>
+  <string name="attachment_image_decode_failed">Не удалось обработать фото.</string>
+
+  <!-- Camera bottom sheet -->
+  <string name="camera_capture">Снять</string>
+  <string name="camera_init_failed">Не удалось запустить камеру.</string>
+
+  <!-- Audio recorder bottom sheet -->
+  <string name="audio_record_start">Записать</string>
+  <string name="audio_record_stop">Остановить</string>
+  <string name="audio_record_init_failed">Не удалось запустить запись.</string>
+  <string name="audio_record_timer_format">%1$d с</string>
+
+  <!-- Thinking (collapsible block) -->
+  <string name="thinking_show">Показать ризонинг</string>
+  <string name="thinking_hide">Скрыть ризонинг</string>
+
+  <!-- About screen -->
+  <string name="about_title">О приложении</string>
+  <string name="about_version_format">Версия %1$s</string>
 </resources>
