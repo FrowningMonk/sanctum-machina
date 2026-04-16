@@ -1,0 +1,54 @@
+{
+  "status": "pass",
+  "summary": "Phase 2 user-spec is feasible, right-sized as L, and well-scoped as a thin UI wrapper over Phase-1 core-runtime; a small number of minor concerns around thinking-heavy-reinit classification, Consts.kt MAX_AUDIO_CLIP_COUNT vs multi-audio UI, and subtle tech-spec leakage deserve attention but do not block.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "finding": "AC-4 classifies `enableThinking` as a 'heavy' param requiring engine reinit, but LlmChatModelHelper reads thinking per-message via `message.channels[\"thought\"]` and treats `enableThinking` as a runtime sampler/config flag. On litertlm 0.10.0 it may well require reinit, but this is an untested assumption baked into the spec — if it turns out to be hot-swappable, the warning dialog becomes user-hostile noise.",
+      "suggestion": "Weaken AC-4 wording to 'accelerator requires reinit; enableThinking MAY require reinit — verified on Honor 200 during task execution; final list locked before merge'. R2 already allows this hedging; AC-4 should match R2 rather than assert the list prescriptively."
+    },
+    {
+      "severity": "minor",
+      "category": "underengineering",
+      "finding": "Edge cases for the bottom sheet settings flow are under-specified. What happens if user opens settings while an inference stream is in-progress? If they press 'Apply' for a heavy param mid-stream, is the stream cancelled? Is the Settings button disabled while streaming? If Apply fails (engine reinit errors on CPU-only fallback), how is the error surfaced? None of this is in US-1/US-4 or AC-4.",
+      "suggestion": "Add 2-3 edge-case bullets to AC-4 or 'Как проверить → Edge cases': (1) heavy-param change during active stream — behavior defined; (2) engine reinit failure after Apply — error surface defined (snackbar + revert to previous config?); (3) user closes sheet without Apply — overrides in UI are discarded."
+    },
+    {
+      "severity": "minor",
+      "category": "underengineering",
+      "finding": "Phase 1 core-runtime exposes `systemInstruction: Contents?` on initialize/resetConversation, and the spec adds `systemPromptDefault` as a per-model override, but the application flow is not defined. When does systemPromptDefault actually get passed to the engine — on initialize? on each resetConversation? Does changing it in the bottom sheet reset the chat? User-spec leaves this ambiguous; tech-spec will have to invent it.",
+      "suggestion": "Add one sentence to AC-4 or US-1 step 4: 'systemPromptDefault is applied on next engine initialize / resetConversation; changing it mid-chat does not retroactively alter the engine state — the dialog from step 6 applies if reinit is required.' This aligns with architecture.md's resolution order and pre-empts a tech-spec decision that should be a product decision."
+    },
+    {
+      "severity": "minor",
+      "category": "overengineering",
+      "finding": "Spec contains several tech-spec-level prescriptions that bind the tech-spec author's hands: exact proto schema field list and types in AC-3 (`optional int32 max_tokens; optional int32 top_k; ...`), exact dependency versions in D2/Module section (protobuf-javalite 4.26.1, datastore 1.1.7, camera 1.4.2, protobuf plugin 0.9.5), exact AudioRecord flags (CHANNEL_IN_MONO / PCM_16BIT / 16kHz), exact file paths for `about.md` and `BuildConfig.VERSION_NAME`. User-spec defines WHAT and WHY; versions and schema shapes belong in tech-spec.",
+      "suggestion": "Either (a) move exact versions and proto schema into tech-spec and keep user-spec to 'Proto DataStore + new module :core-settings + CameraX + compose-richtext' (preferred per skill doctrine), or (b) flag this section as 'tech hints, non-binding' so the tech-spec can revise without perceived contradiction. Current version is already quite prescriptive — severity kept minor because the proposals are correct and come from code-research."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "finding": "Spec says `MAX_AUDIO_CLIP_COUNT = 1` from Consts.kt is a constraint, but US-3/AC-12 describe adding a single audio clip as 'an attachment' alongside up to 10 photos. This is consistent, but AC-9 ('Send disabled if text empty AND no attachment') and the input bar thumbnail strip (AC-10) treat audio and image symmetrically. If audio=1 and image=10, the UI for 'attachments list' must handle the asymmetry (e.g., hide mic button when an audio clip is already attached, or allow replacing). Not specified.",
+      "suggestion": "Add a line to AC-12 or limits: 'При наличии прикреплённого аудио-клипа кнопка микрофона disabled либо повторный тап заменяет существующий клип' — pick one explicitly. Same for gallery/camera when 10 images already selected."
+    },
+    {
+      "severity": "minor",
+      "category": "scope",
+      "finding": "AC-16 requires 'Phase 1 AC-14 (Gallery speed parity) continues to hold' but AC-18 says no numeric TTFT gate for Phase 2. These are mildly inconsistent — if the user subjectively feels slower, is it a Phase 2 regression or an acceptable variance? The spec resolves ambiguity by making the user judge-and-jury (AC-18), which is fine for solo-dev, but 'regression vs Phase 1' could be clarified.",
+      "suggestion": "Add to AC-16: 'Регрессия фиксируется только если субъективно заметна пользователю при прямом A/B со сборкой Phase 1; численный порог не применяется.' Aligns AC-16 with AC-18 and avoids spec contradiction."
+    },
+    {
+      "severity": "minor",
+      "category": "alternative",
+      "finding": "Spec adds a new :core-settings module (D2) justified by 'core-runtime may read settings via DI without depending on :app'. In Phase 2 core-runtime does NOT actually read user overrides — per D4 settings are applied from the bottom sheet in :app by calling helper.runInference with already-merged configValues, and by triggering resetConversation/reinit. No code in :core-runtime dereferences DataStore. The new module's raison d'être is forward-looking (Phase 3+), not current-need.",
+      "suggestion": "Acceptable as-is (KMP-path + proto-schema isolation is a defensible long-term call), but consider a cheaper alternative for tech-spec review: put `AppSettings` proto + `AppSettingsRepository` inside :app first; promote to :core-settings in Phase 3 when something in core-runtime actually needs it. Current choice is mild YAGNI — not wrong, just early. Severity minor."
+    },
+    {
+      "severity": "minor",
+      "category": "underengineering",
+      "finding": "The spec does not describe what happens when the user changes a 'light' param (e.g., temperature) via bottom sheet while an inference stream is active. Options: apply on next turn (implied), interrupt stream and apply now, queue. Unspecified. Also: does 'Default' button also re-init engine if current overrides include heavy params that differ from allowlist defaults? AC-4 implies Default = 'apply allowlist-defaults', which for accelerator may also be a heavy change.",
+      "suggestion": "Add one line: 'Light params apply on next user turn (не прерывают активный стрим). Default button применяет с учётом тех же правил heavy/light — если возвращение к allowlist-defaults требует reinit, показать тот же warning-диалог.'"
+    }
+  ]
+}
