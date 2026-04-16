@@ -91,4 +91,7 @@
   <!-- About screen -->
   <string name="about_title">О приложении</string>
   <string name="about_version_format">Версия %1$s</string>
+  <string name="about_version_unknown">неизвестна</string>
+  <string name="about_attribution">Построено на Google AI Edge Gallery · Gemma · LiteRT-LM</string>
+  <string name="about_load_failed">Не удалось загрузить содержимое.</string>
 </resources>

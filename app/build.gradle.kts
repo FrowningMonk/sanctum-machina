@@ -38,6 +38,10 @@ android {
         jvmTarget = "11"
         freeCompilerArgs += "-Xcontext-receivers"
     }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
 }
 
 dependencies {
@@ -69,4 +73,8 @@ dependencies {
 
     implementation(libs.compose.richtext.commonmark)
     implementation(libs.compose.richtext.ui.material3)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
 }
