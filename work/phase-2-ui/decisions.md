@@ -140,6 +140,30 @@ Fixes applied in round 1 (commit d411631): added `microphone` uses-feature; drop
 
 ---
 
+## Task 6: AboutScreen + navigation entry + ModelManagerScreen Info action + `SafeMarkdown`
+
+**Status:** Done
+**Commit:** c529a5e (impl f5c7773 + review-round-1 fix 50262f3 + gitignore c529a5e)
+**Agent:** main agent
+**Summary:** Added `SafeMarkdown` composable (wrapper over `RichText { Markdown(text) }` with `SafeUriHandler` per D25 — http/https-only scheme whitelist; all other schemes silently blocked) and `AboutScreen` (D17 — scrollable, reads `assets/about.md` with hardcoded asset name for path-traversal protection, fallback string on `IOException`, footer with `BuildConfig.VERSION_NAME` + attribution). NavHost gains `"about"` destination; `ModelManagerScreen` TopAppBar adds `IconButton(Icons.Outlined.Info)` wired via new `onAbout` callback. `:app` test infra bootstrapped (junit + robolectric + androidx-test-core + `isIncludeAndroidResources = true`, `@Config(sdk = [33])` parity with `:core-runtime`). TAC-13 covered by 14 `SafeUriHandlerTest` cases (11 TDD anchors + 3 round-1 additions for case-insensitive and empty/malformed split).
+**Deviations:** (1) Used `Icons.Outlined.Info` instead of task file's `Icons.Default.Info` — `ux-guidelines.md` mandates "Material Symbols outlined"; Default is filled. (2) Added `testImplementation` block to `app/build.gradle.kts` (listed in task's "Files to modify") plus `testOptions.unitTests.isIncludeAndroidResources = true` — not listed but required for Robolectric to see resources. (3) Added new strings `about_version_unknown`, `about_attribution`, `about_load_failed` — covers edge cases (blank `VERSION_NAME`, missing `about.md`, footer attribution text); not enumerated in task but required by task edge-case bullets. (4) Renamed `chat_action_about` → `action_about` in round 1 (string used outside chat surface — code-reviewer feedback). Round 2 not run: all three round-1 verdicts were `approved_with_suggestions` (no critical/major), substantive fixes applied and smokes re-verified; remaining suggestions documented as deferred (per Task 5 precedent).
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved_with_suggestions, 0 critical / 0 major / 5 minor → [logs/working/task-6/code-reviewer-1.json](logs/working/task-6/code-reviewer-1.json)
+- security-auditor: approved, 0 critical / 0 major / 4 minor → [logs/working/task-6/security-auditor-1.json](logs/working/task-6/security-auditor-1.json)
+- test-reviewer: approved_with_suggestions, 0 critical / 0 major / 5 minor → [logs/working/task-6/test-reviewer-1.json](logs/working/task-6/test-reviewer-1.json)
+
+Fixes applied in round 1 (commit 50262f3): case-insensitive scheme check in `SafeUriHandler` via `scheme?.lowercase()` (RFC 3986 §3.1 — security minor-1, test-reviewer #5); single `Uri.parse` reused for scheme-check and Intent (code-reviewer #3); `malformed_blocked` split into separate empty/malformed cases (test-reviewer #1); `HTTP://Example.COM` + `HttpS://example.com` uppercase/mixed-case allowed tests added; unused `import android.content.Context` removed (test-reviewer #3); `chat_action_about` → `action_about` (code-reviewer #1). Deferred with rationale: `remember()` for TextStyle/RichTextStyle (code-reviewer #2 — optimisation lands with SafeMarkdown in streaming MessageBubble, task 10); nullable initial value for AboutScreen markdown (code-reviewer #4 — empty-string-as-loading has no visible flash on device); shared `TEST_SDK` constant (code-reviewer #5 — project-wide cross-cut); extra injection-variant tests (security minor-2 — case-insensitive fix + two added tests close the practical gap); compose-richtext alpha upgrade-watch (security minor-3 — tech-spec D8 explicitly accepts); debug-log for blocked schemes (security minor-4 — D25 explicitly says silent); `AboutScreen` pure-function extraction for unit test (test-reviewer implicit — tech-spec §Testing Strategy scopes Compose UI out).
+
+**Verification:**
+- `./gradlew :app:testDebugUnitTest --tests "*.SafeUriHandlerTest"` → 14 passed, 0 failures (11 TDD anchors + `empty_blocked`, `http_uppercase_allowed`, `https_mixedcase_allowed`)
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL (TAC-9 smoke)
+- User-verify on Honor 200 (AC-5, AC-6, US-7): deferred — agent cannot install APK / interact with UI on physical device; manual check-list is part of AC-22 final gate in Task 15 pre-deploy QA.
+
+---
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.
