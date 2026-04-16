@@ -153,6 +153,9 @@ private fun ReadyContent(
 
     // Capture callers via rememberUpdatedState so the remembered callbacks
     // holder sees the latest lambdas without being re-allocated each recomposition.
+    // ChatViewModel.send() validates `normalized.isEmpty() && pending.isEmpty()`
+    // and returns early, so no pre-check is needed here — the MultimodalInputBar
+    // canSend gate is purely cosmetic for the button enabled-state.
     val sendRef = rememberUpdatedState(onSend)
     val stopRef = rememberUpdatedState(onStop)
     val pickImagesRef = rememberUpdatedState(onPickImages)
@@ -160,10 +163,8 @@ private fun ReadyContent(
         MultimodalInputCallbacks(
             onTextChange = { text = it },
             onSend = {
-                if (text.isNotBlank() || attachments.isNotEmpty()) {
-                    sendRef.value(text)
-                    text = ""
-                }
+                sendRef.value(text)
+                text = ""
             },
             onStop = { stopRef.value() },
             onPickImages = { uris -> pickImagesRef.value(uris) },
