@@ -81,6 +81,33 @@ Fixes applied in round 1 (commit 127b381): protobuf 4.26.1 → 4.28.3 (security-
 
 ---
 
+## Task 3: Порт media utils (`MediaUtils`, `AudioClip`, `calculatePeakAmplitude`) + ErrorLog whitelist/bounding
+
+**Status:** Done
+**Commit:** 855f43f (impl 53aa3aa + review-round-1 fix 855f43f)
+**Agent:** main agent
+**Summary:** Ported gallery media helpers to `:core-runtime/common/` — `MediaUtils.kt` (`decodeSampledBitmapFromUri`, `rotateBitmap`, pure `calculateInSampleSize`, `calculatePeakAmplitude`) and `AudioClip.kt` (plain class, D5). Extended `ErrorLog.kt` with runtime whitelist enforcement (unknown component → `IllegalArgumentException`) covering the four new Phase-2 components per D27, and bound cause-chain messages to 200 chars per TAC-15 (description stays at 500). D20 pure-JVM seam realised in code: primitive-only `calculateInSampleSize` and `calculatePeakAmplitude` live in `MediaUtilsPureTest` (no Robolectric, 1000× faster).
+**Deviations:** (1) `calculatePeakAmplitude` returns `Float` (not Gallery's `Int`) and `bytesRead` defaults to `buffer.size` — sanctioned by the task edge-case note and driven by TDD anchor names (`0.0f`, `correct Float value`); documented in KDoc. (2) Added `androidx.exifinterface 1.4.1` (needed by `rotateBitmap` for `ORIENTATION_*` constants) and `androidx.test.core 1.6.1` testImplementation (for `ApplicationProvider` in Robolectric tests) — not in the task's "Files to modify" list. (3) Skipped the checked-in `test-image.jpg` resource: tests synthesise a 2048×2048 bitmap at runtime via `Bitmap.createBitmap` + `compress(JPEG)` to cacheDir and clean up in `@After` — self-contained, no binary in git. (4) Pixel-motion assertions for dimension-preserving rotations (180 / flipH / flipV) cannot run under Robolectric — `Bitmap.createBitmap(src, x, y, w, h, matrix, filter)` doesn't rasterise transformed pixels into the shadow-backed bitmap (`getPixel` returns 0). Fallback litmus: `assertNotSame(src, out)` catches the identity-matrix regression via Android's full-region/identity short-circuit; pixel correctness deferred to device smoke (AC-13, AC-18). (5) Robolectric was already added to `libs.versions.toml` and `core-runtime/build.gradle.kts` by Task 4 — no further changes needed there.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: 0 critical / 0 major / 7 minor (approved_with_suggestions) → [logs/working/task-3/code-reviewer-1.json](logs/working/task-3/code-reviewer-1.json)
+- test-reviewer: 0 critical / 2 major / 3 minor (needs_improvement) → [logs/working/task-3/test-reviewer-1.json](logs/working/task-3/test-reviewer-1.json)
+
+*Round 2 (after fixes):*
+- code-reviewer: approved, 2 minor residual (non-blocking) → [logs/working/task-3/code-reviewer-2.json](logs/working/task-3/code-reviewer-2.json)
+- test-reviewer: passed, 2 minor residual (non-blocking) → [logs/working/task-3/test-reviewer-2.json](logs/working/task-3/test-reviewer-2.json)
+
+Fixes applied in round 1 (commit 855f43f): `ALLOWED_COMPONENTS` → `internal`; JPEG-fixture rationale KDoc on `writeJpegTempFile`; trimmed implementation-internals comment in `decodeSampledBitmapFromUri_missingFile_returnsNull`; `@After` cleanup in `ErrorLogTest`; split pure-JVM tests to new `MediaUtilsPureTest.kt` (D20 seam); added `rotateBitmap` tests for `FLIP_VERTICAL`, `TRANSPOSE`, `TRANSVERSE`; strengthened rotation litmus with `assertNotSame`; added `descriptionTruncation_cappedAt500`; switched `AudioClipTest` to `assertSame`. Deferred with rationale: shared `TEST_SDK` constant (YAGNI at two call sites); `openStream` → `ErrorLog("attachment-decode")` wiring (task 7/8 integration, pure `:core-runtime` function can't inject `ErrorLog`); log-rotation test (fixture cost non-trivial, not on TDD anchor list, covered by manual smoke); optional `androidTest` for pixel-level rotation (tech-spec D20 rejected instrumentation for this phase).
+
+**Verification:**
+- `./gradlew :core-runtime:testDebugUnitTest --tests '*.MediaUtilsTest' --tests '*.MediaUtilsPureTest' --tests '*.AudioClipTest' --tests '*.ErrorLogTest'` → 31 passed, 0 failures (11 + 9 + 3 + 8)
+- `./gradlew :core-runtime:test` → BUILD SUCCESSFUL (debug + release; 55 tests total, 0 failures including pre-existing 16 `AllowlistLoaderTest` + 8 `MultimodalContentsBuilderTest`)
+- Whitelist-enforcement regression sweep: all 10 existing `errorLog.e(...)` callsites (`DefaultModelRegistry`, `ChatViewModel`, `DefaultAppSettingsRepository`) use whitelisted tags — zero hits outside the allowed set
+
+---
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.

@@ -579,7 +579,7 @@ Per-task smoke — в `Verify-smoke` каждого Task. **Post-deploy verifica
 - [x] **TAC-12.** Generated `AppSettings`, `PerModelSettings` в `:core-settings/build/generated/...`, `hasMaxTokens()`/`getMaxTokens()` методы присутствуют.
 - [ ] **TAC-13.** `SafeUriHandlerTest` покрывает allowed (http/https) + 9 blocked cases (intent, sms, tel, javascript, file, content, data, market, malformed).
 - [ ] **TAC-14.** `aapt dump xmltree app-debug.apk res/xml/data_extraction_rules.xml` показывает `<cloud-backup>` и `<device-transfer>` с `<exclude domain="root" path="."/>` (backup/transfer блокированы полностью).
-- [ ] **TAC-15.** `ErrorLogTest` покрывает whitelist-enforcement (unknown component → IllegalArgumentException) + cause-chain bounding (message обрезается на 200 chars).
+- [x] **TAC-15.** `ErrorLogTest` покрывает whitelist-enforcement (unknown component → IllegalArgumentException) + cause-chain bounding (message обрезается на 200 chars).
 
 ## Implementation Tasks
 
