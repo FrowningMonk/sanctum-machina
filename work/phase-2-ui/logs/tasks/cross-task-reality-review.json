@@ -1,0 +1,306 @@
+{
+  "meta": {
+    "review_type": "cross-task-integration-check",
+    "feature": "phase-2-ui",
+    "tasks_reviewed": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    "reviewer": "reality-checker-agent",
+    "date": "2026-04-16"
+  },
+
+  "section_1_duplicate_heavy_resource_init": {
+    "summary": "Проверка: нет ли двух задач, которые независимо создают одни и те же модули, файлы или тестовую инфраструктуру.",
+    "findings": [
+      {
+        "id": "DUP-1",
+        "severity": "OK",
+        "check": ":core-settings module — кто создаёт?",
+        "result": "CLEAR. Только Task 2 создаёт модуль :core-settings и все его файлы. Никакая другая задача не создаёт этот модуль заново или не объявляет те же файлы.",
+        "details": null
+      },
+      {
+        "id": "DUP-2",
+        "severity": "OK",
+        "check": "Robolectric — кто добавляет в libs.versions.toml?",
+        "result": "CLEAR. Только Task 3 добавляет robolectric = \"4.12\" в libs.versions.toml и testImplementation(libs.robolectric) в core-runtime/build.gradle.kts. Ни одна другая задача не дублирует этот шаг.",
+        "details": null
+      },
+      {
+        "id": "DUP-3",
+        "severity": "OK",
+        "check": "CameraX deps — кто добавляет?",
+        "result": "CLEAR. Только Task 5 добавляет CameraX 1.4.2 (camera-core, camera-camera2, camera-lifecycle, camera-view) в libs.versions.toml и app/build.gradle.kts. Task 8 использует CameraX, но в секции Context Files корректно указывает зависимость от Task 5.",
+        "details": null
+      },
+      {
+        "id": "DUP-4",
+        "severity": "WARNING",
+        "check": "libs.versions.toml — параллельное редактирование Wave 2",
+        "result": "ACKNOWLEDGED (учтено в спеке). Task 2 и Task 3 обе модифицируют gradle/libs.versions.toml. Спек явно фиксирует Wave 2 как sequential именно по этой причине. Риск конфликта есть, но он адресован через sequential ordering. Требует дисциплины при выполнении.",
+        "details": "Task 2: добавляет protobuf, datastore, protobuf-javalite. Task 3: добавляет robolectric. Ключи не пересекаются, конфликта содержимого нет, но WAL-конфликт возможен если порядок не соблюдён."
+      },
+      {
+        "id": "DUP-5",
+        "severity": "WARNING",
+        "check": "app/build.gradle.kts — кто модифицирует?",
+        "result": "POTENTIAL OVERLAP. Task 2 добавляет implementation(project(':core-settings')). Task 5 добавляет CameraX и compose-richtext deps. Task 6 добавляет testImplementation(libs.junit) (упомянуто в Details задачи 6). Если Tasks 2 и 5 выполняются последовательно, конфликтов нет. Риск: Task 6 должна добавить testImplementation, но app/build.gradle.kts не включён в явный список её Files to modify — только упомянут в Details/ВАЖНО. Это может быть упущено.",
+        "details": "Task 6 Details/ВАЖНО: 'перед написанием SafeUriHandlerTest необходимо добавить testImplementation(libs.junit) в app/build.gradle.kts'. Этот файл НЕ включён в официальный 'Files to modify' Task 6. Исполнитель может пропустить. Рекомендация: добавить app/build.gradle.kts в Files to modify Task 6."
+      },
+      {
+        "id": "DUP-6",
+        "severity": "OK",
+        "check": "Attachment.kt — кто создаёт?",
+        "result": "CLEAR. Только Task 7 создаёт app/src/main/kotlin/app/sanctum/machina/ui/chat/Attachment.kt. Tasks 8 и 9 используют и расширяют функциональность через ChatViewModel, не создавая файл заново.",
+        "details": null
+      },
+      {
+        "id": "DUP-7",
+        "severity": "OK",
+        "check": "ChatViewModelTest.kt — кто создаёт?",
+        "result": "CLEAR. Task 7 содержит TDD-анкеры для ChatViewModelTest (addImages, removeAttachment), а Task 11 СОЗДАЁТ файл ChatViewModelTest.kt с полным набором из 12 сценариев. Task 9 также упоминает ChatViewModelTest::addAudioCreatesAttachment в TDD Anchor. Распределение: Tests написаны инкрементно через задачи 7, 9, 11 — но файл физически создаётся только в Task 11. РИСК: TDD-анкеры из Tasks 7 и 9 фактически не имеют файла для записи до выполнения Task 11, что нарушает TDD-парадигму (тест должен существовать до реализации).",
+        "details": "Task 7 expects ChatViewModelTest to exist для TDD, но File to create — нет. Task 9 expects ChatViewModelTest::addAudioCreatesAttachment, но файл создаётся только в Task 11. Это означает, что реализации Tasks 7 и 9 будут написаны БЕЗ предварительного запуска TDD-тестов для ChatViewModel. Рекомендация: либо Task 7 создаёт ChatViewModelTest.kt с первыми кейсами, либо явно пометить эти TDD-анкеры как 'add to ChatViewModelTest in Task 11'."
+      }
+    ]
+  },
+
+  "section_2_hidden_dependencies": {
+    "summary": "Проверка скрытых зависимостей между задачами.",
+    "findings": [
+      {
+        "id": "DEP-1",
+        "severity": "OK",
+        "check": "Task 10 использует SafeMarkdown из Task 6 — chain 10→9→8→7→6?",
+        "result": "CHAIN CORRECT. Task 6 (wave 4) создаёт SafeMarkdown.kt. Task 10 depends_on: [9], Task 9 depends_on: [8], Task 8 depends_on: [7], Task 7 depends_on: [5, 6]. Таким образом цепочка 10→9→8→7→6 полная. SafeMarkdown гарантированно существует к моменту выполнения Task 10. Tech-spec в Task 10 Details/Implementation hints явно подтверждает: 'SafeMarkdown — создаётся в Task 6 (зависимость: Task 10 → 9 → 8 → 7 → 6, поэтому доступен).'",
+        "details": null
+      },
+      {
+        "id": "DEP-2",
+        "severity": "WARNING",
+        "check": "Task 6 нуждается в testImplementation(libs.junit) в app — предоставляет ли ранняя задача?",
+        "result": "GAP IDENTIFIED. Task 6 Notes: 'app/src/test/ директория не существует и в app/build.gradle.kts нет testImplementation блока'. Ни одна из предшествующих задач (1–5) не добавляет testImplementation в app/build.gradle.kts. Task 6 сама должна это сделать, но app/build.gradle.kts не в её официальном 'Files to modify'. Функционального блокера нет (исполнитель прочитает Details/ВАЖНО), но это gap в формальной трассируемости задачи.",
+        "details": "Рекомендация: добавить 'app/build.gradle.kts' в раздел 'Files to modify' Task 6 с явной пометкой 'добавить testImplementation(libs.junit)'."
+      },
+      {
+        "id": "DEP-3",
+        "severity": "OK",
+        "check": "Task 7 создаёт Attachment.kt — Tasks 8, 9 добавляют к нему?",
+        "result": "CHAIN CORRECT. Task 7 создаёт Attachment.kt (sealed class с Image и Audio). Task 8 (depends_on: [7]) использует Attachment через ChatViewModel.addImageBitmap. Task 9 (depends_on: [8]) расширяет ChatViewModel методом addAudio, который создаёт Audio-аттачмент. Файл Attachment.kt не пересоздаётся — расширяется через ChatViewModel. Chain корректна.",
+        "details": null
+      },
+      {
+        "id": "DEP-4",
+        "severity": "OK",
+        "check": "Task 1 vs Task 10: SYSTEM_PROMPT_DEFAULT в Config.kt — дублирование?",
+        "result": "COMPLEMENTARY, NOT DUPLICATE (детали в Section 3 / CON-1). Функциональное разделение корректно. Task 1 только добавляет параметр в createLlmChatConfigs; Task 10 добавляет ConfigKey и проводит wiring в DefaultModelRegistry.",
+        "details": "Смотри CON-1 в Section 3."
+      },
+      {
+        "id": "DEP-5",
+        "severity": "OK",
+        "check": "ErrorLog whitelist: settings-io компонент добавляется где?",
+        "result": "CLEAR. Task 3 добавляет 'settings-io' в ErrorLog whitelist вместе с 'attachment-decode', 'audio', 'camera'. Task 2 (ErrorLog.e(\"settings-io\", ...)) будет выполнена до Task 3 в том же Wave 2 (sequential), но Task 3 выполняется ПОСЛЕ Task 2. Потенциально DefaultAppSettingsRepository использует settings-io тег ДО того, как он добавлен в whitelist. РИСК: если ErrorLog enforces whitelist runtime (именно это Task 3 добавляет), то код Task 2 пройдёт тест только после Task 3.",
+        "details": "Уточнение: Task 3 добавляет RUNTIME enforcement ('require(component in ALLOWED_COMPONENTS)'). Task 2 существует параллельно в Wave 2 (sequential — Task 2 первая, Task 3 вторая). Т.е. к моменту компиляции всего кода Task 3 уже выполнена. Сборки тестов Task 2 в изоляции (до Task 3) могут упасть на runtime whitelist check если он уже существовал. Однако если enforcement добавляется именно в Task 3, то во время выполнения Task 2 enforcement ещё не будет добавлен — всё в порядке. Порядок sequential гарантирует это."
+      },
+      {
+        "id": "DEP-6",
+        "severity": "OK",
+        "check": "InferenceSettingsBottomSheet (Task 11) использует AppSettingsRepository из Task 2?",
+        "result": "CLEAR. Task 11 depends_on: [10] → [9] → [8] → [7] → [5,6] → [2,3]. Цепочка: Task 2 создаёт :core-settings с AppSettingsRepository. Task 11 зависит от Task 10, которая зависит от Task 9 → 8 → 7 → 6 → 5 → (5 depends_on [2,3]). Итого: Task 11 транзитивно зависит от Task 2. Зависимость корректна.",
+        "details": null
+      }
+    ]
+  },
+
+  "section_3_inconsistent_approaches": {
+    "summary": "Проверка на несогласованные подходы между задачами.",
+    "findings": [
+      {
+        "id": "CON-1",
+        "severity": "WARNING",
+        "check": "Tasks 1 и 10 обе модифицируют Config.kt для SYSTEM_PROMPT_DEFAULT — дублирование?",
+        "result": "PARTIAL OVERLAP — REQUIRES COORDINATION.",
+        "details": "Task 1 (Files to modify): добавляет параметр defaultSystemPrompt: String = '' в createLlmChatConfigs() И эмитирует LabelConfig(SYSTEM_PROMPT_DEFAULT, defaultSystemPrompt). Task 10 (Files to modify): добавляет ConfigKeys.SYSTEM_PROMPT_DEFAULT (новый ConfigKey) в Config.kt И расширяет createLlmChatConfigs параметром defaultSystemPrompt. Обе задачи заявляют одни и те же изменения в Config.kt. Конкретно: Task 1 описывает 'эмитировать LabelConfig(SYSTEM_PROMPT_DEFAULT, defaultSystemPrompt)' — это предполагает наличие SYSTEM_PROMPT_DEFAULT константы. Task 10 описывает 'добавить ConfigKeys.SYSTEM_PROMPT_DEFAULT'. Получается, Task 1 использует константу, которая будет создана только в Task 10. ВАРИАНТ РАЗРЕШЕНИЯ: Tech-spec (Task 10, Details) говорит 'ConfigKeys.SYSTEM_PROMPT_DEFAULT (verify — если уже есть в Phase 1, noop)'. Это означает, что SYSTEM_PROMPT_DEFAULT могла существовать до этих задач. Если это так — Task 1 может безопасно использовать константу. Если нет — Task 1 должна её создать, а Task 10 — noop. Рекомендация: явно указать в Task 1, что она СОЗДАЁТ константу SYSTEM_PROMPT_DEFAULT в Config.kt (не только параметр функции). Или явно указать в Task 10, что она создаёт её ТОЛЬКО ЕСЛИ Task 1 не создала."
+      },
+      {
+        "id": "CON-2",
+        "severity": "WARNING",
+        "check": "Tasks 1 и 10 обе модифицируют ModelAllowlist.kt — дублирование?",
+        "result": "PARTIAL OVERLAP — REQUIRES COORDINATION.",
+        "details": "Task 1 (Files to modify): ModelAllowlist.kt — AllowedModel.toModel(): добавить маппинг llmSupportImage/Audio/Thinking; парсить defaultConfig.systemPromptDefault. Task 10 (Files to modify): ModelAllowlist.kt — парсить defaultSystemPrompt из JSON, передавать в createLlmChatConfigs. Обе задачи модифицируют ModelAllowlist.kt. Разбивка функционала: Task 1 делает (a) llmSupport* mapping + (b) парсинг systemPromptDefault. Task 10 делает (b) парсинг systemPromptDefault + передачу в createLlmChatConfigs. Есть явное пересечение по пункту (b). Рекомендация: Task 1 должна парсить systemPromptDefault ИЗ JSON и передавать его в createLlmChatConfigs — это полная реализация. Task 10 должна только VERIFYИТЬ что это сделано, и добавить ConfigKeys.SYSTEM_PROMPT_DEFAULT. Без координации исполнители могут написать дублирующийся или конфликтующий код парсинга."
+      },
+      {
+        "id": "CON-3",
+        "severity": "OK",
+        "check": "strings.xml — несколько задач добавляют строки (7, 8, 9, 10, 11) — конфликты?",
+        "result": "ACCEPTABLE. Tasks 7, 8, 9, 10, 11 все добавляют строки в strings.xml. Это неизбежно при sequential Wave 4. Строки для разных фичей не пересекаются по именам (разные namespace-префиксы ожидаются). Риск: при параллельном выполнении возможны merge-конфликты, но Wave 4 sequential — конфликтов нет. Task 5 уже добавила все 'базовые' Phase-2 строки, последующие задачи добавляют feature-специфичные строки. Структурной проблемы нет.",
+        "details": null
+      },
+      {
+        "id": "CON-4",
+        "severity": "OK",
+        "check": "ChatScreen.kt — модифицируется задачами 7, 8, 9, 10, 11 — конфликты?",
+        "result": "ACCEPTABLE. Wave 4 явно sequential. Каждая задача добавляет к ChatScreen.kt новый компонент (ThumbnailStrip → CameraBottomSheet → AudioRecorderBottomSheet → MessageBubble import → TopAppBar/autoscroll). Они не удаляют код предыдущих задач, только расширяют. Arch-risk минимален при sequential выполнении.",
+        "details": null
+      },
+      {
+        "id": "CON-5",
+        "severity": "OK",
+        "check": "ChatViewModel.kt — модифицируется задачами 7, 9, 10, 11 — конфликты?",
+        "result": "ACCEPTABLE. Sequential Wave 4. Task 7 добавляет attachments StateFlow и addImages/removeAttachment. Task 9 добавляет addAudio. Task 10 добавляет thinking accumulation в resultListener. Task 11 добавляет стейт-машины applyLight/Heavy/SystemPrompt/reset. Все изменения аддитивные при sequential выполнении.",
+        "details": null
+      },
+      {
+        "id": "CON-6",
+        "severity": "INFO",
+        "check": "Wave 4 помечена как sequential, но tech-spec говорит 'Task 6 может быть параллельна 7–11'",
+        "result": "ACKNOWLEDGED. Tech-spec (Wave 4 header): 'Исключение: Task 6 не трогает ChatScreen/ViewModel — может быть запущена параллельно Tasks 7–11 (если исполняется разными агентами). По умолчанию — sequential по порядку.' Task 6 имеет depends_on: [5, 6] — ошибка в meta? Нет: Task 7 depends_on: [5, 6], Task 6 depends_on: [5]. Task 6 не зависит от Task 7, значит они могут идти параллельно. Задачи 7–11 имеют чёткую последовательную цепочку: 7→8→9→10→11. Task 6 стоит отдельно. Это корректно.",
+        "details": null
+      }
+    ]
+  },
+
+  "section_4_file_modification_conflicts": {
+    "summary": "Проверка: нет ли двух параллельных задач, которые модифицируют один и тот же файл.",
+    "wave_analysis": {
+      "wave_1": {
+        "parallel": true,
+        "tasks": [1, 4],
+        "shared_files_check": {
+          "task_1_modifies": [
+            "core-runtime/.../ModelAllowlist.kt",
+            "core-runtime/.../Config.kt",
+            "core-runtime/src/test/.../AllowlistLoaderTest.kt",
+            "core-runtime/src/test/resources/model_allowlist_fixture.json",
+            "core-runtime/src/main/assets/model_allowlist.json"
+          ],
+          "task_4_modifies": [
+            "core-runtime/.../LlmChatModelHelper.kt"
+          ],
+          "overlap": "NONE",
+          "verdict": "OK — Tasks 1 and 4 modify completely different files. Safe to parallelize."
+        }
+      },
+      "wave_2": {
+        "parallel": false,
+        "sequential": true,
+        "tasks": [2, 3],
+        "shared_files_check": {
+          "task_2_modifies": [
+            "settings.gradle.kts",
+            "gradle/libs.versions.toml",
+            "build.gradle.kts (root)",
+            "app/build.gradle.kts"
+          ],
+          "task_3_modifies": [
+            "gradle/libs.versions.toml",
+            "core-runtime/build.gradle.kts",
+            "core-runtime/.../ErrorLog.kt"
+          ],
+          "overlap": ["gradle/libs.versions.toml"],
+          "verdict": "OK — Sequential ordering correctly handles shared libs.versions.toml. No parallel conflict."
+        }
+      },
+      "wave_3": {
+        "parallel": false,
+        "tasks": [5],
+        "verdict": "OK — Single task, no conflict possible."
+      },
+      "wave_4": {
+        "parallel": false,
+        "sequential": true,
+        "tasks": [6, 7, 8, 9, 10, 11],
+        "shared_files_check": {
+          "task_6_modifies": ["SanctumApp.kt", "ModelManagerScreen.kt"],
+          "task_7_modifies": ["ChatScreen.kt", "ChatViewModel.kt", "strings.xml"],
+          "task_8_modifies": ["ChatScreen.kt", "strings.xml"],
+          "task_9_modifies": ["ChatScreen.kt", "ChatViewModel.kt", "strings.xml"],
+          "task_10_modifies": [
+            "ChatScreen.kt", "Message.kt", "ChatViewModel.kt", "strings.xml",
+            "core-runtime/.../Config.kt",
+            "core-runtime/.../DefaultModelRegistry.kt",
+            "core-runtime/.../ModelAllowlist.kt"
+          ],
+          "task_11_modifies": ["ChatScreen.kt", "ChatViewModel.kt", "strings.xml"],
+          "overlap_summary": {
+            "ChatScreen.kt": "Tasks 7, 8, 9, 10, 11 — ALL modify. SAFE due to sequential ordering.",
+            "ChatViewModel.kt": "Tasks 7, 9, 10, 11 — ALL modify. SAFE due to sequential ordering.",
+            "strings.xml": "Tasks 7, 8, 9, 10, 11 — ALL modify. SAFE due to sequential ordering.",
+            "ModelAllowlist.kt": "Task 1 (Wave 1) AND Task 10 (Wave 4) both modify. Sequential waves ensure no conflict, but logical overlap exists (see CON-2).",
+            "Config.kt": "Task 1 (Wave 1) AND Task 10 (Wave 4) both modify. Sequential waves ensure no file-level conflict, but logical overlap exists (see CON-1)."
+          },
+          "verdict": "OK for file-level conflicts (sequential). WARNING for logical content overlap on Config.kt and ModelAllowlist.kt between Tasks 1 and 10 (see CON-1, CON-2)."
+        }
+      },
+      "audit_wave": {
+        "parallel": true,
+        "tasks": [12, 13, 14],
+        "verdict": "OK — Audit tasks only READ source files, no writes to shared production code. Safe to parallelize."
+      },
+      "final_wave": {
+        "tasks": [15],
+        "verdict": "OK — Single QA task."
+      }
+    }
+  },
+
+  "summary_of_issues": {
+    "blocking": [],
+    "warnings": [
+      {
+        "id": "W-1",
+        "ref": "DUP-5 + DEP-2",
+        "title": "app/build.gradle.kts не включён в 'Files to modify' Task 6",
+        "description": "Task 6 должна добавить testImplementation(libs.junit) в app/build.gradle.kts, но этот файл отсутствует в официальном списке Files to modify. Это gap в формальном трекинге — исполнитель может пропустить шаг.",
+        "recommendation": "Добавить 'app/build.gradle.kts' в раздел 'Files to modify' Task 6 с явной заметкой: 'добавить testImplementation(libs.junit)'."
+      },
+      {
+        "id": "W-2",
+        "ref": "CON-1",
+        "title": "Config.kt модифицируется Task 1 и Task 10 с перекрывающейся логикой",
+        "description": "Task 1 добавляет параметр defaultSystemPrompt в createLlmChatConfigs и эмитирует LabelConfig(SYSTEM_PROMPT_DEFAULT, ...). Task 10 добавляет ConfigKeys.SYSTEM_PROMPT_DEFAULT и расширяет createLlmChatConfigs. SYSTEM_PROMPT_DEFAULT константа нужна Task 1, но явно создаётся только в Task 10.",
+        "recommendation": "Явно указать в Task 1, что она создаёт константу SYSTEM_PROMPT_DEFAULT в Config.kt. Либо Task 10 должна иметь явную пометку 'noop если уже создана Task 1' — сейчас это только косвенно упомянуто в tech-spec."
+      },
+      {
+        "id": "W-3",
+        "ref": "CON-2",
+        "title": "ModelAllowlist.kt модифицируется Task 1 и Task 10 с перекрывающейся логикой",
+        "description": "Обе задачи описывают парсинг defaultConfig.systemPromptDefault в ModelAllowlist.kt. Task 1 делает полную реализацию (парсинг + передача в createLlmChatConfigs). Task 10 дублирует описание этого же действия.",
+        "recommendation": "Task 10 должна явно указать 'если Task 1 уже реализовала парсинг systemPromptDefault в ModelAllowlist.kt — верифицировать корректность, не дублировать код'. Иначе исполнитель Task 10 может написать параллельный/конфликтующий код парсинга."
+      },
+      {
+        "id": "W-4",
+        "ref": "DUP-7",
+        "title": "ChatViewModelTest.kt создаётся в Task 11, но TDD-анкеры из Tasks 7 и 9 его требуют раньше",
+        "description": "Tasks 7 и 9 содержат TDD-анкеры для ChatViewModelTest (addImages, removeAttachment, addAudioCreatesAttachment), но файл ChatViewModelTest.kt физически создаётся только в Task 11. Это нарушает TDD-парадигму: тесты должны быть написаны до реализации.",
+        "recommendation": "Либо Task 7 создаёт ChatViewModelTest.kt с первыми кейсами и добавляет их в свой 'Files to create'. Либо в Tasks 7 и 9 явно указать: 'TDD-анкеры будут добавлены в ChatViewModelTest.kt который создаётся в Task 11 — реализация ChatViewModel для этих методов пишется без pre-existing failing tests'. Текущая формулировка вводит в заблуждение."
+      },
+      {
+        "id": "W-5",
+        "ref": "DUP-4",
+        "title": "libs.versions.toml модифицируется Task 2 и Task 5 — wave sequencing корректен, риск при параллельном выполнении",
+        "description": "Task 2 (Wave 2) и Task 5 (Wave 3) обе модифицируют gradle/libs.versions.toml. Волны строго последовательны, поэтому file-level конфликта нет. Но если агентная система нарушит порядок волн — возможен merge-конфликт.",
+        "recommendation": "Убедиться, что wave-gate в системе выполнения задач строго соблюдён. Содержательного конфликта нет (разные ключи)."
+      }
+    ],
+    "info": [
+      {
+        "id": "I-1",
+        "ref": "CON-6",
+        "title": "Task 6 может выполняться параллельно Tasks 7–11 при агентном выполнении",
+        "description": "Tech-spec это явно допускает. При sequential выполнении не актуально. Архитектурно корректно."
+      },
+      {
+        "id": "I-2",
+        "title": "AudioRecorderBottomSheet Wave 4 — зависимость от AudioClip из Task 3",
+        "description": "Task 9 использует ByteArray напрямую (не AudioClip), а ChatViewModel хранит Attachment.Audio(ByteArray, Long). AudioClip из Task 3 используется в MediaUtils для амплитуды, но не является типом аттачмента. Это корректное разделение ответственности по D5 и D6."
+      }
+    ]
+  },
+
+  "verdict": {
+    "overall": "PASS WITH WARNINGS",
+    "blocking_issues": 0,
+    "warning_issues": 5,
+    "info_issues": 2,
+    "conclusion": "Граф зависимостей задач корректен. Параллельные волны не имеют file-level конфликтов. Wave 4 sequential ordering обеспечивает безопасность всех общих файлов (ChatScreen, ChatViewModel, strings.xml). Основные проблемы — логическое перекрытие Config.kt и ModelAllowlist.kt между Tasks 1 и 10 (W-2, W-3) и отсутствие ChatViewModelTest.kt в Files to create Tasks 7/9 (W-4). Эти проблемы не блокируют выполнение, но требуют явной координации исполнителей."
+  }
+}
