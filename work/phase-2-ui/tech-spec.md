@@ -573,12 +573,12 @@ Per-task smoke — в `Verify-smoke` каждого Task. **Post-deploy verifica
 - [ ] **TAC-6.** `fixtureMatchesProductionAsset` зелёный после Task 1.
 - [ ] **TAC-7.** `rg -l "androidx.compose|androidx.activity" core-runtime/src/main` → пусто.
 - [x] **TAC-8.** `rg -l "androidx.compose|androidx.activity" core-settings/src/main` → пусто.
-- [ ] **TAC-9.** APK собран, `aapt dump permissions` содержит CAMERA + RECORD_AUDIO.
-- [ ] **TAC-10.** `aapt dump xmltree app-debug.apk AndroidManifest.xml | grep allowBackup` → `allowBackup=false`.
+- [x] **TAC-9.** APK собран, `aapt dump permissions` содержит CAMERA + RECORD_AUDIO.
+- [x] **TAC-10.** `aapt dump xmltree app-debug.apk AndroidManifest.xml | grep allowBackup` → `allowBackup=false`.
 - [ ] **TAC-11.** `rg -n "Text\(\"[А-Яа-я]" app/src/main` → пусто (все строки через `stringResource`).
 - [x] **TAC-12.** Generated `AppSettings`, `PerModelSettings` в `:core-settings/build/generated/...`, `hasMaxTokens()`/`getMaxTokens()` методы присутствуют.
 - [ ] **TAC-13.** `SafeUriHandlerTest` покрывает allowed (http/https) + 9 blocked cases (intent, sms, tel, javascript, file, content, data, market, malformed).
-- [ ] **TAC-14.** `aapt dump xmltree app-debug.apk res/xml/data_extraction_rules.xml` показывает `<cloud-backup>` и `<device-transfer>` с `<exclude domain="root" path="."/>` (backup/transfer блокированы полностью).
+- [x] **TAC-14.** `aapt dump xmltree app-debug.apk res/xml/data_extraction_rules.xml` показывает `<cloud-backup>` и `<device-transfer>` с `<exclude domain="root" path="."/>` (backup/transfer блокированы полностью).
 - [x] **TAC-15.** `ErrorLogTest` покрывает whitelist-enforcement (unknown component → IllegalArgumentException) + cause-chain bounding (message обрезается на 200 chars).
 
 ## Implementation Tasks

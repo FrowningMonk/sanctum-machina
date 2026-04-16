@@ -108,6 +108,38 @@ Fixes applied in round 1 (commit 855f43f): `ALLOWED_COMPONENTS` → `internal`; 
 
 ---
 
+## Task 5: strings.xml, AndroidManifest permissions + privacy hardening, dependencies
+
+**Status:** Done
+**Commit:** d411631 (impl 36379a2 + review-round-1 fix d411631)
+**Agent:** main agent
+**Summary:** Renamed `app_name` → "Sanctum Machina" (D18) and added all Phase-2 strings (7 settings labels, apply/default buttons, permission errors, ризонинг show/hide, attachment ensemble, camera/audio sheets, heavy-change dialog, reinit progress, systemPrompt-applied snackbar, About title/version) per ux-guidelines tone. Manifest: CAMERA + RECORD_AUDIO + matching `<uses-feature ... required="false">` for both camera and microphone (D11), `allowBackup="false"` retained, new `dataExtractionRules="@xml/data_extraction_rules"` with explicit exclude-root for both `<cloud-backup>` and `<device-transfer>` (D26). Version catalog + `app/build.gradle.kts` add CameraX 1.4.2 (core/camera2/lifecycle/view) and compose-richtext 1.0.0-alpha02 (commonmark + ui-material3, group `com.halilibo.compose-richtext` per D8); `lifecycle-runtime-compose` already present from Phase 1.
+**Deviations:** (1) Added `<uses-feature android.hardware.microphone required="false">` — not in task's "What to do" but applied during round-1 fix for Play Store install parity with the explicitly-required camera uses-feature; same `required="false"` semantics. (2) Removed pre-existing `android:fullBackupContent="false"` from `<application>` — redundant on minSdk=31 once `allowBackup=false` + `dataExtractionRules` cover both backup channels; flagged by code-reviewer + security-auditor. (3) About `description` string deferred — D17 places About copy in `assets/about.md`, so only `about_title` + `about_version_format` are in `strings.xml`. (4) "Document" attachment label from task bullet skipped — Phase 2 supports only photo + audio attachments per user-spec; YAGNI.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved_with_suggestions, 0 critical / 0 major / 5 minor → [logs/working/task-5/code-reviewer-1.json](logs/working/task-5/code-reviewer-1.json)
+- security-auditor: approved_with_suggestions, 0 critical / 0 major / 3 minor → [logs/working/task-5/security-auditor-1.json](logs/working/task-5/security-auditor-1.json)
+- infrastructure-reviewer: approved_with_suggestions, 0 critical / 0 major / 6 minor → [logs/working/task-5/infrastructure-reviewer-1.json](logs/working/task-5/infrastructure-reviewer-1.json)
+
+Fixes applied in round 1 (commit d411631): added `microphone` uses-feature; dropped redundant `fullBackupContent`. Round 2 not run — all three reviewers verdict was `approved_with_suggestions` (not blocking), the two applied fixes are mechanical 3-line manifest deltas with smoke re-verification (assembleDebug + aapt re-dump confirmed both changes), and remaining residual suggestions are non-blocking and documented as deferred:
+- compose-richtext alpha02 → Gradle dependency verification pin (security-auditor; alpha-stability hardening, deferred to a Phase-2 closing infra-task or Phase 3)
+- `INTERNET` permission breadth + NetworkSecurityConfig (security-auditor; pre-existing, follow-up task)
+- timer-format plural variants `%1$d с` (code-reviewer; MVP-acceptable for in-progress timer)
+- `heavy_change_dialog_body` "5–30 секунд" literal (code-reviewer; intentional copy of D12 spec text)
+- `<exclude domain="root" path="."/>` non-idiomatic vs `<exclude domain="root"/>` (infrastructure-reviewer; tech-spec D26 + TAC-14 grep require the explicit `path="."` form — kept per spec)
+- implementation/ksp ordering cosmetic (infrastructure-reviewer; conformant either way)
+
+**Verification:**
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL (post-fix re-build also SUCCESS, 5s incremental)
+- `aapt dump permissions app-debug.apk` → contains both `android.permission.CAMERA` and `android.permission.RECORD_AUDIO` (TAC-9)
+- `aapt dump xmltree app-debug.apk AndroidManifest.xml` → `android:allowBackup=(type 0x12)0x0` (TAC-10), `android:dataExtractionRules=@0x7f110000` reference, two `uses-feature` blocks both `required=(type 0x12)0x0`, `fullBackupContent` absent
+- `aapt dump xmltree app-debug.apk res/xml/data_extraction_rules.xml` → `<cloud-backup>` and `<device-transfer>` each contain `<exclude domain="root" path="."/>` (TAC-14)
+- User-verify (launcher label "Sanctum Machina" on Honor 200) — pending physical device install; APK staged at `app/build/outputs/apk/debug/app-debug.apk`
+
+---
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.
