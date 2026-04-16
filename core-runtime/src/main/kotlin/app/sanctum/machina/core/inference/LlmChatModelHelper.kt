@@ -46,6 +46,8 @@ import com.google.ai.edge.litertlm.SamplerConfig
 import com.google.ai.edge.litertlm.ToolProvider
 import java.util.concurrent.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 private const val TAG = "AGLlmChatModelHelper"
 
@@ -251,34 +253,50 @@ object LlmChatModelHelper : LlmModelHelper {
 
     val conversation = instance.conversation
 
-    val contents = MultimodalContentsBuilder.build(
-      text = input,
-      images = images,
-      audio = audioClips,
-    )
+    val callback = object : MessageCallback {
+      override fun onMessage(message: Message) {
+        resultListener(message.toString(), false, message.channels["thought"])
+      }
 
-    conversation.sendMessageAsync(
-      Contents.of(contents),
-      object : MessageCallback {
-        override fun onMessage(message: Message) {
-          resultListener(message.toString(), false, message.channels["thought"])
-        }
+      override fun onDone() {
+        resultListener("", true, null)
+      }
 
-        override fun onDone() {
+      override fun onError(throwable: Throwable) {
+        if (throwable is CancellationException) {
+          Log.e(TAG, "The inference is cancelled.")
           resultListener("", true, null)
+        } else {
+          Log.e(TAG, "onError", throwable)
+          onError("Error: ${throwable.message}")
         }
+      }
+    }
 
-        override fun onError(throwable: Throwable) {
-          if (throwable is CancellationException) {
-            Log.e(TAG, "The inference is cancelled.")
-            resultListener("", true, null)
-          } else {
-            Log.e(TAG, "onError", throwable)
-            onError("Error: ${throwable.message}")
-          }
-        }
-      },
-      extraContext ?: emptyMap(),
-    )
+    // Image PNG compression is heavy (~200-600ms per 1024² bitmap on mid-range
+    // SoC) and synchronous. Running it on the caller's thread freezes the UI
+    // for seconds when a caller dispatches from Main (e.g. ChatViewModel.send
+    // from a click lambda). Dispatch the whole prep + async handoff onto
+    // `coroutineScope` so the caller's thread stays free. If no scope was
+    // supplied, fall back to synchronous behaviour for API compatibility.
+    val dispatchPrep: () -> Unit = {
+      try {
+        val contents = MultimodalContentsBuilder.build(
+          text = input,
+          images = images,
+          audio = audioClips,
+        )
+        conversation.sendMessageAsync(Contents.of(contents), callback, extraContext ?: emptyMap())
+      } catch (t: Throwable) {
+        Log.e(TAG, "prep failed before sendMessageAsync", t)
+        onError("Error preparing content: ${t.message}")
+      }
+    }
+
+    if (coroutineScope != null) {
+      coroutineScope.launch(Dispatchers.Default) { dispatchPrep() }
+    } else {
+      dispatchPrep()
+    }
   }
 }
