@@ -1,6 +1,8 @@
 package app.sanctum.machina.ui.chat
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -14,8 +16,11 @@ import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -26,6 +31,17 @@ sealed interface ChatUiState {
     data class Failed(val rawCause: String) : ChatUiState
 }
 
+/**
+ * Capability flags derived from the active [Model] after `registry.initialize`.
+ * Drives conditional visibility of camera/gallery/mic in `MultimodalInputBar`
+ * (AC-18) and the thinking UI gate (AC-14).
+ */
+data class ModelCapabilities(
+    val supportImage: Boolean = false,
+    val supportAudio: Boolean = false,
+    val supportThinking: Boolean = false,
+)
+
 @HiltViewModel
 class ChatViewModel
 @Inject
@@ -35,6 +51,7 @@ constructor(
     private val helper: LlmModelHelper,
     private val errorLog: ErrorLog,
     @ApplicationContext private val context: Context,
+    private val imageDecoder: ImageDecoder,
 ) : ViewModel() {
 
     val modelName: String =
@@ -47,10 +64,33 @@ constructor(
     private val _messages = MutableStateFlow<List<Message>>(emptyList())
     val messages: StateFlow<List<Message>> = _messages.asStateFlow()
 
+    private val _attachments = MutableStateFlow<List<Attachment>>(emptyList())
+    val attachments: StateFlow<List<Attachment>> = _attachments.asStateFlow()
+
+    private val _modelCaps = MutableStateFlow(ModelCapabilities())
+    val modelCaps: StateFlow<ModelCapabilities> = _modelCaps.asStateFlow()
+
+    /**
+     * Transient UI events carrying a `@StringRes` id — snackbar host collects
+     * and renders. `replay = 0` + `extraBufferCapacity = 8` means tryEmit is
+     * non-suspending and events survive brief UI rebinding.
+     */
+    private val _snackbar = MutableSharedFlow<Int>(replay = 0, extraBufferCapacity = 8)
+    val snackbar: SharedFlow<Int> = _snackbar.asSharedFlow()
+
     init {
         viewModelScope.launch {
             registry.initialize(modelName).fold(
-                onSuccess = { _uiState.value = ChatUiState.Ready(isGenerating = false) },
+                onSuccess = {
+                    registry.getModel(modelName)?.let { model ->
+                        _modelCaps.value = ModelCapabilities(
+                            supportImage = model.llmSupportImage,
+                            supportAudio = model.llmSupportAudio,
+                            supportThinking = model.llmSupportThinking,
+                        )
+                    }
+                    _uiState.value = ChatUiState.Ready(isGenerating = false)
+                },
                 onFailure = { e ->
                     val cause =
                         e.message?.takeIf { it.isNotBlank() }
@@ -62,7 +102,7 @@ constructor(
     }
 
     fun send(text: String) {
-        if (text.isBlank()) return
+        if (text.isBlank() && _attachments.value.isEmpty()) return
         val state = _uiState.value
         if (state !is ChatUiState.Ready || state.isGenerating) return
         val model = registry.getModel(modelName) ?: error("Model not initialized")
@@ -130,6 +170,63 @@ constructor(
         viewModelScope.launch {
             registry.resetConversation(modelName)
             _messages.value = emptyList()
+            _attachments.value = emptyList()
+        }
+    }
+
+    /**
+     * Decodes [uris] via [ImageDecoder], downscales to ~1024×1024, clips the
+     * total image count to [MAX_IMAGES] (AC-10, R5). Dropped entries or
+     * at-limit calls emit a snackbar event. Silent on decode failure, logged
+     * to `attachment-decode`.
+     */
+    fun addImages(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            val currentImageCount = _attachments.value.count { it is Attachment.Image }
+            val remaining = (MAX_IMAGES - currentImageCount).coerceAtLeast(0)
+            val toDecode = uris.take(remaining)
+            val dropped = uris.size - toDecode.size
+
+            val newImages = mutableListOf<Attachment.Image>()
+            val failed = mutableListOf<Uri>()
+            for (uri in toDecode) {
+                val bmp = runCatching { imageDecoder.decode(uri) }.getOrNull()
+                if (bmp == null) failed += uri else newImages += Attachment.Image(bmp)
+            }
+
+            if (newImages.isNotEmpty()) {
+                _attachments.update { it + newImages }
+            }
+            if (dropped > 0) {
+                _snackbar.tryEmit(R.string.attachment_max_images_reached)
+            }
+            // Fire-and-forget: don't keep the caller pinned to log I/O dispatcher.
+            if (failed.isNotEmpty()) {
+                viewModelScope.launch {
+                    for (uri in failed) errorLog.e("attachment-decode", "decode failed: $uri")
+                }
+            }
+        }
+    }
+
+    /**
+     * Adds a [bitmap] captured from CameraX directly (task 8). Silently drops
+     * if already at [MAX_IMAGES] and emits a snackbar.
+     */
+    fun addImageBitmap(bitmap: Bitmap) {
+        val currentImageCount = _attachments.value.count { it is Attachment.Image }
+        if (currentImageCount >= MAX_IMAGES) {
+            _snackbar.tryEmit(R.string.attachment_max_images_reached)
+            return
+        }
+        _attachments.update { it + Attachment.Image(bitmap) }
+    }
+
+    fun removeAttachment(idx: Int) {
+        _attachments.update { list ->
+            if (idx < 0 || idx >= list.size) list
+            else list.toMutableList().also { it.removeAt(idx) }
         }
     }
 
@@ -151,5 +248,6 @@ constructor(
 
     companion object {
         const val NAV_ARG_MODEL_NAME: String = "modelName"
+        private const val MAX_IMAGES: Int = 10
     }
 }
