@@ -28,6 +28,29 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 
 ---
 
+## Task 4: `MultimodalContentsBuilder` + рефакторинг `LlmChatModelHelper.runInference`
+
+**Status:** Done
+**Commit:** a5e46bd (impl 28a3a1b + review-round-1 c82c6bb + review-round-2 a5e46bd)
+**Agent:** main agent
+**Summary:** Moved inline `List<Content>` assembly (images → audio → text) from `LlmChatModelHelper.runInference` into pure `MultimodalContentsBuilder.build` in `:core-runtime/common/` per D22; the private `Bitmap.toPngByteArray` extension moved with it. Behavior unchanged: same order, same whitespace guard (now via `isNotBlank()`). Added Robolectric 4.12 as `testImplementation` in `:core-runtime` per D20 and enabled `testOptions.unitTests.isIncludeAndroidResources`.
+**Deviations:** Added `robolectric` to `gradle/libs.versions.toml` and `core-runtime/build.gradle.kts` — scoped for Task 3 in Wave 2 but required here because `MultimodalContentsBuilderTest` (Wave 1) needs Bitmap. Task 3 can skip its Robolectric-add step. Smoke command in task file uses `:core-runtime:test --tests MultimodalContentsBuilderTest`, but `:core-runtime:test` is an aggregate task that does not accept `--tests`; used `:core-runtime:testDebugUnitTest --tests '*.MultimodalContentsBuilderTest'` for targeted verification and the aggregate `:core-runtime:test` for the full-suite smoke.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: 3 minor → [logs/working/task-4/code-reviewer-1.json](logs/working/task-4/code-reviewer-1.json)
+- test-reviewer: 2 major + 3 minor → [logs/working/task-4/test-reviewer-1.json](logs/working/task-4/test-reviewer-1.json)
+
+*Round 2 (after fixes):*
+- test-reviewer: passed, 1 residual minor (fixed in commit a5e46bd) → [logs/working/task-4/test-reviewer-2.json](logs/working/task-4/test-reviewer-2.json)
+
+**Verification:**
+- `./gradlew :core-runtime:test` → SUCCESS (debug + release variants; 8 `MultimodalContentsBuilderTest` + 16 `AllowlistLoaderTest` per variant, 0 failures)
+- `./gradlew :core-runtime:testDebugUnitTest --tests '*.MultimodalContentsBuilderTest'` → 8 passed, 0 failures
+
+---
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.
