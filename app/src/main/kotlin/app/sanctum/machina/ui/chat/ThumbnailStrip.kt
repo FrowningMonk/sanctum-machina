@@ -36,9 +36,9 @@ private val ThumbnailSize = 96.dp
  * (AC-10). Rendered only when `attachments` is non-empty — callers should
  * skip placement entirely when list is empty to save layout work.
  *
- * Keyed by index (task 7 Details) — attachments are identity-less in-memory
- * blobs; using index as the key means remove animations naturally reflect
- * the list shift without needing stable ids.
+ * Keyed by `Attachment.id` (stable per instance). Keying by list index
+ * would invalidate every trailing thumbnail on removal and cause flicker /
+ * needless `asImageBitmap()` work.
  */
 @Composable
 fun ThumbnailStrip(
@@ -53,7 +53,7 @@ fun ThumbnailStrip(
     ) {
         itemsIndexed(
             items = attachments,
-            key = { index, _ -> index },
+            key = { _, attachment -> attachment.id },
         ) { index, attachment ->
             ThumbnailItem(
                 attachment = attachment,

@@ -1,0 +1,54 @@
+{
+  "verdict": "passed",
+  "summary": "All 5 required TDD anchors from Task 7 are implemented with matching names and behaviors, plus 2 justified extras (decoder-null silent-skip for AC-10 edge case, and modelCaps propagation for AC-18). Assertions are behavioral (size + shape + snackbar content), fakes are minimal and stateless, coroutine hygiene is correct (Dispatchers.setMain/resetMain, UnconfinedTestDispatcher + runTest(dispatcher), advanceUntilIdle, SharedFlow collected on backgroundScope). Robolectric @Config(sdk = [33]) matches project convention (Phase-1 ChatViewModel context needs Android runtime; sdk 33 is the Photo Picker baseline from AC-10). Litmus test passes for all 7 tests — removing the core ChatViewModel logic would fail each one. Minor gaps: snackbar assertion on clip-to-ten doesn't verify exactly one emission (accepts any list containing the event), FakeLlmHelper.initialize's onDone(\"\") is a latent contract trap (VM doesn't currently consume it, but is exposed to regression if init wiring changes), and decoder-null path silently exercises real ErrorLog file I/O without assertion — works on Robolectric today but is an unasserted side-effect.",
+  "findings": [
+    {
+      "severity": "low",
+      "category": "anti_pattern",
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "line": 93,
+      "issue": "Snackbar assertion uses `events.contains(R.string.attachment_max_images_reached)` which passes for any number of emissions (including spurious duplicates). Clip-to-ten semantics specifically require exactly one snackbar emission per overflow call — a regression that emits the event twice per dropped-item (rather than once per `addImages` call with any drop) would not be caught.",
+      "suggested_fix": "Tighten to `assertEquals(listOf(R.string.attachment_max_images_reached), events)` in `addImages_exceedsLimit_clipsToTen` and the same in `addImages_alreadyAtLimit_noneAdded` (line 110). This makes the tests sensitive to both over-emission (loop-per-dropped-uri bug) and under-emission."
+    },
+    {
+      "severity": "low",
+      "category": "anti_pattern",
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "line": 137,
+      "issue": "`addImages_decoderReturnsNull_skipsAndDoesNotCrash` exercises the real `ErrorLog` instance (constructed in setUp with Robolectric context) via the fire-and-forget `viewModelScope.launch { errorLog.e(\"attachment-decode\", ...) }` in `ChatViewModel.addImages`. Real file I/O on Dispatchers.IO runs inside a Robolectric test — works today but introduces unasserted side-effects (a temp-dir write) and an I/O dispatcher hop that is sensitive to Robolectric's Dispatchers.IO shim.",
+      "suggested_fix": "Either (a) inject a `FakeErrorLog : ErrorLog` stub whose `e(...)` is a pure suspend no-op and assert `fakeErrorLog.calls` contains `(\"attachment-decode\", \"decode failed: content://test/broken\")` — this also strengthens the test by verifying the log channel, or (b) if refactoring ErrorLog into an interface is out of scope for Task 7, add a one-line comment explaining that Robolectric filesDir absorbs the write and `advanceUntilIdle()` drains the I/O launch before the test returns."
+    },
+    {
+      "severity": "low",
+      "category": "missing_coverage",
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "line": 145,
+      "issue": "`addImages_decoderReturnsNull_skipsAndDoesNotCrash` asserts `size == 1` but does not verify which URI survived or that the Attachment is an Image. The test would pass even if `addImages` added a blank placeholder for the broken URI instead of skipping it (as long as total count lands at 1).",
+      "suggested_fix": "Add `assertTrue(vm.attachments.value.single() is Attachment.Image)` and optionally cross-check that only one decode actually produced a Bitmap by tracking decoded URIs in `FakeImageDecoder` (e.g., `val decoded = mutableListOf<Uri>()`; `override fun decode...{ decoded += uri; ... }`) and asserting `decoded == listOf(uri(\"broken\"), uri(\"ok\"))`."
+    },
+    {
+      "severity": "low",
+      "category": "missing_coverage",
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "line": 148,
+      "issue": "`modelCaps_reflectInitializedModelSupport` covers the happy path (initialize succeeds, caps populated) but not the init-failure path that leaves `modelCaps` at its default `ModelCapabilities()`. AC-18 explicitly covers conditional visibility — a regression where a failed init still sets caps from a stale/null model would not be caught.",
+      "suggested_fix": "Add `modelCaps_initFails_keepsDefaultCaps` test: `fakeRegistry.initResult = Result.failure(IOException(\"boom\"))`; construct VM; `advanceUntilIdle()`; `assertEquals(ModelCapabilities(), vm.modelCaps.value)` and `assertTrue(vm.uiState.value is ChatUiState.Failed)`. Requires adding `var initResult: Result<Unit> = Result.success(Unit)` to `FakeModelRegistry` and returning it from `initialize`."
+    },
+    {
+      "severity": "low",
+      "category": "anti_pattern",
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "line": 225,
+      "issue": "`FakeLlmHelper.initialize` calls `onDone(\"\")`. The current `ChatViewModel` init path does not invoke `helper.initialize` directly (initialization goes through `registry.initialize`), so this callback is never triggered — but if `ChatViewModel` wiring ever calls `helper.initialize` (Phase-2 Task 10/11 heavy-setting flow does exactly this), the stub will report success with an empty error string, silently masking real failures.",
+      "suggested_fix": "Either change `FakeLlmHelper.initialize` to not invoke `onDone` (it's the safer inert default for a fake that isn't currently reached), or make it explicit: `var initOnDoneArg: String = \"\"`; `override fun initialize(...) { onDone(initOnDoneArg) }`, so future tests exercising heavy-setting can set an error string. Minimally, add a `// intentionally no-op until Task 11` comment if leaving the eager onDone in place."
+    },
+    {
+      "severity": "low",
+      "category": "missing_coverage",
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "line": 99,
+      "issue": "`addImages_exceedsLimit_clipsToTen` seeds 7 via `addImageBitmap` (synchronous path) then adds 5 via `addImages` (URI-decode path), which is a sensible mix. However, it does not assert `vm.attachments.value.take(7)` are the original bitmaps and `drop(7)` are the newly decoded ones (FIFO order preservation). A bug that prepends new images instead of appending would clip to the wrong 10.",
+      "suggested_fix": "Tag the initial bitmaps distinctly: `val seed = List(7) { stubBitmap() }; seed.forEach { vm.addImageBitmap(it) }`; after overflow, assert `val images = vm.attachments.value.filterIsInstance<Attachment.Image>().map { it.bitmap }`; `assertEquals(seed, images.take(7))`. This pins ordering semantics that AC-10 implies (first 10, preserved order)."
+    }
+  ]
+}

@@ -17,6 +17,7 @@ import app.sanctum.machina.core.runtime.LlmModelHelper
 import app.sanctum.machina.core.runtime.ResultListener
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ToolProvider
+import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -34,6 +35,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -81,8 +83,9 @@ class ChatViewModelTest {
     @Test
     fun addImages_exceedsLimit_clipsToTen() = runTest(dispatcher) {
         val vm = buildViewModel()
-        // Seed 7 images directly.
-        repeat(7) { vm.addImageBitmap(stubBitmap()) }
+        // Seed 7 with distinct bitmaps so we can pin FIFO ordering.
+        val seed = List(7) { stubBitmap() }
+        seed.forEach { vm.addImageBitmap(it) }
         advanceUntilIdle()
         val events = collectSnackbar(vm)
 
@@ -90,9 +93,13 @@ class ChatViewModelTest {
         advanceUntilIdle()
 
         assertEquals(10, vm.attachments.value.size)
-        assertTrue(
-            "snackbar should have emitted R.string.attachment_max_images_reached",
-            events.contains(R.string.attachment_max_images_reached),
+        val bitmaps = vm.attachments.value.filterIsInstance<Attachment.Image>().map { it.bitmap }
+        // Seeds preserved at the front (no prepend-instead-of-append regression).
+        for (i in 0 until 7) assertSame(seed[i], bitmaps[i])
+        assertEquals(
+            "snackbar should emit exactly once for the overflow",
+            listOf(R.string.attachment_max_images_reached),
+            events,
         )
     }
 
@@ -107,7 +114,10 @@ class ChatViewModelTest {
         advanceUntilIdle()
 
         assertEquals(10, vm.attachments.value.size)
-        assertTrue(events.contains(R.string.attachment_max_images_reached))
+        assertEquals(
+            listOf(R.string.attachment_max_images_reached),
+            events,
+        )
     }
 
     @Test
@@ -135,13 +145,25 @@ class ChatViewModelTest {
 
     @Test
     fun addImages_decoderReturnsNull_skipsAndDoesNotCrash() = runTest(dispatcher) {
+        // Real ErrorLog writes a line to Robolectric's filesDir — harmless,
+        // drained by `advanceUntilIdle` before the assertion runs.
         fakeDecoder.nullFor.add("broken")
         val vm = buildViewModel()
 
         vm.addImages(listOf(uri("broken"), uri("ok")))
         advanceUntilIdle()
 
-        assertEquals(1, vm.attachments.value.size)
+        val attachments = vm.attachments.value
+        assertEquals(1, attachments.size)
+        assertTrue(
+            "surviving attachment must be an Image (not a placeholder)",
+            attachments.single() is Attachment.Image,
+        )
+        assertEquals(
+            "both URIs should have been attempted",
+            listOf(uri("broken"), uri("ok")),
+            fakeDecoder.decodedUris,
+        )
     }
 
     @Test
@@ -159,6 +181,23 @@ class ChatViewModelTest {
         assertTrue(vm.modelCaps.value.supportImage)
         assertTrue(vm.modelCaps.value.supportAudio)
         assertFalse(vm.modelCaps.value.supportThinking)
+    }
+
+    @Test
+    fun modelCaps_initFails_keepsDefaultCaps() = runTest(dispatcher) {
+        fakeRegistry.initResult = Result.failure(IOException("boom"))
+        fakeRegistry.model = Model(
+            name = "m",
+            llmSupportImage = true,
+            llmSupportAudio = true,
+            llmSupportThinking = true,
+        )
+
+        val vm = buildViewModel()
+        advanceUntilIdle()
+
+        assertEquals(ModelCapabilities(), vm.modelCaps.value)
+        assertTrue(vm.uiState.value is ChatUiState.Failed)
     }
 
     // ---- helpers ----
@@ -188,8 +227,10 @@ class ChatViewModelTest {
 
 private class FakeImageDecoder : ImageDecoder {
     val nullFor: MutableSet<String> = mutableSetOf()
+    val decodedUris: MutableList<Uri> = mutableListOf()
 
     override suspend fun decode(uri: Uri): Bitmap? {
+        decodedUris += uri
         val last = uri.lastPathSegment ?: return null
         if (last in nullFor) return null
         return Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
@@ -198,19 +239,23 @@ private class FakeImageDecoder : ImageDecoder {
 
 private class FakeModelRegistry : ModelRegistry {
     var model: Model = Model(name = "m")
+    var initResult: Result<Unit> = Result.success(Unit)
     private val _models = MutableStateFlow<List<ModelEntry>>(emptyList())
     override val models: StateFlow<List<ModelEntry>> = _models
     override suspend fun refreshAllowlist(): Result<Unit> = Result.success(Unit)
     override fun download(model: Model): Flow<ModelDownloadStatus> = emptyFlow()
     override fun cancelDownload(modelName: String) {}
     override suspend fun delete(modelName: String) {}
-    override suspend fun initialize(modelName: String): Result<Unit> = Result.success(Unit)
+    override suspend fun initialize(modelName: String): Result<Unit> = initResult
     override suspend fun cleanup(modelName: String) {}
     override suspend fun resetConversation(modelName: String, systemPrompt: String?) {}
     override fun getModel(modelName: String): Model = model
 }
 
 private class FakeLlmHelper : LlmModelHelper {
+    // Inert defaults — ChatViewModel never reaches these paths in the current
+    // test suite (init is routed through ModelRegistry; send() is not exercised).
+    // Task 11 can swap in a richer fake when heavy-setting / send flows are tested.
     override fun initialize(
         context: Context,
         model: Model,
@@ -221,9 +266,7 @@ private class FakeLlmHelper : LlmModelHelper {
         tools: List<ToolProvider>,
         enableConversationConstrainedDecoding: Boolean,
         coroutineScope: CoroutineScope?,
-    ) {
-        onDone("")
-    }
+    ) {}
 
     override fun resetConversation(
         model: Model,

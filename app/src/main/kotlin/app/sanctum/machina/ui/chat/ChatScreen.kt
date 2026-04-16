@@ -32,6 +32,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -144,8 +146,39 @@ private fun ReadyContent(
     onStop: () -> Unit,
     onReset: () -> Unit,
 ) {
-    var text by remember { mutableStateOf("") }
+    // rememberSaveable survives rotation / process death restore so a half-typed
+    // prompt isn't lost on configuration change.
+    var text by rememberSaveable { mutableStateOf("") }
     val hasAudioAttachment = attachments.any { it is Attachment.Audio }
+
+    // Capture callers via rememberUpdatedState so the remembered callbacks
+    // holder sees the latest lambdas without being re-allocated each recomposition.
+    val sendRef = rememberUpdatedState(onSend)
+    val stopRef = rememberUpdatedState(onStop)
+    val pickImagesRef = rememberUpdatedState(onPickImages)
+    val callbacks = remember {
+        MultimodalInputCallbacks(
+            onTextChange = { text = it },
+            onSend = {
+                if (text.isNotBlank() || attachments.isNotEmpty()) {
+                    sendRef.value(text)
+                    text = ""
+                }
+            },
+            onStop = { stopRef.value() },
+            onPickImages = { uris -> pickImagesRef.value(uris) },
+            onOpenCamera = { /* task 8 */ },
+            onOpenAudioRecorder = { /* task 9 */ },
+        )
+    }
+    val inputState = MultimodalInputState(
+        text = text,
+        hasAttachments = attachments.isNotEmpty(),
+        isGenerating = isGenerating,
+        supportImage = modelCaps.supportImage,
+        supportAudio = modelCaps.supportAudio,
+        audioButtonEnabled = !hasAudioAttachment,
+    )
 
     Scaffold(
         topBar = {
@@ -176,24 +209,8 @@ private fun ReadyContent(
                 )
             }
             MultimodalInputBar(
-                text = text,
-                onTextChange = { text = it },
-                hasAttachments = attachments.isNotEmpty(),
-                isGenerating = isGenerating,
-                supportImage = modelCaps.supportImage,
-                supportAudio = modelCaps.supportAudio,
-                audioButtonEnabled = !hasAudioAttachment,
-                onSend = {
-                    val toSend = text.trim()
-                    if (toSend.isNotEmpty() || attachments.isNotEmpty()) {
-                        onSend(toSend)
-                        text = ""
-                    }
-                },
-                onStop = onStop,
-                onPickImages = onPickImages,
-                onOpenCamera = { /* task 8 */ },
-                onOpenAudioRecorder = { /* task 9 */ },
+                state = inputState,
+                callbacks = callbacks,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
             )
         }

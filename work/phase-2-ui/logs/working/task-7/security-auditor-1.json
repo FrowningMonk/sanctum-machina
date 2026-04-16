@@ -1,0 +1,48 @@
+{
+  "verdict": "approved_with_notes",
+  "summary": "No critical or high findings. Task 7 multimodal input correctly implements defence-in-depth for attachment handling: two-pass downscale (1024x1024) prevents OOM from hostile content URIs (R5), MAX_IMAGES=10 is authoritatively enforced in ChatViewModel.addImages (not trusting Photo Picker's maxItems hint, AC-10), SecurityException/IOException from ContentResolver.openInputStream are swallowed to null, ErrorLog's 500-char truncation bounds URI logging, and no secrets / exported components / file writes are introduced. Photo Picker is used without runtime permissions (D7/D11). Three low-severity notes: (1) a TOCTOU race between concurrent addImages launches can exceed MAX_IMAGES, (2) openStream in MediaUtils accepts file:// scheme which Task 7 never emits but future callers might, (3) addImageBitmap does not validate bitmap size. All are defence-in-depth hardening, not exploitable vulnerabilities in the current scope.",
+  "findings": [
+    {
+      "severity": "low",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 185,
+      "issue": "TOCTOU race on MAX_IMAGES cap. `addImages(uris)` launches a coroutine which reads `_attachments.value.count { it is Attachment.Image }` and then decodes + appends. Two rapid Photo Picker results (user double-taps, or picker returns two batches back-to-back) schedule two concurrent coroutines that can both observe `currentImageCount = N` before either appends, bypassing the 10-image cap enforced for R5 (OOM mitigation) and AC-10 (UX contract). Exploitability is low (requires user-initiated rapid double-tap, worst-case doubles the in-memory bitmap footprint to ~20 images), but it undermines the authoritative clipping the tech-spec relies on.",
+      "suggested_fix": "Either (a) serialize addImages behind a Mutex held across the entire read-decode-update sequence; (b) perform the clipping atomically inside `_attachments.update { current -> ... }` using the latest value rather than a pre-read snapshot; or (c) queue picker invocations (disable the gallery button while a previous decode batch is in flight). Option (b) is simplest and lock-free: compute `remaining` inside the final `update` block and discard any surplus decoded bitmaps with a snackbar then. Example: `_attachments.update { current -> val room = MAX_IMAGES - current.count { it is Attachment.Image }; current + newImages.take(room.coerceAtLeast(0)) }`."
+    },
+    {
+      "severity": "low",
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/common/MediaUtils.kt",
+      "line": 117,
+      "issue": "`openStream` accepts `scheme == null` or `scheme == \"file\"` and opens `FileInputStream(uri.path)` directly, bypassing ContentResolver. Task 7's only caller is `ChatViewModel.addImages` which receives URIs from the Android Photo Picker (always `content://media/...`), so this branch is unreachable in the current flow. However, `addImages(uris: List<Uri>)` is a public VM method with no scheme allowlist, and future callers (e.g. an ACTION_SEND share-target receiving a file:// URI from another app, or a deeplink) could feed file-scheme URIs that cause the helper to read arbitrary paths readable by the app process (including files under /data/data/<pkg>/). This is defence-in-depth for a confused-deputy / path-traversal scenario that doesn't exist today but is easy to introduce.",
+      "suggested_fix": "Restrict `decodeSampledBitmapFromUri` to `content://` URIs only — drop the file:// branch or gate it behind an explicit opt-in parameter (`allowFileScheme: Boolean = false`). Alternatively, validate at the VM boundary: in `ChatViewModel.addImages`, filter `uris.filter { it.scheme == \"content\" }` before decoding. The current posture (Photo Picker only → always content URIs) means no behavioural change for Task 7."
+    },
+    {
+      "severity": "low",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 217,
+      "issue": "`addImageBitmap(bitmap: Bitmap)` accepts any Bitmap without size validation. Task 8 (CameraX) is the intended caller and will pass bitmaps at device-capture resolution, but there is no enforcement of the ~1024x1024 invariant from R5 here — unlike `addImages` which goes through `ImageDecoder.decode`/`decodeSampledBitmapFromUri`. If a future call-site (task 8 or later) forgets to downscale before calling `addImageBitmap`, a large bitmap (e.g. 50MP from a high-res camera sensor + EXIF rotation that allocates a second bitmap) could approach OOM on a 12GB-RAM target. No exploit is present today — this is a gap in the defensive contract.",
+      "suggested_fix": "Either (a) downscale internally inside `addImageBitmap` using `Bitmap.createScaledBitmap` when `max(width, height) > 1024`, mirroring the URI path's invariant; or (b) rename to `addDownscaledImageBitmap` and document the caller's obligation in KDoc. Option (a) centralises the R5 invariant in one file."
+    },
+    {
+      "severity": "info",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 207,
+      "issue": "URI logged to ErrorLog on decode failure: `errorLog.e(\"attachment-decode\", \"decode failed: $uri\")`. Photo Picker URIs look like `content://media/picker/0/com.android.providers.media.photopicker/media/1000000123` — these are session-scoped media IDs, not filesystem paths, and contain no user PII. ErrorLog truncates at 500 chars and strips control chars (patterns.md + ErrorLog.kt), so the log cannot be weaponised for injection. Given the privacy posture (on-device, no cloud sync — project.md), writing picker URIs to `errors.log` is acceptable. However, if `addImages` is ever wired to a non-Photo-Picker source (share-target, file://), logged paths could include `/storage/emulated/0/...` which leaks the user's directory structure into a persisted file.",
+      "suggested_fix": "No action required for Task 7. When adding non-Photo-Picker sources, sanitise URIs before logging — log `uri.scheme + \"://\" + uri.authority` instead of the full URI, or log just `uri.lastPathSegment`. Consider adding a KDoc note on `ErrorLog.e(\"attachment-decode\", ...)` documenting the expected URI shape."
+    },
+    {
+      "severity": "info",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 233,
+      "issue": "`onCleared` does not explicitly clear `_attachments` or call `bitmap.recycle()`. This was called out in the audit scope as a potential info-disclosure concern. Analysis: when the ViewModel is cleared, the `MutableStateFlow<List<Attachment>>` becomes unreachable and all referenced Bitmaps are GC-eligible (native pixel memory on API 28+ is tied to the Java heap and reclaimed by GC — `Bitmap.recycle` is deprecated / advisory on modern Android). Attachments are never persisted to disk per D6, so there is no on-disk residue to scrub. The ~40MB peak of 10 downscaled bitmaps is acceptable for the 12GB target device. Not a finding.",
+      "suggested_fix": "No action required. If memory-pressure telemetry in later phases shows extended Bitmap retention between navigation events, consider adding `_attachments.value = emptyList()` in `onCleared` as defensive housekeeping (faster reclamation before GC runs), but this is optimisation, not security."
+    },
+    {
+      "severity": "info",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/MultimodalInputBar.kt",
+      "line": 66,
+      "issue": "Photo Picker uses `ActivityResultContracts.PickMultipleVisualMedia(MAX_IMAGES_PER_PICK)` — on Android 13+ this is the system Photo Picker (runs out-of-process, no READ_MEDIA_IMAGES needed, returns transient read-grants on content URIs). On API 31–32 without Google Play system update, the system falls back to a compat implementation; in rare OEM builds the `maxItems` hint may be ignored. `ChatViewModel.addImages` defensively re-clips to 10, so a non-compliant fallback cannot exceed the cap. Correct defence-in-depth — confirming the tech-spec R5/AC-10 design is implemented as intended.",
+      "suggested_fix": "No action required. This note is a positive confirmation of the defensive design."
+    }
+  ]
+}

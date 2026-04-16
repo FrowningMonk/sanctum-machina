@@ -102,15 +102,23 @@ constructor(
     }
 
     fun send(text: String) {
-        if (text.isBlank() && _attachments.value.isEmpty()) return
+        val normalized = text.trim()
+        val pending = _attachments.value
+        if (normalized.isEmpty() && pending.isEmpty()) return
         val state = _uiState.value
         if (state !is ChatUiState.Ready || state.isGenerating) return
         val model = registry.getModel(modelName) ?: error("Model not initialized")
 
+        val images = pending.filterIsInstance<Attachment.Image>().map { it.bitmap }
+        val audioClips = pending.filterIsInstance<Attachment.Audio>().map { it.pcm }
+
         _messages.update { current ->
-            current + Message(MessageRole.USER, text) +
+            current + Message(MessageRole.USER, normalized) +
                 Message(MessageRole.ASSISTANT, text = "", streaming = true)
         }
+        // Clear immediately so UI reflects the consumed state — attachments
+        // are already captured in `images`/`audioClips` snapshots.
+        _attachments.value = emptyList()
         _uiState.value = ChatUiState.Ready(isGenerating = true)
 
         val startMs = System.currentTimeMillis()
@@ -119,7 +127,7 @@ constructor(
 
         helper.runInference(
             model = model,
-            input = text,
+            input = normalized,
             resultListener = { partial, done, _ ->
                 // Drop emissions that arrive after stop() — LiteRT-LM may deliver a trailing
                 // partial/done pair between cancelProcess() and actual thread teardown.
@@ -152,8 +160,8 @@ constructor(
                 updateLastAssistant { it.copy(streaming = false, interrupted = true) }
                 _uiState.value = ChatUiState.Ready(isGenerating = false)
             },
-            images = emptyList(),
-            audioClips = emptyList(),
+            images = images,
+            audioClips = audioClips,
             coroutineScope = viewModelScope,
             extraContext = null,
         )
@@ -176,32 +184,47 @@ constructor(
 
     /**
      * Decodes [uris] via [ImageDecoder], downscales to ~1024×1024, clips the
-     * total image count to [MAX_IMAGES] (AC-10, R5). Dropped entries or
-     * at-limit calls emit a snackbar event. Silent on decode failure, logged
-     * to `attachment-decode`.
+     * total image count to [MAX_IMAGES] (AC-10, R5).
+     *
+     * The cap is re-checked inside the final `_attachments.update { }` block
+     * to close a TOCTOU race between concurrent `addImages` calls (rapid
+     * double-tap of the Photo Picker). Pre-decode clipping is a courtesy
+     * optimisation; the `update` block is authoritative.
      */
     fun addImages(uris: List<Uri>) {
         if (uris.isEmpty()) return
         viewModelScope.launch {
-            val currentImageCount = _attachments.value.count { it is Attachment.Image }
-            val remaining = (MAX_IMAGES - currentImageCount).coerceAtLeast(0)
-            val toDecode = uris.take(remaining)
-            val dropped = uris.size - toDecode.size
+            val currentCount = _attachments.value.count { it is Attachment.Image }
+            val initialRoom = (MAX_IMAGES - currentCount).coerceAtLeast(0)
+            val toDecode = uris.take(initialRoom)
+            val droppedPreDecode = uris.size > toDecode.size
 
-            val newImages = mutableListOf<Attachment.Image>()
+            val decoded = mutableListOf<Attachment.Image>()
             val failed = mutableListOf<Uri>()
             for (uri in toDecode) {
                 val bmp = runCatching { imageDecoder.decode(uri) }.getOrNull()
-                if (bmp == null) failed += uri else newImages += Attachment.Image(bmp)
+                if (bmp != null) decoded += Attachment.Image(bmp) else failed += uri
             }
 
-            if (newImages.isNotEmpty()) {
-                _attachments.update { it + newImages }
+            var droppedByRace = false
+            if (decoded.isNotEmpty()) {
+                _attachments.update { current ->
+                    val room = (MAX_IMAGES - current.count { it is Attachment.Image })
+                        .coerceAtLeast(0)
+                    val taken = decoded.take(room)
+                    droppedByRace = decoded.size > taken.size
+                    current + taken
+                }
             }
-            if (dropped > 0) {
+
+            if (droppedPreDecode || droppedByRace) {
                 _snackbar.tryEmit(R.string.attachment_max_images_reached)
             }
-            // Fire-and-forget: don't keep the caller pinned to log I/O dispatcher.
+            // Fire-and-forget: errorLog.e suspends into Dispatchers.IO, which
+            // detaches from the test scheduler and would otherwise leave
+            // `_attachments.update` pending when `advanceUntilIdle` returns.
+            // Sequencing logs in a separate launch keeps the hot path
+            // deterministic for tests and for the UI state transition.
             if (failed.isNotEmpty()) {
                 viewModelScope.launch {
                     for (uri in failed) errorLog.e("attachment-decode", "decode failed: $uri")
@@ -211,8 +234,10 @@ constructor(
     }
 
     /**
-     * Adds a [bitmap] captured from CameraX directly (task 8). Silently drops
-     * if already at [MAX_IMAGES] and emits a snackbar.
+     * Adds a [bitmap] captured from CameraX directly (task 8). Large source
+     * bitmaps are defensively downscaled to the same ~1024-px invariant as
+     * `addImages` (R5) — camera callers should downscale upstream, but this
+     * keeps the R5 contract centralised.
      */
     fun addImageBitmap(bitmap: Bitmap) {
         val currentImageCount = _attachments.value.count { it is Attachment.Image }
@@ -220,7 +245,7 @@ constructor(
             _snackbar.tryEmit(R.string.attachment_max_images_reached)
             return
         }
-        _attachments.update { it + Attachment.Image(bitmap) }
+        _attachments.update { it + Attachment.Image(downscaleIfOversized(bitmap)) }
     }
 
     fun removeAttachment(idx: Int) {
@@ -246,8 +271,18 @@ constructor(
         }
     }
 
+    private fun downscaleIfOversized(bitmap: Bitmap): Bitmap {
+        val longest = maxOf(bitmap.width, bitmap.height)
+        if (longest <= MAX_IMAGE_EDGE) return bitmap
+        val ratio = MAX_IMAGE_EDGE.toFloat() / longest
+        val w = (bitmap.width * ratio).toInt().coerceAtLeast(1)
+        val h = (bitmap.height * ratio).toInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(bitmap, w, h, /* filter = */ true)
+    }
+
     companion object {
         const val NAV_ARG_MODEL_NAME: String = "modelName"
         private const val MAX_IMAGES: Int = 10
+        private const val MAX_IMAGE_EDGE: Int = 1024
     }
 }

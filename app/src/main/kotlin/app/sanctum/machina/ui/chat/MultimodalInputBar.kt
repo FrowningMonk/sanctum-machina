@@ -1,5 +1,6 @@
 package app.sanctum.machina.ui.chat
 
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -7,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -20,10 +22,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Stable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -37,6 +37,36 @@ import app.sanctum.machina.R
 private const val MAX_IMAGES_PER_PICK = 10
 
 /**
+ * Immutable snapshot driving `MultimodalInputBar` rendering. Grouped so the
+ * Composable signature stays narrow as tasks 8/9 add more state (camera
+ * sheet visibility, audio recorder state, etc.).
+ */
+@Immutable
+data class MultimodalInputState(
+    val text: String,
+    val hasAttachments: Boolean,
+    val isGenerating: Boolean,
+    val supportImage: Boolean,
+    val supportAudio: Boolean,
+    val audioButtonEnabled: Boolean,
+)
+
+/**
+ * Stable callback holder — `remember { }`ed once per `ChatScreen` so the
+ * `MultimodalInputBar` Composable doesn't recompose every time a lambda is
+ * re-allocated at the call site.
+ */
+@Stable
+class MultimodalInputCallbacks(
+    val onTextChange: (String) -> Unit,
+    val onSend: () -> Unit,
+    val onStop: () -> Unit,
+    val onPickImages: (List<Uri>) -> Unit,
+    val onOpenCamera: () -> Unit,
+    val onOpenAudioRecorder: () -> Unit,
+)
+
+/**
  * Chat input row with optional camera, gallery, and mic buttons.
  *
  * Button visibility follows model capabilities (AC-18): camera/gallery hide
@@ -46,45 +76,35 @@ private const val MAX_IMAGES_PER_PICK = 10
  */
 @Composable
 fun MultimodalInputBar(
-    text: String,
-    onTextChange: (String) -> Unit,
-    hasAttachments: Boolean,
-    isGenerating: Boolean,
-    supportImage: Boolean,
-    supportAudio: Boolean,
-    audioButtonEnabled: Boolean,
-    onSend: () -> Unit,
-    onStop: () -> Unit,
-    onPickImages: (List<android.net.Uri>) -> Unit,
-    onOpenCamera: () -> Unit,
-    onOpenAudioRecorder: () -> Unit,
+    state: MultimodalInputState,
+    callbacks: MultimodalInputCallbacks,
     modifier: Modifier = Modifier,
 ) {
     val pickMedia = rememberLauncherForActivityResult(
         // API 31+: PickMultipleVisualMedia falls back to system picker on older shells;
         // maxItems acts as a hint — ChatViewModel.addImages clips authoritatively (AC-10).
         contract = ActivityResultContracts.PickMultipleVisualMedia(MAX_IMAGES_PER_PICK),
-    ) { uris -> if (uris.isNotEmpty()) onPickImages(uris) }
+    ) { uris -> if (uris.isNotEmpty()) callbacks.onPickImages(uris) }
 
-    val canSend = (text.isNotBlank() || hasAttachments) && !isGenerating
+    val canSend = (state.text.isNotBlank() || state.hasAttachments) && !state.isGenerating
 
     Column(modifier = modifier) {
         OutlinedTextField(
-            value = text,
-            onValueChange = onTextChange,
+            value = state.text,
+            onValueChange = callbacks.onTextChange,
             placeholder = { Text(stringResource(R.string.chat_input_placeholder)) },
             modifier = Modifier.fillMaxWidth(),
-            enabled = !isGenerating,
+            enabled = !state.isGenerating,
         )
         Row(
             modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            if (supportImage) {
+            if (state.supportImage) {
                 IconButton(
-                    onClick = onOpenCamera,
-                    enabled = !isGenerating,
+                    onClick = callbacks.onOpenCamera,
+                    enabled = !state.isGenerating,
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.PhotoCamera,
@@ -97,7 +117,7 @@ fun MultimodalInputBar(
                             PickVisualMediaRequest(PickVisualMedia.ImageOnly),
                         )
                     },
-                    enabled = !isGenerating,
+                    enabled = !state.isGenerating,
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.Photo,
@@ -105,45 +125,33 @@ fun MultimodalInputBar(
                     )
                 }
             }
-            if (supportAudio) {
+            if (state.supportAudio) {
                 IconButton(
-                    onClick = onOpenAudioRecorder,
-                    enabled = !isGenerating && audioButtonEnabled,
+                    onClick = callbacks.onOpenAudioRecorder,
+                    enabled = !state.isGenerating && state.audioButtonEnabled,
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.Mic,
                         contentDescription = stringResource(
-                            if (audioButtonEnabled) R.string.attachment_audio
+                            if (state.audioButtonEnabled) R.string.attachment_audio
                             else R.string.attachment_audio_disabled
                         ),
                     )
                 }
             }
-            androidx.compose.foundation.layout.Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.weight(1f))
             IconButton(
-                onClick = { if (isGenerating) onStop() else onSend() },
-                enabled = isGenerating || canSend,
+                onClick = { if (state.isGenerating) callbacks.onStop() else callbacks.onSend() },
+                enabled = state.isGenerating || canSend,
             ) {
                 Icon(
-                    imageVector = if (isGenerating) Icons.Default.Stop
+                    imageVector = if (state.isGenerating) Icons.Default.Stop
                     else Icons.AutoMirrored.Filled.Send,
                     contentDescription = stringResource(
-                        if (isGenerating) R.string.btn_stop else R.string.btn_send
+                        if (state.isGenerating) R.string.btn_stop else R.string.btn_send
                     ),
                 )
             }
         }
     }
 }
-
-/** Kept internal — ThumbnailStrip also uses it. */
-internal val InputBarHorizontalPadding = 12.dp
-
-/**
- * Stateful wrapper for `ChatScreen` — holds the text state locally and wires
- * ChatViewModel callbacks. Separated from the stateless `MultimodalInputBar`
- * to keep the latter testable (AC-9 relies on pure input props).
- */
-@Composable
-fun rememberMultimodalInputText(): androidx.compose.runtime.MutableState<String> =
-    remember { mutableStateOf("") }
