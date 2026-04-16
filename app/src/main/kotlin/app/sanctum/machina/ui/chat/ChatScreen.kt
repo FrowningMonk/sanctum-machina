@@ -8,14 +8,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -292,19 +291,23 @@ private fun MessageBubble(message: Message) {
     }
 }
 
-private val MessageAttachmentSize = 72.dp
+private val MessageAttachmentSize = 56.dp
+private const val MESSAGE_ATTACHMENTS_PER_ROW = 5
 
+/**
+ * FlowRow wraps to new rows — 10 × 56dp tiles with 4dp spacing = 2 rows of
+ * 5 inside the 296dp bubble content width (320dp − 24dp horizontal padding).
+ * All attachments visible without internal scroll; LazyRow previously clipped
+ * to the first 4 tiles which felt like data loss to the user.
+ */
 @Composable
 private fun MessageAttachmentsRow(attachments: List<Attachment>) {
-    // LazyRow: bubble width is capped (320.dp); 10 × 72dp tiles = 720dp and
-    // would be silently clipped by a non-scrolling Row, defeating AC-26.
-    LazyRow(
+    FlowRow(
+        maxItemsInEachRow = MESSAGE_ATTACHMENTS_PER_ROW,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        itemsIndexed(
-            items = attachments,
-            key = { _, attachment -> attachment.id },
-        ) { _, attachment ->
+        for (attachment in attachments) {
             Box(
                 modifier = Modifier
                     .size(MessageAttachmentSize)
