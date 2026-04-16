@@ -1,7 +1,6 @@
 package app.sanctum.machina.ui.chat
 
 import android.app.Application
-import android.content.Context
 import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
@@ -107,8 +106,33 @@ class SafeUriHandlerTest {
     @Test
     fun malformed_blocked() {
         handler.openUri("not a uri at all")
+
+        assertNull(shadowOf(application).nextStartedActivity)
+    }
+
+    @Test
+    fun empty_blocked() {
         handler.openUri("")
 
         assertNull(shadowOf(application).nextStartedActivity)
+    }
+
+    @Test
+    fun http_uppercase_allowed() {
+        handler.openUri("HTTP://Example.COM")
+
+        val intent = shadowOf(application).nextStartedActivity
+        assertNotNull(intent)
+        assertEquals(Intent.ACTION_VIEW, intent!!.action)
+        assertEquals("HTTP://Example.COM", intent.data.toString())
+    }
+
+    @Test
+    fun https_mixedcase_allowed() {
+        handler.openUri("HttpS://example.com")
+
+        val intent = shadowOf(application).nextStartedActivity
+        assertNotNull(intent)
+        assertEquals(Intent.ACTION_VIEW, intent!!.action)
     }
 }

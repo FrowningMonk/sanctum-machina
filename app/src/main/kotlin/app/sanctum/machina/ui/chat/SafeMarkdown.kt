@@ -31,9 +31,11 @@ private val ALLOWED_SCHEMES = setOf("http", "https")
 
 internal class SafeUriHandler(private val context: Context) : UriHandler {
     override fun openUri(uri: String) {
-        val scheme = runCatching { Uri.parse(uri).scheme }.getOrNull() ?: return
+        val parsed = runCatching { Uri.parse(uri) }.getOrNull() ?: return
+        // RFC 3986 §3.1 — URI scheme is case-insensitive.
+        val scheme = parsed.scheme?.lowercase() ?: return
         if (scheme !in ALLOWED_SCHEMES) return
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uri)).apply {
+        val intent = Intent(Intent.ACTION_VIEW, parsed).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         runCatching { context.startActivity(intent) }

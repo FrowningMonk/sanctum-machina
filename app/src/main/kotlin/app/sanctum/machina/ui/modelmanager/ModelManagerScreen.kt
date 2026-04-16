@@ -60,7 +60,7 @@ fun ModelManagerScreen(
                     IconButton(onClick = onAbout) {
                         Icon(
                             imageVector = Icons.Outlined.Info,
-                            contentDescription = stringResource(R.string.chat_action_about),
+                            contentDescription = stringResource(R.string.action_about),
                         )
                     }
                 },

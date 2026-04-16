@@ -33,10 +33,10 @@
   <!-- Chat TTFT footer -->
   <string name="ttft_footer_format">TTFT %1$dms · %2$.1fs total</string>
 
-  <!-- ChatScreen TopAppBar actions -->
+  <!-- TopAppBar actions (used across chat and model-manager surfaces) -->
   <string name="chat_action_settings">Настройки модели</string>
   <string name="chat_action_reset">Сбросить чат</string>
-  <string name="chat_action_about">О приложении</string>
+  <string name="action_about">О приложении</string>
 
   <!-- Inference settings (InferenceSettingsBottomSheet, 7 fields) -->
   <string name="settings_title">Настройки модели</string>
