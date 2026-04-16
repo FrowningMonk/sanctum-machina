@@ -51,6 +51,36 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 
 ---
 
+## Task 2: Создать `:core-settings` + version catalog entries
+
+**Status:** Done
+**Commit:** 127b381 (impl 5de04cd + review-round-1 fix 127b381)
+**Agent:** main agent
+**Summary:** Added new gradle module `:core-settings` with Proto DataStore per-model overrides keyed by `Model.modelId` (D1, D3). Schema matches tech-spec § Data Models (7 explicit-optional fields on `PerModelSettings`, `AppSettings.per_model_overrides` map, java_package `app.sanctum.machina.core.settings.proto`). `DefaultAppSettingsRepository` catches `IOException` (covers `CorruptionException` since it extends IOException) on observe/save/reset and logs via `ErrorLog.e("settings-io", ...)` (R13, D27). Hilt `CoreSettingsModule` provides `@Singleton DataStore<AppSettings>` at `context.filesDir/datastore/app_settings.pb` and binds the repository. Library manifest is self-closing (no `<application>` attrs) to preserve `:app`'s backup flags at merge time. `AppSettingsRepositoryTest` — 6 tests per TDD anchor.
+**Deviations:** Added `kotlinx-coroutines-test 1.10.2` and `androidx-test-core 1.6.1` to `libs.versions.toml` as `testImplementation`-only — not listed in task's "Files to modify" but required for `runTest(UnconfinedTestDispatcher())` + `ApplicationProvider.getApplicationContext()` in `AppSettingsRepositoryTest`. Task file's smoke-step path (`build/generated/source/proto/main/java/...`) corrected in-place to actual protobuf-plugin 0.9.5 output (`build/generated/sources/proto/debug/java/...`, per-variant, plural "sources") — documented drift.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: 1 critical + 1 major + 4 minor → [logs/working/task-2/code-reviewer-1.json](logs/working/task-2/code-reviewer-1.json)
+- security-auditor: 1 critical + 2 minor → [logs/working/task-2/security-auditor-1.json](logs/working/task-2/security-auditor-1.json)
+- test-reviewer: 2 major + 2 minor → [logs/working/task-2/test-reviewer-1.json](logs/working/task-2/test-reviewer-1.json)
+
+*Round 2 (after fixes):*
+- code-reviewer: passed, 0 new → [logs/working/task-2/code-reviewer-2.json](logs/working/task-2/code-reviewer-2.json)
+- security-auditor: passed, 0 new → [logs/working/task-2/security-auditor-2.json](logs/working/task-2/security-auditor-2.json)
+- test-reviewer: passed, 0 new → [logs/working/task-2/test-reviewer-2.json](logs/working/task-2/test-reviewer-2.json)
+
+Fixes applied in round 1 (commit 127b381): protobuf 4.26.1 → 4.28.3 (security-auditor critical — CVE-2024-7254 stack-overflow in proto-javalite < 4.27.2); explicit `parentFile?.mkdirs()` in Hilt DataStore `produceFile` (code-reviewer minor); task.md smoke path correction (code-reviewer minor). Deferred with documented rationale: code-reviewer "Hilt library-plugin variant" (false positive — `com.google.dagger.hilt.android` is the single unified plugin for app+library); code-reviewer "settings-io whitelist" (intentional per D27 — Task 3 extends `ErrorLog.kt` whitelist); security-auditor "CorruptionException not caught" (false positive — extends IOException); test-reviewer "ErrorLog.e not asserted" and "real ErrorLog side effect" (would require making `ErrorLog` open or interface-based — out of scope for task 2; deferred to task 3 which owns ErrorLog extension).
+
+**Verification:**
+- `./gradlew :core-settings:test` → BUILD SUCCESSFUL (debug + release variants; 6/6 `AppSettingsRepositoryTest` passed, 0 failures)
+- `./gradlew :core-settings:build` → BUILD SUCCESSFUL
+- `ls core-settings/build/generated/sources/proto/debug/java/app/sanctum/machina/core/settings/proto/` → contains `AppSettings.java`, `PerModelSettings.java`, `AppSettingsOrBuilder.java`, `PerModelSettingsOrBuilder.java`, `AppSettingsOuterClass.java`
+- `grep -n "hasMaxTokens\|getMaxTokens\|hasEnableThinking\|hasAccelerator\|hasSystemPromptDefault" PerModelSettings.java` → all methods generated (TAC-12)
+
+---
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.

@@ -1,0 +1,62 @@
+{
+  "status": "needs_improvement",
+  "summary": "6 of 6 TDD anchors are implemented; core DataStore round-trip, optional-field semantics, multi-model isolation, and reset semantics are well-covered. Three issues: (1) the test named 'concurrent' is sequential under UnconfinedTestDispatcher — misleading name, no actual concurrency tested; (2) the IOException/logging contract (D27, R13) is not verified — ErrorLog.e is never asserted; (3) save and reset IOException swallow paths are entirely untested.",
+  "severity_counts": {
+    "critical": 0,
+    "major": 2,
+    "minor": 2
+  },
+  "findings": [
+    {
+      "severity": "major",
+      "file": "core-settings/src/test/kotlin/app/sanctum/machina/core/settings/AppSettingsRepositoryTest.kt",
+      "line_range": "131-149",
+      "category": "anti_pattern",
+      "title": "Test name claims 'concurrent' but execution is strictly sequential under UnconfinedTestDispatcher",
+      "description": "The test `concurrent_twoSavesSequential_lastWins` launches two sequential `savePerModelSettings` calls with no concurrency — UnconfinedTestDispatcher executes all coroutines eagerly on the caller thread. The name 'concurrent' implies two concurrent writers racing, which is the actual risk with DataStore's `updateData`. Sequential last-write-wins is trivially guaranteed by the serialized execution model; the interesting invariant (that DataStore's `updateData` serializes concurrent callers so no update is lost) is untested. A reader of this test believes concurrency is covered when it is not.",
+      "recommendation": "Option A (rename): rename to `sequential_twoSaves_lastWins` to accurately describe what is tested. Option B (upgrade to real concurrency): use `launch` + `joinAll` to fire two saves simultaneously and assert the final value is one of the two valid states (last-write-wins, no torn state). Example: `val j1 = launch { repository.savePerModelSettings(\"race\", first) }; val j2 = launch { repository.savePerModelSettings(\"race\", second) }; joinAll(j1, j2); val v = repository.observePerModelSettings(\"race\").first(); assertTrue(v!!.temperature == 0.1f || v.temperature == 0.9f)`. Option B is preferred to actually test the DataStore serialization guarantee."
+    },
+    {
+      "severity": "major",
+      "file": "core-settings/src/test/kotlin/app/sanctum/machina/core/settings/AppSettingsRepositoryTest.kt",
+      "line_range": "151-175",
+      "category": "missing_coverage",
+      "title": "IOException/logging contract (D27, R13) not verified — ErrorLog.e call is not asserted",
+      "description": "R13 and D27 both require that `DefaultAppSettingsRepository` calls `ErrorLog.e(\"settings-io\", ...)` on IOException/CorruptionException. The test `ioException_observeDoesNotCrash` verifies only that `observePerModelSettings` returns null without throwing. It does not verify that `ErrorLog` was invoked, nor with which component tag. If the catch block were changed to silently swallow the error without logging (removing the `errorLog.e(...)` call), this test would still pass. The logging is the second half of the R13 contract and is untested.",
+      "recommendation": "Inject a test-double for ErrorLog. Since ErrorLog takes a Context and likely wraps android.util.Log, either: (a) create a `FakeErrorLog` that records calls and assert `fakeErrorLog.lastComponent == \"settings-io\"` after triggering a corrupt-file scenario; or (b) use Mockito/MockK to spy on ErrorLog and verify `verify(errorLog).e(eq(\"settings-io\"), any(), any())`. Also assert that the `component` tag is exactly `\"settings-io\"` (not just any string) to catch D27 violations where the tag drifts."
+    },
+    {
+      "severity": "minor",
+      "file": "core-settings/src/test/kotlin/app/sanctum/machina/core/settings/AppSettingsRepositoryTest.kt",
+      "line_range": "151-175",
+      "category": "missing_coverage",
+      "title": "save and reset IOException swallow paths are entirely untested",
+      "description": "R13 states that `save*` and `reset*` also catch IOException and swallow+log. The `DefaultAppSettingsRepository` has try/catch blocks in `savePerModelSettings` (lines ~37-43 of the impl) and `resetPerModelSettings` (lines ~45-55). No test exercises these paths. If those catch blocks were removed (allowing IOException to propagate), all 6 current tests would still pass because no test triggers an I/O failure during save or reset. This leaves the error-handling contract for write operations unverified. Tech-spec Testing Strategy explicitly covers only the observe path, so this is a spec gap rather than a test-vs-spec mismatch, but the behavior is still production-critical.",
+      "recommendation": "Add a test `ioException_saveSilentlyLogs` that creates a DataStore backed by a read-only file or a file on a non-writable path (e.g., `tempFolder.root.setWritable(false)` after DataStore creation to trigger IOException on next write), calls `savePerModelSettings`, and asserts: (1) no exception is thrown, (2) `ErrorLog.e` was called with component `\"settings-io\"`. Mirror with `ioException_resetSilentlyLogs` if warranted. Note: triggering IOException in DataStore during write is harder to arrange than corrupt-file read; an alternative is wrapping DataStore in a test double that throws IOException from `updateData`."
+    },
+    {
+      "severity": "minor",
+      "file": "core-settings/src/test/kotlin/app/sanctum/machina/core/settings/AppSettingsRepositoryTest.kt",
+      "line_range": "43-55",
+      "category": "anti_pattern",
+      "title": "ErrorLog constructed with real ApplicationContext introduces filesystem side effect in tests",
+      "description": "The `@Before` setup creates `ErrorLog(ApplicationProvider.getApplicationContext())`. If ErrorLog writes to the Android log (android.util.Log) only, this is fine. If it also writes to a file in `context.filesDir` (Robolectric's virtual FS), a failed test that triggers logging leaves state in the shared Robolectric context. Robolectric resets application state between test classes but shared `filesDir` content within a run can accumulate. This is unlikely to cause flakiness here since files are identified by UUID, but it is an implicit side effect that makes test setup harder to reason about.",
+      "recommendation": "Verify that ErrorLog does not write to `context.filesDir`. If it does, pass a fake/stub ErrorLog (no-op implementation) to the repository under test to keep tests hermetic. Reserve the real ErrorLog only for the test that explicitly verifies logging behavior (see finding 2 above)."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "litmusTest": {
+      "checked": 6,
+      "passed": 6,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 6,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "status": "passed",
+  "summary": "Commit 127b381 contains zero test changes — protobuf security bump, a defensive mkdirs() in produceFile, and a smoke-step path correction. No test regressions introduced. All 4 deferred findings from round 1 are acceptable to defer given the stated rationale. No new findings.",
+  "round": 2,
+  "commit_verified": {
+    "sha": "127b381",
+    "test_files_changed": false,
+    "files_changed": [
+      "core-settings/src/main/kotlin/app/sanctum/machina/core/settings/di/CoreSettingsModule.kt",
+      "gradle/libs.versions.toml",
+      "work/phase-2-ui/tasks/2.md"
+    ],
+    "regression_risk": "none — CoreSettingsModule change adds mkdirs() defensively, does not affect test DataStore which uses TemporaryFolder directly via produceFile = { protoFile }"
+  },
+  "deferred_findings_disposition": [
+    {
+      "round1_id": "Major #1",
+      "title": "concurrent_twoSavesSequential_lastWins misleading name",
+      "rationale_accepted": true,
+      "assessment": "Accepted. The TDD anchor in task.md (line 45) literally reads 'два последовательных save для одной модели, убедиться что последний выигрывает' — sequential semantics, not concurrent. The test name `concurrent_twoSavesSequential_lastWins` uses 'concurrent' as a taxonomy prefix matching the anchor description label, and 'Sequential' in the body disambiguates. Renaming would diverge from spec. A genuine concurrent variant (parallel coroutine launch) is untested but is scope creep relative to the anchor. Deferred disposition stands."
+    },
+    {
+      "round1_id": "Major #2",
+      "title": "ErrorLog.e contract not asserted",
+      "rationale_accepted": true,
+      "assessment": "Accepted. The implementation at DefaultAppSettingsRepository.kt:25-27 does call errorLog.e(ERROR_COMPONENT, ...) in the observe catch block. Asserting this requires ErrorLog to be injectable as a test double (interface or open class). ErrorLog is in :core-runtime which is out of scope for task 2. MockK is not used in this project. The logging code path IS exercised by ioException_observeDoesNotCrash (the CorruptionException → IOException path is triggered), just not asserted. Deferral to task 3 is appropriate since task 3 extends the ErrorLog whitelist and can introduce open/interface. Deferred disposition stands."
+    },
+    {
+      "round1_id": "Minor #3",
+      "title": "save/reset IOException paths untested",
+      "rationale_accepted": true,
+      "assessment": "Accepted. The tech-spec Testing Strategy mandates observe-path IOException coverage only (anchor 6: ioException_observeDoesNotCrash). Save/reset IOException paths require either a writable-to-read-only filesystem trick (unreliable in Robolectric) or a DataStore test double that throws from updateData. Neither is straightforward without MockK. The production code (lines 44-46, 54-56 of DefaultAppSettingsRepository.kt) exists and is correct; the gap is test coverage of those lines, not a logic error. Deferred disposition stands."
+    },
+    {
+      "round1_id": "Minor #4",
+      "title": "Real ErrorLog side effect in test setUp",
+      "rationale_accepted": true,
+      "assessment": "Accepted. ErrorLog(context) in setUp is harmless at Robolectric level — android.util.Log calls in Robolectric are no-ops by default and do not write to filesDir. The implicit side effect concern is real but low-impact given Robolectric's sandboxing. Deferred to when ErrorLog is refactored in task 3. Deferred disposition stands."
+    }
+  ],
+  "new_findings": [],
+  "findings": [],
+  "metrics": {
+    "filesReviewed": 3,
+    "litmusTest": {
+      "checked": 0,
+      "passed": 0,
+      "failed": 0,
+      "note": "No test code changed in 127b381; litmus re-check not required"
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 6,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}
