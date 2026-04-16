@@ -33,7 +33,9 @@ object MultimodalContentsBuilder {
     for (clip in audio) {
       result.add(Content.AudioBytes(clip))
     }
-    if (text.trim().isNotEmpty()) {
+    // Whitespace-only text is treated as empty — matches the previous
+    // LlmChatModelHelper.runInference behavior (`input.trim().isNotEmpty()`).
+    if (text.isNotBlank()) {
       result.add(Content.Text(text))
     }
     return result
