@@ -113,11 +113,14 @@ constructor(
         val audioClips = pending.filterIsInstance<Attachment.Audio>().map { it.pcm }
 
         _messages.update { current ->
-            current + Message(MessageRole.USER, normalized) +
+            current +
+                Message(MessageRole.USER, normalized, attachments = pending) +
                 Message(MessageRole.ASSISTANT, text = "", streaming = true)
         }
-        // Clear immediately so UI reflects the consumed state — attachments
-        // are already captured in `images`/`audioClips` snapshots.
+        // Clear the staging area so the ThumbnailStrip empties — the
+        // attachments now live inside the USER Message for history rendering
+        // (AC-26, D28) and in the `images`/`audioClips` snapshots for the
+        // inference call below.
         _attachments.value = emptyList()
         _uiState.value = ChatUiState.Ready(isGenerating = true)
 

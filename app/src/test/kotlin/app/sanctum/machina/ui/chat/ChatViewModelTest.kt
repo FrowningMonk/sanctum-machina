@@ -184,6 +184,27 @@ class ChatViewModelTest {
     }
 
     @Test
+    fun send_transfersPendingAttachmentsIntoUserMessageAndClearsStaging() = runTest(dispatcher) {
+        fakeRegistry.model = Model(name = "m", llmSupportImage = true)
+        val vm = buildViewModel()
+        advanceUntilIdle()
+        val bitmap = stubBitmap()
+        vm.addImageBitmap(bitmap)
+        advanceUntilIdle()
+
+        vm.send("describe this")
+        advanceUntilIdle()
+
+        // Staging cleared so ThumbnailStrip empties.
+        assertTrue(vm.attachments.value.isEmpty())
+        // USER message carries the attachments for history rendering (AC-26).
+        val user = vm.messages.value.first { it.role == MessageRole.USER }
+        assertEquals(1, user.attachments.size)
+        assertTrue(user.attachments.single() is Attachment.Image)
+        assertSame(bitmap, (user.attachments.single() as Attachment.Image).bitmap)
+    }
+
+    @Test
     fun modelCaps_initFails_keepsDefaultCaps() = runTest(dispatcher) {
         fakeRegistry.initResult = Result.failure(IOException("boom"))
         fakeRegistry.model = Model(

@@ -264,6 +264,12 @@ class SafeUriHandler(private val context: Context) : UriHandler {
 **Rationale:** Sanctum Machina — local-LLM privacy app (project.md § Out of Scope: «no cloud sync»). По умолчанию backup включён — DataStore-настройки и (в Phase 3) Room-история тихо уезжают в Google Drive. `allowBackup=false` + `dataExtractionRules` закрывают этот канал. Стоимость — 1 атрибут + 1 XML-файл. Должно быть в Phase 2 — в Phase 3 (Room) упущение станет дорогостоящим.
 - Supports: Security (A04 Insecure Design, M2 Inadequate Privacy Controls), project.md «no cloud sync».
 
+### D28. `Message.attachments` — хранить фактические `Attachment` в истории
+**Decision:** `Message` получает `attachments: List<Attachment> = emptyList()`. `ChatViewModel.send` при добавлении USER-сообщения в `_messages` передаёт текущий snapshot `_attachments.value` в новое поле Message, затем очищает `_attachments`. `MessageBubble` при `message.role == USER && attachments.isNotEmpty()` рендерит компактный ряд миниатюр над текстом (переиспользует logic из `ThumbnailStrip` без кнопки удаления).
+**Rationale:** AC-26 user-spec — USER-сообщение в истории должно показывать то, что пользователь реально отправил модели (фото + audio + text), а не только текст. Альтернатива «хранить только индикатор наличия вложений» — не решает UX, пользователь не видит что именно отправил. Хранение `Attachment` напрямую в Message эфемерно (как и вся Phase-2 история — D1 user-spec); Phase-3 Room перейдёт на сериализованные file-refs через `@TypeConverter` без изменения публичной UX.
+**Alternatives considered:** хранить путь к сохранённому файлу — отверг, D6 user-spec явно требует in-memory; дублировать список вложений в отдельном `Map<MessageId, List<Attachment>>` — отверг, избыточная связность.
+- Supports: AC-26 (added post user-verify 2026-04-16).
+
 ### D27. Phase 2 error handling → `ErrorLog.e` integration
 **Decision:** Новые failure paths → `ErrorLog.e(component, description, cause?)` (patterns.md § ErrorLog whitelist). Необходимо расширить whitelist в `patterns.md` + в `ErrorLog.kt`:
 - `"inference-init"` (уже есть) — D21 reinit crash.
@@ -381,7 +387,8 @@ data class Message(
   val streaming: Boolean = false,
   val interrupted: Boolean = false,
   val footer: String? = null,
-  val thinkingText: String? = null,   // NEW
+  val thinkingText: String? = null,          // NEW (task 10)
+  val attachments: List<Attachment> = emptyList(),  // NEW (task 7, AC-26)
 )
 ```
 
