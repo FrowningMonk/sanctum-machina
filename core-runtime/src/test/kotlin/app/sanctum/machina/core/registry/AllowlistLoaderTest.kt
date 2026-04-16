@@ -141,6 +141,9 @@ class AllowlistLoaderTest {
     val json = minimalModelJson(llmSupportFields = ",\"llmSupportImage\":true")
     val model = parseRaw(json).getOrThrow().single().toModel()
     assertTrue(model.llmSupportImage)
+    // Cross-wire guard: setting only Image must not flip the other two.
+    assertFalse(model.llmSupportAudio)
+    assertFalse(model.llmSupportThinking)
   }
 
   @Test
@@ -148,6 +151,8 @@ class AllowlistLoaderTest {
     val json = minimalModelJson(llmSupportFields = ",\"llmSupportAudio\":true")
     val model = parseRaw(json).getOrThrow().single().toModel()
     assertTrue(model.llmSupportAudio)
+    assertFalse(model.llmSupportImage)
+    assertFalse(model.llmSupportThinking)
   }
 
   @Test
@@ -155,6 +160,8 @@ class AllowlistLoaderTest {
     val json = minimalModelJson(llmSupportFields = ",\"llmSupportThinking\":true")
     val model = parseRaw(json).getOrThrow().single().toModel()
     assertTrue(model.llmSupportThinking)
+    assertFalse(model.llmSupportImage)
+    assertFalse(model.llmSupportAudio)
   }
 
   @Test
@@ -184,6 +191,25 @@ class AllowlistLoaderTest {
     val sysConfig = model.configs.find { it.key == ConfigKeys.SYSTEM_PROMPT_DEFAULT }
     assertNotNull("SYSTEM_PROMPT_DEFAULT config missing", sysConfig)
     assertEquals("", sysConfig!!.defaultValue)
+    assertEquals("", model.configValues[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label])
+  }
+
+  @Test
+  fun defaultConfig_systemPromptDefault_explicitNull_defaultsEmpty() {
+    // Gson deserialises a literal `null` into the Kotlin nullable field; `.orEmpty()` must
+    // collapse it to "" so downstream consumers never see null.
+    val json = minimalModelJson(systemPromptDefaultField = ",\"systemPromptDefault\":null")
+    val model = parseRaw(json).getOrThrow().single().toModel().apply { preProcess() }
+    assertEquals("", model.configValues[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label])
+  }
+
+  @Test
+  fun defaultConfig_missingEntirely_systemPromptDefaultEmpty() {
+    // When `defaultConfig` is absent, the safe-call chain `defaultConfig?.systemPromptDefault`
+    // short-circuits to null, then `.orEmpty()` yields "".
+    val json =
+      """{"models":[{"name":"x","modelId":"litert-community/ok","modelFile":"a.lm","commitHash":"7fa1d78473894f7e736a21d920c3aa80f950c0db","sizeInBytes":1,"taskTypes":["llm_chat"]}]}"""
+    val model = parseRaw(json).getOrThrow().single().toModel().apply { preProcess() }
     assertEquals("", model.configValues[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label])
   }
 }
