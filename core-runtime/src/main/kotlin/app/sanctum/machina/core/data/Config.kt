@@ -52,6 +52,7 @@ object ConfigKeys {
   val SUPPORT_MOBILE_ACTIONS = ConfigKey("support_mobile_actions", "Support mobile actions")
   val SUPPORT_THINKING = ConfigKey("support_thinking", "Support thinking")
   val ENABLE_THINKING = ConfigKey("enable_thinking", "Enable thinking")
+  val SYSTEM_PROMPT_DEFAULT = ConfigKey("system_prompt_default", "Default system prompt")
   val MAX_RESULT_COUNT = ConfigKey("max_result_count", "Max result count")
   val USE_GPU = ConfigKey("use_gpu", "Use GPU")
   val ACCELERATOR = ConfigKey("accelerator", "Accelerator")
@@ -196,6 +197,7 @@ fun createLlmChatConfigs(
   defaultTemperature: Float = DEFAULT_TEMPERATURE,
   accelerators: List<Accelerator> = DEFAULT_ACCELERATORS,
   supportThinking: Boolean = false,
+  defaultSystemPrompt: String = "",
 ): List<Config> {
   var maxTokensConfig: Config =
     LabelConfig(key = ConfigKeys.MAX_TOKENS, defaultValue = "$defaultMaxToken")
@@ -244,6 +246,9 @@ fun createLlmChatConfigs(
   if (supportThinking) {
     configs.add(BooleanSwitchConfig(key = ConfigKeys.ENABLE_THINKING, defaultValue = false))
   }
+  configs.add(
+    LabelConfig(key = ConfigKeys.SYSTEM_PROMPT_DEFAULT, defaultValue = defaultSystemPrompt)
+  )
   return configs
 }
 

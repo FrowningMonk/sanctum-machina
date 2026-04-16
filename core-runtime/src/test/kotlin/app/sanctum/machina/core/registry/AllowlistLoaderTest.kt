@@ -1,8 +1,10 @@
 package app.sanctum.machina.core.registry
 
 import app.sanctum.machina.core.data.AllowedModel
+import app.sanctum.machina.core.data.ConfigKeys
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -124,5 +126,64 @@ class AllowlistLoaderTest {
     assertTrue(
       result.exceptionOrNull()?.message.orEmpty().contains("sizeInBytes out of range"),
     )
+  }
+
+  // --- Phase 2 Task 1: llmSupport* + systemPromptDefault plumbing -----------------------
+
+  private fun minimalModelJson(
+    llmSupportFields: String = "",
+    systemPromptDefaultField: String = "",
+  ): String =
+    """{"models":[{"name":"x","modelId":"litert-community/ok","modelFile":"a.lm","commitHash":"7fa1d78473894f7e736a21d920c3aa80f950c0db","sizeInBytes":1,"taskTypes":["llm_chat"]$llmSupportFields,"defaultConfig":{"topK":64,"temperature":1.0,"accelerators":"gpu,cpu","maxTokens":4000$systemPromptDefaultField}}]}"""
+
+  @Test
+  fun llmSupportImage_true_parsedCorrectly() {
+    val json = minimalModelJson(llmSupportFields = ",\"llmSupportImage\":true")
+    val model = parseRaw(json).getOrThrow().single().toModel()
+    assertTrue(model.llmSupportImage)
+  }
+
+  @Test
+  fun llmSupportAudio_true_parsedCorrectly() {
+    val json = minimalModelJson(llmSupportFields = ",\"llmSupportAudio\":true")
+    val model = parseRaw(json).getOrThrow().single().toModel()
+    assertTrue(model.llmSupportAudio)
+  }
+
+  @Test
+  fun llmSupportThinking_true_parsedCorrectly() {
+    val json = minimalModelJson(llmSupportFields = ",\"llmSupportThinking\":true")
+    val model = parseRaw(json).getOrThrow().single().toModel()
+    assertTrue(model.llmSupportThinking)
+  }
+
+  @Test
+  fun llmSupport_missing_defaultsFalse() {
+    val json = minimalModelJson()
+    val model = parseRaw(json).getOrThrow().single().toModel()
+    assertFalse(model.llmSupportImage)
+    assertFalse(model.llmSupportAudio)
+    assertFalse(model.llmSupportThinking)
+  }
+
+  @Test
+  fun defaultConfig_systemPromptDefault_parsed() {
+    val json =
+      minimalModelJson(systemPromptDefaultField = ",\"systemPromptDefault\":\"You are helpful\"")
+    val model = parseRaw(json).getOrThrow().single().toModel().apply { preProcess() }
+    val sysConfig = model.configs.find { it.key == ConfigKeys.SYSTEM_PROMPT_DEFAULT }
+    assertNotNull("SYSTEM_PROMPT_DEFAULT config missing", sysConfig)
+    assertEquals("You are helpful", sysConfig!!.defaultValue)
+    assertEquals("You are helpful", model.configValues[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label])
+  }
+
+  @Test
+  fun defaultConfig_systemPromptDefault_missing_defaultsEmpty() {
+    val json = minimalModelJson()
+    val model = parseRaw(json).getOrThrow().single().toModel().apply { preProcess() }
+    val sysConfig = model.configs.find { it.key == ConfigKeys.SYSTEM_PROMPT_DEFAULT }
+    assertNotNull("SYSTEM_PROMPT_DEFAULT config missing", sysConfig)
+    assertEquals("", sysConfig!!.defaultValue)
+    assertEquals("", model.configValues[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label])
   }
 }

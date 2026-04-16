@@ -29,6 +29,7 @@ data class AllowedModelConfig(
   val maxTokens: Int? = null,
   val accelerators: String? = null,
   val visionAccelerator: String? = null,
+  val systemPromptDefault: String? = null,
 )
 
 data class AllowedModel(
@@ -41,6 +42,9 @@ data class AllowedModel(
   val description: String? = null,
   val version: String? = null,
   val defaultConfig: AllowedModelConfig? = null,
+  val llmSupportImage: Boolean = false,
+  val llmSupportAudio: Boolean = false,
+  val llmSupportThinking: Boolean = false,
 ) {
   fun toModel(): Model {
     val downloadUrl = "https://huggingface.co/$modelId/resolve/$commitHash/$modelFile?download=true"
@@ -53,6 +57,7 @@ data class AllowedModel(
     val visionAccelerator: Accelerator =
       defaultConfig?.visionAccelerator?.let { parseAccelerator(it) } ?: DEFAULT_VISION_ACCELERATOR
     val maxToken: Int = defaultConfig?.maxTokens ?: DEFAULT_MAX_TOKEN
+    val systemPromptDefault: String = defaultConfig?.systemPromptDefault.orEmpty()
 
     val configs: List<Config> =
       if (isLlmModel) {
@@ -62,6 +67,7 @@ data class AllowedModel(
           defaultTemperature = defaultConfig?.temperature ?: DEFAULT_TEMPERATURE,
           defaultMaxToken = maxToken,
           accelerators = accelerators,
+          defaultSystemPrompt = systemPromptDefault,
         )
       } else {
         listOf()
@@ -81,6 +87,9 @@ data class AllowedModel(
       accelerators = accelerators,
       visionAccelerator = visionAccelerator,
       llmMaxToken = maxToken,
+      llmSupportImage = llmSupportImage,
+      llmSupportAudio = llmSupportAudio,
+      llmSupportThinking = llmSupportThinking,
       isLlm = isLlmModel,
       runtimeType = RuntimeType.LITERT_LM,
     )
