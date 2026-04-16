@@ -25,8 +25,11 @@ private val CONTROL_WS = Regex("[\\n\\r\\t]")
  * Phase 2 extends the Phase-1 set with four new failure modes
  * (`settings-io`, `camera`, `audio`, `attachment-decode`) per tech-spec D27.
  * Any value not in this set raises [IllegalArgumentException] at call time.
+ *
+ * `internal` — consumers should pass the string literal; the set exists for
+ * runtime enforcement, not for cross-module pre-validation.
  */
-val ALLOWED_COMPONENTS: Set<String> = setOf(
+internal val ALLOWED_COMPONENTS: Set<String> = setOf(
   // Phase 1
   "download",
   "inference-init",

@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -26,6 +27,13 @@ class ErrorLogTest {
     context = ApplicationProvider.getApplicationContext()
     errorLog = ErrorLog(context)
     logFile = File(context.filesDir, "logs/errors.log")
+    logFile.parentFile?.deleteRecursively()
+  }
+
+  @After
+  fun tearDown() {
+    // Symmetric cleanup — Robolectric filesDir persists across test classes within
+    // a single run; leaving state behind risks polluting other Robolectric suites.
     logFile.parentFile?.deleteRecursively()
   }
 
@@ -99,5 +107,13 @@ class ErrorLogTest {
     errorLog.e("inference", "line1\nline2\tcol2\rtrail")
     val content = logFile.readText().trimEnd('\n')
     assertEquals("ERROR [inference] line1 line2 col2 trail", content)
+  }
+
+  @Test
+  fun descriptionTruncation_cappedAt500() = runBlocking {
+    errorLog.e("inference", "a".repeat(1000))
+    val desc = logFile.readText().trimEnd('\n').substringAfter("ERROR [inference] ")
+    assertEquals(500, desc.length)
+    assertTrue("truncated description must be all 'a'", desc.all { it == 'a' })
   }
 }

@@ -1,0 +1,56 @@
+{
+  "status": "needs_improvement",
+  "summary": "All 11 TDD anchors are covered (several expanded into multiple explicit tests). Assertions are strong for the numeric utilities (calculateInSampleSize, calculatePeakAmplitude) and the ErrorLog whitelist/truncation contract. Two rotateBitmap tests fail the litmus test because they only assert dimensions that are invariant under identity (rotate_180, flip_horizontal pass even if the rotation line is deleted), and three EXIF branches present in production (FLIP_VERTICAL, TRANSPOSE, TRANSVERSE) have no coverage. The pure-JVM seam mandated by tech-spec D20 is not realised — calculateInSampleSize and calculatePeakAmplitude live inside a @RunWith(RobolectricTestRunner)-tagged class, so they run under Robolectric even though the whole point of the seam was to avoid it. None of this blocks correctness, but the coverage gaps and weak rotation assertions should be tightened before close.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "anti_pattern",
+      "location": "core-runtime/src/test/kotlin/app/sanctum/machina/core/common/MediaUtilsTest.kt:80-86 (rotateBitmap_rotate180_preservesDimensions), 96-102 (rotateBitmap_flipHorizontal_preservesDimensions)",
+      "issue": "Litmus test failure: both tests only assert that width/height are unchanged. If the corresponding matrix mutation (postRotate(180f) / preScale(-1f, 1f)) is removed from rotateBitmap, Bitmap.createBitmap(src, 0, 0, w, h, identityMatrix, true) still returns a bitmap with the same dimensions — the test passes against broken code. These tests document 'does not throw / returns something of the same shape', not 'performs the rotation'. tech-spec line 430 explicitly calls for pixel comparison on a control sample for this reason.",
+      "recommendation": "Seed a 1-pixel marker and assert it moved. Concrete shape:\n\n  val src = Bitmap.createBitmap(4, 8, Bitmap.Config.ARGB_8888).apply {\n    setPixel(0, 0, Color.RED)   // top-left marker\n    setPixel(3, 7, Color.BLUE)  // bottom-right marker\n  }\n  val rotated = rotateBitmap(src, ExifInterface.ORIENTATION_ROTATE_180)\n  assertEquals(Color.BLUE, rotated.getPixel(0, 0))  // 180° swaps corners\n  assertEquals(Color.RED,  rotated.getPixel(3, 7))\n  assertNotSame(src, rotated)\n\nFor FLIP_HORIZONTAL: assert that the pixel at (0,0) equals the original pixel at (width-1, 0). Robolectric 4.12 backs Bitmap with real Skia, getPixel/setPixel round-trips correctly. No mock changes needed."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "core-runtime/src/main/kotlin/app/sanctum/machina/core/common/MediaUtils.kt:58-66 — untested in MediaUtilsTest.kt",
+      "issue": "rotateBitmap has when-branches for ORIENTATION_FLIP_VERTICAL, ORIENTATION_TRANSPOSE, and ORIENTATION_TRANSVERSE. None of these branches are exercised by any test. The task's TDD anchor rotateBitmap_orientations reads 'для каждой EXIF-ориентации bitmap поворачивается корректно' — currently four of the eight EXIF values are covered (90, 180, 270, FLIP_HORIZONTAL, NORMAL, UNDEFINED), three are not. If the TRANSPOSE branch body is replaced with `return bitmap`, no test catches it.",
+      "recommendation": "Add three tests, each with a seeded pixel so the assertion survives the fix above:\n\n  @Test fun rotateBitmap_flipVertical_invertsRows() {\n    val src = ... setPixel(0, 0) = RED\n    val out = rotateBitmap(src, ExifInterface.ORIENTATION_FLIP_VERTICAL)\n    assertEquals(RED, out.getPixel(0, src.height - 1))  // top row → bottom row\n    assertEquals(src.width, out.width); assertEquals(src.height, out.height)\n  }\n\n  @Test fun rotateBitmap_transpose_swapsDimsAndDiagonal() {\n    // TRANSPOSE = rotate90 + flipH → (x,y) → (y,x); dims swap\n    val src = 4x8, setPixel(3, 0, RED)  // top-right\n    val out = rotateBitmap(src, ExifInterface.ORIENTATION_TRANSPOSE)\n    assertEquals(8, out.width); assertEquals(4, out.height)\n    assertEquals(RED, out.getPixel(0, 3))\n  }\n\n  @Test fun rotateBitmap_transverse_swapsDimsOppositeDiagonal() {\n    val src = 4x8, setPixel(0, 0, RED)\n    val out = rotateBitmap(src, ExifInterface.ORIENTATION_TRANSVERSE)\n    assertEquals(8, out.width); assertEquals(4, out.height)\n    assertEquals(RED, out.getPixel(out.width - 1, out.height - 1))\n  }\n\nThese close the branch gap and validate the specific matrix composition for each orientation."
+    },
+    {
+      "severity": "minor",
+      "category": "wrong_test_type",
+      "location": "core-runtime/src/test/kotlin/app/sanctum/machina/core/common/MediaUtilsTest.kt:24-25 (class-level @RunWith / @Config) applied to calculateInSampleSize_* and calculatePeakAmplitude_* tests (lines 118-187)",
+      "issue": "Tech-spec D20 ('Alternatives considered: seam ... применена: calculateInSampleSize покрывается plain JVM') explicitly carves out calculateInSampleSize as a pure JVM test to avoid Robolectric cost. calculatePeakAmplitude is also pure (ByteArray + ByteBuffer, no Android types). Both currently run under RobolectricTestRunner because the annotations are on the class, not on individual tests. This still executes correctly — there is no correctness bug — but the seam the tech-spec describes is not actually in place: every test in the class pays the Robolectric init cost.",
+      "recommendation": "Split the file in two within the same package:\n\n  MediaUtilsTest.kt                   — Robolectric, keeps decodeSampledBitmapFromUri_* and rotateBitmap_*\n  MediaUtilsPureTest.kt (or similar)  — plain JUnit, holds calculateInSampleSize_* (3 tests) and calculatePeakAmplitude_* (6 tests)\n\nNo @RunWith, no @Config on the pure file. Runtime saving is small (a few seconds per run) but it makes the D20 seam visible in code and prevents a future refactor from accidentally introducing a Context dependency into the pure functions."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt:14 (MAX_DESCRIPTION_LEN = 500), 77-81 (rotation branch)",
+      "issue": "Two code paths in ErrorLog have no test: (a) description truncation at 500 chars — causeChainBounding tests only exercise the 200-char cause-message cap, not the description cap, and description sanitization is only tested for whitespace replacement, not length; (b) log rotation once file exceeds MAX_LOG_BYTES. Neither is on the TDD anchor list, so this is not a gate blocker, but both are non-trivial branches that ship without any safety net.",
+      "recommendation": "Add two tests to ErrorLogTest.kt:\n\n  @Test fun descriptionTruncation_cappedAt500() = runBlocking {\n    errorLog.e(\"inference\", \"a\".repeat(1000))\n    val desc = logFile.readText().trimEnd('\\n').substringAfter(\"ERROR [inference] \")\n    assertEquals(500, desc.length)\n    assertTrue(desc.all { it == 'a' })\n  }\n\n  @Test fun rotation_overSizeThreshold_renamesToLog1() = runBlocking {\n    // Seed a file already past the 2 MB threshold (write raw bytes through the log dir so\n    // the next e() append triggers rename). Assert errors.log.1 exists afterwards and\n    // errors.log contains only the newly-appended line.\n    val dir = File(context.filesDir, \"logs\").apply { mkdirs() }\n    File(dir, \"errors.log\").writeBytes(ByteArray(2 * 1024 * 1024 + 1))\n    errorLog.e(\"inference\", \"after-rotate\")\n    assertTrue(File(dir, \"errors.log.1\").exists())\n    assertTrue(File(dir, \"errors.log\").readText().contains(\"after-rotate\"))\n  }\n\nThese cover the two remaining ErrorLog branches and keep future edits to bounds/rotation from shipping silently."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "core-runtime/src/test/kotlin/app/sanctum/machina/core/common/AudioClipTest.kt:24-28 (construction_preservesAudioData_byReference)",
+      "issue": "The test comment says 'same reference — plain class, no defensive copy' but the assertion is assertEquals(bytes, clip.audioData). For ByteArray, JUnit 4's assertEquals falls back to Object.equals, which is identity — so the assertion happens to work, but it reads as a content check to anyone skimming the test. If AudioClip is later changed to clone the incoming array, assertEquals would fail by identity (correct) while a reader would assume it was a content comparison and be confused about what the test actually guards.",
+      "recommendation": "Switch to assertSame to make the intent explicit and type-safe:\n\n  val bytes = byteArrayOf(1, 2, 3, 4)\n  val clip = AudioClip(audioData = bytes, sampleRate = 16000)\n  assertSame(\"plain class must not defensive-copy audioData\", bytes, clip.audioData)\n\nNo behavioural change, just aligns the assertion with the documented contract."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 6,
+    "litmusTest": {
+      "checked": 22,
+      "passed": 20,
+      "failed": 2
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 27,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}
