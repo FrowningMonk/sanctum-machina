@@ -7,6 +7,7 @@ import android.content.ContextWrapper
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
+import android.util.Size
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -14,6 +15,8 @@ import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.lifecycle.awaitInstance
 import androidx.camera.view.PreviewView
@@ -56,6 +59,7 @@ import app.sanctum.machina.R
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /**
@@ -68,24 +72,29 @@ import kotlinx.coroutines.launch
  *     `shouldShowRequestPermissionRationale` is also false (OS has stopped
  *     prompting). Before the first prompt that signal looks identical, but by
  *     the time this callback fires the launcher already showed a dialog, so
- *     treating it as permanent is the pragmatic call.
- *  2. Granted → bind `Preview` + `ImageCapture` to the lifecycle owner via
- *     `ProcessCameraProvider.awaitInstance(context)`. Any throwable during
- *     bind → `onCameraInitError` + dismiss.
- *  3. Capture button → `ImageCapture.takePicture(executor, callback)` →
- *     `ImageProxy.toBitmap()` → [rotateBitmapByDegrees] (CameraX reports
- *     rotation in degrees, not EXIF constants — `MediaUtils.rotateBitmap`
- *     doesn't fit) → `onImageCaptured` + dismiss.
+ *     treating it as permanent is the pragmatic call. See
+ *     [isCameraDenialPermanent] for the extracted pure helper.
+ *  2. Granted → bind `Preview` + `ImageCapture` (resolution capped at
+ *     [CAPTURE_TARGET_PX] so a 50-MP sensor doesn't allocate a ~200 MB
+ *     intermediate bitmap before `ChatViewModel.addImageBitmap` downscales)
+ *     to the lifecycle owner via `ProcessCameraProvider.awaitInstance`.
+ *     Any throwable during bind → `onCameraError` + dismiss.
+ *  3. Capture button → `ImageCapture.takePicture(executor, callback)`.
+ *     The callback runs on a single-thread executor (off-Main decode);
+ *     bitmap + rotation are computed there, then handed back to the
+ *     Compose scope via `scope.launch { }` so all UI state transitions
+ *     happen on Main. If the sheet's scope is cancelled (user swiped away
+ *     mid-capture), the launched dispatch no-ops — no phantom attachment.
  *  4. `DisposableEffect.onDispose` unbinds the provider and shuts down the
- *     single-thread executor. Capture button stays disabled while a capture
- *     is in flight to avoid double-taps producing two bitmaps.
+ *     executor. Once capture fires, `capturing` stays true until the sheet
+ *     is torn down — avoids re-arming the shutter on a dismissing sheet.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CameraBottomSheet(
     onDismiss: () -> Unit,
     onImageCaptured: (Bitmap) -> Unit,
-    onCameraInitError: (description: String, cause: Throwable?) -> Unit,
+    onCameraError: (description: String, cause: Throwable?) -> Unit,
     onPermissionDenied: (permanent: Boolean) -> Unit,
 ) {
     val context = LocalContext.current
@@ -95,7 +104,7 @@ fun CameraBottomSheet(
     val onDismissLatest = rememberUpdatedState(onDismiss)
     val onPermissionDeniedLatest = rememberUpdatedState(onPermissionDenied)
     val onImageCapturedLatest = rememberUpdatedState(onImageCaptured)
-    val onCameraInitErrorLatest = rememberUpdatedState(onCameraInitError)
+    val onCameraErrorLatest = rememberUpdatedState(onCameraError)
 
     var hasPermission by remember {
         mutableStateOf(
@@ -121,9 +130,9 @@ fun CameraBottomSheet(
             hasPermission = true
         } else {
             val activity = context.findActivity()
-            val permanent = activity == null || !ActivityCompat
+            val rationaleVisible = activity != null && ActivityCompat
                 .shouldShowRequestPermissionRationale(activity, Manifest.permission.CAMERA)
-            onPermissionDeniedLatest.value(permanent)
+            onPermissionDeniedLatest.value(isCameraDenialPermanent(activity, rationaleVisible))
             animateAndDismiss()
         }
     }
@@ -140,12 +149,13 @@ fun CameraBottomSheet(
     ) {
         if (hasPermission) {
             CameraPreviewContent(
+                scope = scope,
                 onCapture = { bitmap ->
                     onImageCapturedLatest.value(bitmap)
                     animateAndDismiss()
                 },
-                onInitError = { description, cause ->
-                    onCameraInitErrorLatest.value(description, cause)
+                onError = { description, cause ->
+                    onCameraErrorLatest.value(description, cause)
                     animateAndDismiss()
                 },
                 onClose = { animateAndDismiss() },
@@ -156,21 +166,38 @@ fun CameraBottomSheet(
 
 @Composable
 private fun CameraPreviewContent(
+    scope: CoroutineScope,
     onCapture: (Bitmap) -> Unit,
-    onInitError: (String, Throwable?) -> Unit,
+    onError: (String, Throwable?) -> Unit,
     onClose: () -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
     val previewUseCase = remember { Preview.Builder().build() }
-    val imageCaptureUseCase = remember { ImageCapture.Builder().build() }
+    val imageCaptureUseCase = remember {
+        val resolutionSelector = ResolutionSelector.Builder()
+            .setResolutionStrategy(
+                ResolutionStrategy(
+                    Size(CAPTURE_TARGET_PX, CAPTURE_TARGET_PX),
+                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
+                ),
+            )
+            .build()
+        ImageCapture.Builder()
+            .setResolutionSelector(resolutionSelector)
+            .build()
+    }
     val executor: ExecutorService = remember { Executors.newSingleThreadExecutor() }
 
     var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    // Sticky: flips true on capture dispatch, never flips back — the sheet
+    // tears down after success/error, so the shutter shouldn't re-arm.
     var capturing by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
+    // Keyed on `lifecycleOwner`: NavHost may swap owners on configuration
+    // change, which would orphan the bound use cases if we keyed on Unit.
+    LaunchedEffect(lifecycleOwner) {
         try {
             val provider = ProcessCameraProvider.awaitInstance(context)
             provider.unbindAll()
@@ -184,7 +211,7 @@ private fun CameraPreviewContent(
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
-            onInitError("camera bind failed", t)
+            onError("camera bind failed", t)
         }
     }
 
@@ -206,6 +233,7 @@ private fun CameraPreviewContent(
                     previewUseCase.surfaceProvider = view.surfaceProvider
                 }
             },
+            update = { /* PreviewView self-updates from surfaceProvider. */ },
             modifier = Modifier.fillMaxWidth().height(CameraSheetHeight),
         )
 
@@ -232,21 +260,23 @@ private fun CameraPreviewContent(
                     executor,
                     object : ImageCapture.OnImageCapturedCallback() {
                         override fun onCaptureSuccess(image: ImageProxy) {
-                            try {
-                                val bitmap = image.toBitmap()
-                                val degrees = image.imageInfo.rotationDegrees
-                                onCapture(rotateBitmapByDegrees(bitmap, degrees))
+                            val bitmap = try {
+                                val raw = image.toBitmap()
+                                rotateBitmapByDegrees(raw, image.imageInfo.rotationDegrees)
                             } catch (t: Throwable) {
-                                onInitError("capture decode failed", t)
-                            } finally {
                                 image.close()
-                                capturing = false
+                                // Main-dispatch: the sheet's `scope` cancels on
+                                // composition drop, so a swipe-dismiss mid-capture
+                                // silences this path (no phantom VM error).
+                                scope.launch { onError("capture decode failed", t) }
+                                return
                             }
+                            image.close()
+                            scope.launch { onCapture(bitmap) }
                         }
 
                         override fun onError(exception: ImageCaptureException) {
-                            capturing = false
-                            onInitError("capture failed", exception)
+                            scope.launch { onError("capture failed", exception) }
                         }
                     },
                 )
@@ -276,7 +306,21 @@ private fun CameraPreviewContent(
     }
 }
 
+/**
+ * Fixed height for the camera preview area — wide enough for a recognisable
+ * preview, short enough to leave the shutter button at thumb reach on a 6"
+ * display. Not tied to screen aspect ratio; the ModalBottomSheet host caps
+ * height at the top-system-bar inset.
+ */
 private val CameraSheetHeight = 480.dp
+
+/**
+ * Target edge for CameraX `ImageCapture`. Matches `ChatViewModel`'s
+ * downscale invariant so the raw capture bitmap is already near-1024 and
+ * the VM's defensive downscale is effectively a no-op. Keeps peak memory
+ * predictable on high-resolution sensors (50 MP+ devices).
+ */
+private const val CAPTURE_TARGET_PX = 1024
 
 /**
  * Rotates [bitmap] clockwise by [degrees]. CameraX exposes rotation as
@@ -291,6 +335,16 @@ internal fun rotateBitmapByDegrees(bitmap: Bitmap, degrees: Int): Bitmap {
     val matrix = Matrix().apply { postRotate(normalized.toFloat()) }
     return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
 }
+
+/**
+ * Pure boolean heuristic extracted from the permission-denied path so it
+ * can be unit-tested without a `compose-ui-test` harness. [activity] being
+ * null (no hosting Activity resolvable from the Compose context) is always
+ * permanent — we can't re-prompt without one. When the OS will still show
+ * a rationale ([rationaleVisible] = true), the denial is soft.
+ */
+internal fun isCameraDenialPermanent(activity: Activity?, rationaleVisible: Boolean): Boolean =
+    activity == null || !rationaleVisible
 
 private fun Context.findActivity(): Activity? {
     var current: Context = this

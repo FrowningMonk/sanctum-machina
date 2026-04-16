@@ -97,7 +97,7 @@ fun ChatScreen(
                 onStop = viewModel::stop,
                 onReset = viewModel::reset,
                 onImageCaptured = viewModel::addImageBitmap,
-                onCameraInitError = viewModel::reportCameraError,
+                onCameraError = viewModel::reportCameraError,
             )
     }
 }
@@ -163,7 +163,7 @@ private fun ReadyContent(
     onStop: () -> Unit,
     onReset: () -> Unit,
     onImageCaptured: (Bitmap) -> Unit,
-    onCameraInitError: (String, Throwable?) -> Unit,
+    onCameraError: (String, Throwable?) -> Unit,
 ) {
     // rememberSaveable survives rotation / process death restore so a half-typed
     // prompt isn't lost on configuration change.
@@ -248,7 +248,7 @@ private fun ReadyContent(
         CameraBottomSheet(
             onDismiss = { showCameraSheet = false },
             onImageCaptured = onImageCaptured,
-            onCameraInitError = onCameraInitError,
+            onCameraError = onCameraError,
             onPermissionDenied = { permanent ->
                 scope.launch {
                     if (permanent) {
@@ -273,13 +273,19 @@ private fun ReadyContent(
  * Launches the system "App info" screen so the user can re-enable a
  * permission they permanently denied. `FLAG_ACTIVITY_NEW_TASK` is required
  * because `startActivity` may be called from a non-Activity context.
+ *
+ * Wrapped in `runCatching` because a handful of locked-down OEM builds
+ * (enterprise MDM, kiosk ROMs) don't resolve `ACTION_APPLICATION_DETAILS_SETTINGS`
+ * and would otherwise crash with `ActivityNotFoundException`. Silent
+ * swallow is acceptable here — the snackbar message already communicates
+ * the permission state; the user retains manual access to system settings.
  */
 private fun Context.openAppSettings() {
     val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
         data = Uri.fromParts("package", packageName, null)
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
-    startActivity(intent)
+    runCatching { startActivity(intent) }
 }
 
 @Composable

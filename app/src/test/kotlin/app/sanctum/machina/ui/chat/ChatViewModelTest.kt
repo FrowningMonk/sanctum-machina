@@ -222,6 +222,26 @@ class ChatViewModelTest {
     }
 
     @Test
+    fun reportCameraError_emitsSnackbarAndAcceptsValidComponent() = runTest(dispatcher) {
+        val vm = buildViewModel()
+        advanceUntilIdle()
+        val events = collectSnackbar(vm)
+
+        // Must not throw — "camera" is in the ErrorLog D27 whitelist
+        // (enforcement itself is covered by :core-runtime ErrorLogTest).
+        // The file-side effect runs on Dispatchers.IO and detaches from
+        // the test scheduler, so this test only asserts the Main-thread
+        // observable: the snackbar event.
+        vm.reportCameraError("camera bind failed", IllegalStateException("provider unavailable"))
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(R.string.camera_init_failed),
+            events,
+        )
+    }
+
+    @Test
     fun modelCaps_initFails_keepsDefaultCaps() = runTest(dispatcher) {
         fakeRegistry.initResult = Result.failure(IOException("boom"))
         fakeRegistry.model = Model(
