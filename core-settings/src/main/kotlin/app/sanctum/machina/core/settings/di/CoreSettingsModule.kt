@@ -36,7 +36,9 @@ abstract class CoreSettingsModule {
     ): DataStore<AppSettings> =
       DataStoreFactory.create(
         serializer = AppSettingsSerializer,
-        produceFile = { File(context.filesDir, DATASTORE_FILE) },
+        produceFile = {
+          File(context.filesDir, DATASTORE_FILE).also { it.parentFile?.mkdirs() }
+        },
       )
   }
 }
