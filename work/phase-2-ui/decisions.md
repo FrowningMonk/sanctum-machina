@@ -136,7 +136,7 @@ Fixes applied in round 1 (commit d411631): added `microphone` uses-feature; drop
 - `aapt dump permissions app-debug.apk` → contains both `android.permission.CAMERA` and `android.permission.RECORD_AUDIO` (TAC-9)
 - `aapt dump xmltree app-debug.apk AndroidManifest.xml` → `android:allowBackup=(type 0x12)0x0` (TAC-10), `android:dataExtractionRules=@0x7f110000` reference, two `uses-feature` blocks both `required=(type 0x12)0x0`, `fullBackupContent` absent
 - `aapt dump xmltree app-debug.apk res/xml/data_extraction_rules.xml` → `<cloud-backup>` and `<device-transfer>` each contain `<exclude domain="root" path="."/>` (TAC-14)
-- User-verify (launcher label "Sanctum Machina" on Honor 200) — pending physical device install; APK staged at `app/build/outputs/apk/debug/app-debug.apk`
+- User-verify on Honor 200: launcher label "Sanctum Machina" confirmed (AC-2 ✓). First install showed icon-only because the manifest still pointed at the system placeholder `@android:drawable/sym_def_app_icon` and Magic OS hides labels for placeholder-iconed apps; replaced with a proper adaptive launcher icon (`@mipmap/ic_launcher` + `@mipmap/ic_launcher_round`, generated via Image Asset Studio with Material clip-art `memory` on `#1F1F1F` background) — label now visible. Icon swap + manifest update committed separately as a follow-up to Task 5; the brand icon itself is a placeholder pending Phase 5 visual polish.
 
 ---
 
