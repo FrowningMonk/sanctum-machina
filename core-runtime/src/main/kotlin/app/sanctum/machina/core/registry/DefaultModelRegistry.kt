@@ -51,8 +51,11 @@ private const val LOG_TAG_INIT = "inference-init"
  */
 internal fun buildSystemInstruction(configValues: Map<String, Any>): Contents? {
   val raw = configValues[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label] as? String
-  val trimmed = raw?.takeIf { it.isNotBlank() } ?: return null
-  return Contents.of(listOf(Content.Text(trimmed)))
+  // Name clarifies that `takeIf { isNotBlank() }` filters rather than trims —
+  // leading/trailing whitespace is passed through verbatim by design, the
+  // Phase-3 settings UI is responsible for trimming before persisting.
+  val nonBlank = raw?.takeIf { it.isNotBlank() } ?: return null
+  return Contents.of(listOf(Content.Text(nonBlank)))
 }
 // LOG_TAG_CLEANUP ("inference-cleanup") — whitelisted in user-spec D11; not used yet because
 // LlmChatModelHelper.cleanUp swallows its own exceptions internally. Phase 2 debt: surface

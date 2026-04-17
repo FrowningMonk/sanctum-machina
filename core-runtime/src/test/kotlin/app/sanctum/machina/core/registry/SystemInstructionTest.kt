@@ -8,14 +8,18 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * Tests for D24 / Task-10 TDD anchor: `DefaultModelRegistry.awaitInitialize`
- * must pass a non-null `Contents` to `LlmModelHelper.initialize` when the
- * model carries a non-blank `SYSTEM_PROMPT_DEFAULT`, and `null` otherwise.
+ * Covers the mapping layer that `DefaultModelRegistry.awaitInitialize`
+ * delegates to for D24 / Task-10: turning `Model.configValues` into the
+ * `Contents?` forwarded to `LlmModelHelper.initialize`.
  *
- * Exercises [buildSystemInstruction] — the extracted internal helper that
- * `awaitInitialize` calls with `model.configValues`. Testing the helper
- * directly avoids standing up the full registry graph (Context, Hilt,
- * DownloadRepository) just to verify a pure Map → Contents? mapping.
+ * The call-site wiring (`systemInstruction = buildSystemInstruction(...)`)
+ * is verified by inspection — a regression that hardcodes `null` there
+ * would slip past this suite and is instead covered by the end-to-end
+ * manual verification on Honor 200 (AC-4 systemPromptDefault flow).
+ *
+ * Testing the helper directly avoids standing up the full registry graph
+ * (Context, Hilt, DownloadRepository) just to exercise a pure Map →
+ * Contents? mapping.
  */
 class SystemInstructionTest {
 
@@ -29,7 +33,10 @@ class SystemInstructionTest {
     val result = buildSystemInstruction(configValues)
 
     assertNotNull("Expected non-null Contents for non-blank prompt", result)
-    val texts = result!!.contents.filterIsInstance<Content.Text>().map { it.text }
+    // Lock the contract: exactly one Content, of the Text variant. Prevents a
+    // future refactor from silently widening the payload shape.
+    assertEquals(1, result!!.contents.size)
+    val texts = result.contents.filterIsInstance<Content.Text>().map { it.text }
     assertEquals(listOf(prompt), texts)
   }
 
