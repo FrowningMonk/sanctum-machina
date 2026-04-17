@@ -207,6 +207,30 @@ Round-1 blockers applied: attachments wired into `helper.runInference(images, au
 
 ---
 
+## Task 8: CameraBottomSheet (CameraX)
+
+**Status:** Done
+**Commit:** f799ddb (impl 836a8d1 + review-round-1 fix d6f0fe1 + UX height fix f799ddb)
+**Agent:** main agent
+**Summary:** Added `CameraBottomSheet` — ModalBottomSheet with CameraX `PreviewView`, shutter capture button (`ImageCapture.takePicture` → `ImageProxy.toBitmap()` → `rotateBitmapByDegrees` → `ChatViewModel.addImageBitmap`), and close button. Runtime CAMERA permission requested on-demand via `rememberLauncherForActivityResult(RequestPermission)` with permanent-denial detection (`isCameraDenialPermanent` pure helper) routing to a snackbar with "Open settings" action. `DisposableEffect` unbinds provider + shuts down executor on composition drop. Capture callback dispatches via `scope.launch {}` (Main) — cancelled scope on swipe-dismiss prevents phantom attachments. `ImageCapture` uses `ResolutionSelector(1024px)` to bound peak memory on high-res sensors.
+**Deviations:** (1) Used `rotateBitmapByDegrees` (new internal helper) instead of `MediaUtils.rotateBitmap` — CameraX reports degrees (0/90/180/270), not EXIF orientation constants; documented in KDoc. (2) Camera sheet height changed from task's implicit "fill" to fixed 480dp, then updated to `fillMaxHeight()` per user feedback — preview now covers the full available sheet area. (3) All task strings (camera_capture, camera_init_failed, permission_camera_denied, etc.) were already added in Task 5 — no strings.xml changes needed. (4) Two of three TDD anchors (permissionDenied_showsSnackbar, closeButton_dismissesSheet) deferred to manual smoke — Compose UI tests excluded from Phase-2 testing strategy (precedent: Task 3); `isCameraDenialPermanent` extracted as pure function with 3 JVM tests as substitute.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved_with_suggestions, 0 critical / 3 major / 8 minor → [logs/working/task-8/code-reviewer-1.json](logs/working/task-8/code-reviewer-1.json)
+- security-auditor: approved, 0 critical / 0 major / 4 minor → [logs/working/task-8/security-auditor-1.json](logs/working/task-8/security-auditor-1.json)
+- test-reviewer: approved_with_suggestions, 0 critical / 0 major / 4 minor → [logs/working/task-8/test-reviewer-1.json](logs/working/task-8/test-reviewer-1.json)
+
+Round-1 fixes applied (commit d6f0fe1): M1+M3 Main-dispatch capture handling (sticky `capturing`, cancelled-scope no-op); S1 `ResolutionSelector(1024px)`; S2 `runCatching` on `openAppSettings`; `onCameraInitError` → `onCameraError` rename; `AndroidView update={}` block; `LaunchedEffect` keyed on `lifecycleOwner`; `isCameraDenialPermanent` extracted + 3 tests; `reportCameraError` ChatViewModelTest added; `720°`/`-360°` normalization tests replaced weak negative-degrees test; 180° test KDoc note. Deferred: M2 unbindAll scope (Task 9/11); blank-sheet flash (aesthetic); ActiveSheet sealed class (Task 11); log-path leakage (200-char cap enforced); re-entry throttling (Phase-3). Round 2 not run — same precedent as Tasks 5/6/7 (approved verdicts, substantive fixes applied, smokes green).
+
+**Verification:**
+- `./gradlew :app:testDebugUnitTest` → 34 passed, 0 failures (9 CameraBottomSheetTest + 11 ChatViewModelTest + 14 SafeUriHandlerTest)
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL
+- User-verify on Honor 200: camera button → CAMERA permission → live preview → «Снять» → thumbnail in input bar (AC-11, AC-15); close → dismisses without capture; confirmed working. UX fix: sheet height changed to full-screen per user feedback.
+
+---
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.
