@@ -534,6 +534,7 @@ class ChatViewModelTest {
         )
         // Init succeeds first time (constructor) then fails on heavy reinit.
         fakeRegistry.initResult = Result.failure(RuntimeException("native init failed"))
+        val events = collectSnackbar(vm)
 
         vm.applyHeavySetting()
         advanceUntilIdle()
@@ -545,6 +546,10 @@ class ChatViewModelTest {
         assertFalse(
             "reinit progress must clear in finally even on failure",
             vm.reinitInProgress.value,
+        )
+        assertTrue(
+            "failure must emit the chat_load_failed snackbar (R.string.chat_load_failed_title)",
+            events.contains(R.string.chat_load_failed_title),
         )
     }
 
@@ -569,6 +574,10 @@ class ChatViewModelTest {
             PerModelSettings.newBuilder().setSystemPromptDefault("be terse").build(),
         )
         sharedCalls.clear()
+        // Baseline: constructor init counts as 1 initialize, applyEffective
+        // runs before send(). Assertions below check deltas, not absolutes.
+        val cleanupBefore = fakeRegistry.cleanupCalls
+        val initBefore = fakeRegistry.initializeCalls
 
         vm.applySystemPromptAndReset()
         advanceUntilIdle()
@@ -586,9 +595,14 @@ class ChatViewModelTest {
             events,
         )
         assertEquals(
-            "registry must NOT have been cleanup/init'd for systemPrompt change",
-            0,
+            "semi-light systemPrompt must not cleanup the engine (D15)",
+            cleanupBefore,
             fakeRegistry.cleanupCalls,
+        )
+        assertEquals(
+            "semi-light systemPrompt must not reinitialize the engine (D15)",
+            initBefore,
+            fakeRegistry.initializeCalls,
         )
     }
 
@@ -610,6 +624,10 @@ class ChatViewModelTest {
         vm.addImageBitmap(stubBitmap())
         advanceUntilIdle()
         assertNotEquals(0, vm.messages.value.size)
+        // Reset baselines AFTER the warm-up send() so the post-reset
+        // assertions verify the reset path itself, not earlier setup.
+        val cleanupBefore = fakeRegistry.cleanupCalls
+        val initBefore = fakeRegistry.initializeCalls
 
         vm.resetConversation()
         advanceUntilIdle()
@@ -620,6 +638,16 @@ class ChatViewModelTest {
             "reset must hand the effective system prompt to the engine (D23)",
             "be helpful",
             fakeRegistry.lastResetSystemPrompt,
+        )
+        assertEquals(
+            "resetConversation must keep the engine loaded (D23) — no cleanup",
+            cleanupBefore,
+            fakeRegistry.cleanupCalls,
+        )
+        assertEquals(
+            "resetConversation must keep the engine loaded (D23) — no initialize",
+            initBefore,
+            fakeRegistry.initializeCalls,
         )
     }
 

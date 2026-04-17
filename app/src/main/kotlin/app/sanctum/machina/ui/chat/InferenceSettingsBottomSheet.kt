@@ -24,7 +24,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -40,9 +39,13 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.sanctum.machina.R
+import app.sanctum.machina.core.data.Accelerator
 import app.sanctum.machina.core.data.ConfigKeys
 import app.sanctum.machina.core.settings.proto.PerModelSettings
 import androidx.compose.foundation.text.KeyboardOptions
+
+/** Defensive cap on user-entered system prompts (security-auditor minor-2). */
+private const val SYSTEM_PROMPT_MAX_LENGTH: Int = 4096
 
 /**
  * Bottom sheet for per-model inference settings (D15, D16, AC-4, AC-21).
@@ -89,7 +92,9 @@ fun InferenceSettingsBottomSheet(
         mutableStateOf((effective[ConfigKeys.ENABLE_THINKING.label] as? Boolean) ?: false)
     }
     val accelerator = remember(effective) {
-        mutableStateOf((effective[ConfigKeys.ACCELERATOR.label] as? String) ?: "GPU")
+        mutableStateOf(
+            (effective[ConfigKeys.ACCELERATOR.label] as? String) ?: Accelerator.GPU.label
+        )
     }
 
     var pendingHeavyApply by remember { mutableStateOf<HeavyAction?>(null) }
@@ -198,6 +203,13 @@ fun InferenceSettingsBottomSheet(
         }
     }
 
+    // `pendingHeavyApply` uses plain `remember` — a configuration change
+    // while the HeavyChangeDialog is visible silently discards the
+    // pending action. Acceptable trade-off: the proto carries binary
+    // bytes and cannot be saved by the default state-saver, the sheet
+    // is a fast-path flow where rotation mid-dialog is rare, and the
+    // user's edits remain in the sheet fields so re-clicking Apply
+    // reconstructs the same action.
     pendingHeavyApply?.let { action ->
         HeavyChangeDialog(
             onConfirm = {
@@ -210,13 +222,6 @@ fun InferenceSettingsBottomSheet(
             },
             onDismiss = { pendingHeavyApply = null },
         )
-    }
-
-    val reinitInProgress by viewModel.reinitInProgress.collectAsStateWithLifecycle()
-    LaunchedEffect(reinitInProgress) {
-        // Auto-dismiss the sheet once the reinit completes — the user
-        // has visual confirmation through the modal progress dialog and
-        // the disappearance of the back-pressure (D12).
     }
 }
 
@@ -234,7 +239,13 @@ private fun SystemPromptField(state: MutableState<String>) {
         )
         OutlinedTextField(
             value = state.value,
-            onValueChange = { state.value = it },
+            onValueChange = { new ->
+                // Clamp length at input time — prevents a pathological paste
+                // from sitting in DataStore and being re-deserialised on every
+                // cold start (security-auditor minor-2).
+                state.value = if (new.length <= SYSTEM_PROMPT_MAX_LENGTH) new
+                else new.take(SYSTEM_PROMPT_MAX_LENGTH)
+            },
             modifier = Modifier.fillMaxWidth(),
             placeholder = { Text(stringResource(R.string.settings_system_prompt_placeholder)) },
             keyboardOptions = KeyboardOptions(
@@ -321,7 +332,7 @@ private fun BooleanSwitchField(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AcceleratorField(state: MutableState<String>) {
-    val options = listOf("GPU", "CPU")
+    val options = listOf(Accelerator.GPU.label, Accelerator.CPU.label)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
             text = stringResource(R.string.settings_accelerator_label),
