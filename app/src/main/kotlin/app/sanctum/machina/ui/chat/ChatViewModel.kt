@@ -9,10 +9,13 @@ import androidx.lifecycle.viewModelScope
 import app.sanctum.machina.R
 import app.sanctum.machina.core.common.pcmToWav
 import app.sanctum.machina.core.data.ConfigKeys
+import app.sanctum.machina.core.data.Model
 import app.sanctum.machina.core.data.SAMPLE_RATE
 import app.sanctum.machina.core.log.ErrorLog
 import app.sanctum.machina.core.registry.ModelRegistry
 import app.sanctum.machina.core.runtime.LlmModelHelper
+import app.sanctum.machina.core.settings.AppSettingsRepository
+import app.sanctum.machina.core.settings.proto.PerModelSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -25,6 +28,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -55,6 +59,7 @@ constructor(
     private val errorLog: ErrorLog,
     @ApplicationContext private val context: Context,
     private val imageDecoder: ImageDecoder,
+    private val settingsRepository: AppSettingsRepository,
 ) : ViewModel() {
 
     val modelName: String =
@@ -74,6 +79,14 @@ constructor(
     val modelCaps: StateFlow<ModelCapabilities> = _modelCaps.asStateFlow()
 
     /**
+     * Toggles the modal `ReinitProgressDialog` while a heavy-setting reinit
+     * runs (D12/D21). UI must block input — accelerator/enableThinking
+     * teardown is uncancellable.
+     */
+    private val _reinitInProgress = MutableStateFlow(false)
+    val reinitInProgress: StateFlow<Boolean> = _reinitInProgress.asStateFlow()
+
+    /**
      * Transient UI events carrying a `@StringRes` id — snackbar host collects
      * and renders. `replay = 0` + `extraBufferCapacity = 8` means tryEmit is
      * non-suspending and events survive brief UI rebinding.
@@ -83,15 +96,12 @@ constructor(
 
     init {
         viewModelScope.launch {
+            // Apply persisted overrides before init so awaitInitialize sees the
+            // user's accelerator + system prompt (D24, D21).
+            applyEffectiveConfigToModel()
             registry.initialize(modelName).fold(
                 onSuccess = {
-                    registry.getModel(modelName)?.let { model ->
-                        _modelCaps.value = ModelCapabilities(
-                            supportImage = model.llmSupportImage,
-                            supportAudio = model.llmSupportAudio,
-                            supportThinking = model.llmSupportThinking,
-                        )
-                    }
+                    refreshModelCaps()
                     _uiState.value = ChatUiState.Ready(isGenerating = false)
                 },
                 onFailure = { e ->
@@ -110,6 +120,7 @@ constructor(
         if (normalized.isEmpty() && pending.isEmpty()) return
         val state = _uiState.value
         if (state !is ChatUiState.Ready || state.isGenerating) return
+        if (_reinitInProgress.value) return
         val model = registry.getModel(modelName) ?: error("Model not initialized")
 
         val images = pending.filterIsInstance<Attachment.Image>().map { it.bitmap }
@@ -206,11 +217,179 @@ constructor(
         _uiState.value = ChatUiState.Ready(isGenerating = false)
     }
 
-    fun reset() {
+    /**
+     * Reset (↻) — clear UI history and engine context but keep the engine
+     * loaded (D23). The effective system prompt (defaults ∪ override) is
+     * passed back into `registry.resetConversation` so the next user turn
+     * starts under the same system instruction the engine had on init.
+     */
+    fun resetConversation() {
         viewModelScope.launch {
-            registry.resetConversation(modelName)
+            val model = registry.getModel(modelName)
+            val effective = model?.let { effectiveSystemPrompt(it) }
+            registry.resetConversation(modelName, systemPrompt = effective)
             _messages.value = emptyList()
             _attachments.value = emptyList()
+        }
+    }
+
+    /** Backwards-compat alias for the existing TopAppBar wiring. */
+    fun reset() = resetConversation()
+
+    /**
+     * Persist [settings] then dispatch apply* (light / semi / heavy)
+     * based on which fields actually differ from the engine's current
+     * `model.configValues` (D15). Heavy applications are routed through
+     * [applyHeavySetting] which surfaces the modal progress dialog; the
+     * `HeavyChangeDialog` confirmation gate lives in the bottom-sheet UI
+     * and must be shown by the caller before this is invoked for a
+     * heavy-difference set.
+     */
+    fun saveAndApplySettings(settings: PerModelSettings) {
+        viewModelScope.launch {
+            val model = registry.getModel(modelName) ?: return@launch
+            val current = model.configValues.toMap()
+            val target = EffectiveConfig.merge(computeDefaults(model), settings)
+            settingsRepository.savePerModelSettings(modelName, settings)
+            dispatchByLevel(classifyApplyLevel(current, target))
+        }
+    }
+
+    /**
+     * Reset persisted overrides for the active model and apply whatever
+     * level the diff between the current engine config and the allowlist
+     * defaults requires (D15). Heavy reset is gated on the same
+     * `HeavyChangeDialog` flow as user-edited heavy changes — the caller
+     * is responsible for showing the confirm dialog when
+     * [needsHeavyResetToDefaults] returns `true`.
+     */
+    fun resetSettingsToDefaults() {
+        viewModelScope.launch {
+            val model = registry.getModel(modelName) ?: return@launch
+            val current = model.configValues.toMap()
+            val defaults = computeDefaults(model)
+            settingsRepository.resetPerModelSettings(modelName)
+            dispatchByLevel(classifyApplyLevel(current, defaults))
+        }
+    }
+
+    /**
+     * Reads the current engine config snapshot and reports whether
+     * resetting to allowlist defaults would require an engine reinit
+     * (i.e. accelerator or enable_thinking would change). The bottom
+     * sheet uses this to decide whether the Default button must surface
+     * `HeavyChangeDialog` first.
+     */
+    fun needsHeavyResetToDefaults(): Boolean {
+        val model = registry.getModel(modelName) ?: return false
+        val current = model.configValues
+        val defaults = computeDefaults(model)
+        return classifyApplyLevel(current, defaults) == ApplyLevel.HEAVY
+    }
+
+    /** Observable snapshot of the persisted overrides for the active model. */
+    fun observePerModelSettings(): kotlinx.coroutines.flow.Flow<PerModelSettings?> =
+        settingsRepository.observePerModelSettings(modelName)
+
+    /**
+     * Convenience accessor for the active model's current `configValues`
+     * (effective = defaults ∪ overrides). Returns an empty map when the
+     * registry has not published a `Ready` model yet.
+     */
+    fun currentEffectiveConfig(): Map<String, Any> =
+        registry.getModel(modelName)?.configValues ?: emptyMap()
+
+    /** Allowlist-default snapshot for the active model (no overrides). */
+    fun allowlistDefaults(): Map<String, Any> =
+        registry.getModel(modelName)?.let(::computeDefaults) ?: emptyMap()
+
+    /**
+     * Light-field apply (D15, AC-21): re-load persisted overrides and
+     * reassign `model.configValues` so the next `send()` sees the new value.
+     * No engine reinit, stream not interrupted, dialogs not shown.
+     */
+    fun applyLightOverrides() {
+        viewModelScope.launch {
+            val model = registry.getModel(modelName) ?: return@launch
+            val overrides = settingsRepository.observePerModelSettings(modelName).first()
+            val defaults = computeDefaults(model)
+            model.configValues = EffectiveConfig.merge(defaults, overrides)
+        }
+    }
+
+    /**
+     * Semi-light apply (D15) for `systemPromptDefault`: the engine stays
+     * loaded but `resetConversation(systemPrompt = …)` rebuilds the
+     * conversation under the new instruction. UI history clears (D15
+     * documents the wipe) and a snackbar surfaces the action.
+     */
+    fun applySystemPromptAndReset() {
+        viewModelScope.launch {
+            val model = registry.getModel(modelName) ?: return@launch
+            val overrides = settingsRepository.observePerModelSettings(modelName).first()
+            val defaults = computeDefaults(model)
+            val merged = EffectiveConfig.merge(defaults, overrides)
+            model.configValues = merged
+            val effective = effectiveSystemPrompt(merged)
+            registry.resetConversation(modelName, systemPrompt = effective)
+            _messages.value = emptyList()
+            _attachments.value = emptyList()
+            _snackbar.tryEmit(R.string.settings_systemprompt_applied_snackbar)
+        }
+    }
+
+    /**
+     * Heavy-field apply (D15, D21): stop in-flight inference, reload
+     * persisted overrides into `model.configValues`, then `cleanup ⇒
+     * initialize` — strictly sequenced so litertlm sees a clean teardown
+     * before re-allocating the new accelerator/thinking-mode engine.
+     *
+     * `_reinitInProgress` gates the modal `ReinitProgressDialog`. On
+     * `initialize` failure the VM transitions to `Failed` and the engine
+     * stays Idle (D27 / R2).
+     */
+    fun applyHeavySetting() {
+        viewModelScope.launch {
+            _reinitInProgress.value = true
+            try {
+                val priorModel = registry.getModel(modelName)
+                val state = _uiState.value
+                if (priorModel != null && state is ChatUiState.Ready && state.isGenerating) {
+                    helper.stopResponse(priorModel)
+                    updateLastAssistant { it.copy(streaming = false, interrupted = true) }
+                    _uiState.value = ChatUiState.Ready(isGenerating = false)
+                }
+                val rawModel = preInitModel()
+                if (rawModel == null) {
+                    _reinitInProgress.value = false
+                    return@launch
+                }
+                val overrides = settingsRepository.observePerModelSettings(modelName).first()
+                val defaults = computeDefaults(rawModel)
+                rawModel.configValues = EffectiveConfig.merge(defaults, overrides)
+
+                registry.cleanup(modelName)
+                registry.initialize(modelName).fold(
+                    onSuccess = {
+                        refreshModelCaps()
+                        _uiState.value = ChatUiState.Ready(isGenerating = false)
+                    },
+                    onFailure = { e ->
+                        val cause =
+                            e.message?.takeIf { it.isNotBlank() }
+                                ?: e::class.simpleName.orEmpty()
+                        // Set state first so any failure inside the log path
+                        // doesn't leave the UI stuck on a stale Ready state.
+                        _uiState.value = ChatUiState.Failed(cause)
+                        _snackbar.tryEmit(R.string.chat_load_failed_title)
+                        viewModelScope.launch {
+                            errorLog.e("inference-init", "heavy reinit failed", e)
+                        }
+                    },
+                )
+            } finally {
+                _reinitInProgress.value = false
+            }
         }
     }
 
@@ -330,6 +509,78 @@ constructor(
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { registry.cleanup(modelName) }
     }
 
+    // --- internals -----------------------------------------------------------
+
+    /**
+     * D15 classification of a config diff. Heavy beats semi beats light;
+     * `NONE` means the diff is empty across all tracked fields.
+     */
+    enum class ApplyLevel { NONE, LIGHT, SYSTEM_PROMPT, HEAVY }
+
+    private fun classifyApplyLevel(
+        current: Map<String, Any>,
+        target: Map<String, Any>,
+    ): ApplyLevel {
+        val heavyChanged = current[ConfigKeys.ACCELERATOR.label] !=
+            target[ConfigKeys.ACCELERATOR.label] ||
+            current[ConfigKeys.ENABLE_THINKING.label] !=
+            target[ConfigKeys.ENABLE_THINKING.label]
+        if (heavyChanged) return ApplyLevel.HEAVY
+        val semiChanged = current[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label] !=
+            target[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label]
+        if (semiChanged) return ApplyLevel.SYSTEM_PROMPT
+        val lightChanged = LIGHT_FIELD_LABELS.any { current[it] != target[it] }
+        if (lightChanged) return ApplyLevel.LIGHT
+        return ApplyLevel.NONE
+    }
+
+    private fun dispatchByLevel(level: ApplyLevel) {
+        when (level) {
+            ApplyLevel.HEAVY -> applyHeavySetting()
+            ApplyLevel.SYSTEM_PROMPT -> applySystemPromptAndReset()
+            ApplyLevel.LIGHT -> applyLightOverrides()
+            ApplyLevel.NONE -> Unit
+        }
+    }
+
+
+    /**
+     * Applies persisted overrides to `model.configValues` BEFORE
+     * `registry.initialize` so the engine reads the user's accelerator
+     * + system prompt instead of allowlist defaults. Silent no-op when the
+     * registry hasn't published the model yet — `initialize` will fail
+     * later with a domain-specific error.
+     */
+    private suspend fun applyEffectiveConfigToModel() {
+        val model = preInitModel() ?: return
+        val overrides = settingsRepository.observePerModelSettings(modelName).first()
+        val defaults = computeDefaults(model)
+        model.configValues = EffectiveConfig.merge(defaults, overrides)
+    }
+
+    /** Look up the [Model] without the registry's `Ready`-state filter. */
+    private fun preInitModel(): Model? =
+        registry.models.value.find { it.model.name == modelName }?.model
+
+    private fun computeDefaults(model: Model): Map<String, Any> =
+        model.configs.associate { it.key.label to it.defaultValue }
+
+    private fun effectiveSystemPrompt(map: Map<String, Any>): String? =
+        (map[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label] as? String)?.takeIf { it.isNotBlank() }
+
+    private fun effectiveSystemPrompt(model: Model): String? =
+        effectiveSystemPrompt(model.configValues)
+
+    private fun refreshModelCaps() {
+        registry.getModel(modelName)?.let { model ->
+            _modelCaps.value = ModelCapabilities(
+                supportImage = model.llmSupportImage,
+                supportAudio = model.llmSupportAudio,
+                supportThinking = model.llmSupportThinking,
+            )
+        }
+    }
+
     private inline fun updateLastAssistant(transform: (Message) -> Message) {
         _messages.update { list ->
             if (list.isEmpty()) return@update list
@@ -352,5 +603,12 @@ constructor(
         const val NAV_ARG_MODEL_NAME: String = "modelName"
         private const val MAX_IMAGES: Int = 10
         private const val MAX_IMAGE_EDGE: Int = 1024
+
+        private val LIGHT_FIELD_LABELS: Set<String> = setOf(
+            ConfigKeys.TEMPERATURE.label,
+            ConfigKeys.TOPK.label,
+            ConfigKeys.TOPP.label,
+            ConfigKeys.MAX_TOKENS.label,
+        )
     }
 }

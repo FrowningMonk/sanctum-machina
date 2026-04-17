@@ -41,6 +41,7 @@
   <!-- Inference settings (InferenceSettingsBottomSheet, 7 fields) -->
   <string name="settings_title">Настройки модели</string>
   <string name="settings_system_prompt_label">Системный промпт</string>
+  <string name="settings_system_prompt_placeholder">Например: «Отвечай коротко по делу»</string>
   <string name="settings_temperature_label">Температура</string>
   <string name="settings_top_k_label">Top-K</string>
   <string name="settings_top_p_label">Top-P</string>
@@ -49,6 +50,8 @@
   <string name="settings_accelerator_label">Ускоритель</string>
   <string name="settings_accelerator_gpu">GPU</string>
   <string name="settings_accelerator_cpu">CPU</string>
+  <string name="settings_value_float_format">%1$.2f</string>
+  <string name="settings_value_int_format">%1$d</string>
   <string name="settings_systemprompt_applied_snackbar">Системный промпт применён, контекст чата сброшен</string>
 
   <!-- Heavy-change confirmation dialog (D12) -->

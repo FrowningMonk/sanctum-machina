@@ -48,7 +48,9 @@ dependencies {
     implementation(project(":core-runtime"))
 
     implementation(libs.androidx.datastore)
-    implementation(libs.protobuf.javalite)
+    // `api` so :app consumers can reach proto types reflected in the public
+    // `AppSettingsRepository` surface (PerModelSettings.hasXxx / setXxx).
+    api(libs.protobuf.javalite)
 
     implementation(libs.hilt.android)
     ksp(libs.hilt.android.compiler)

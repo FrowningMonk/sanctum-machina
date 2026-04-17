@@ -16,8 +16,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.Error
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -70,6 +72,9 @@ fun ChatScreen(
         }
     }
 
+    val reinitInProgress by viewModel.reinitInProgress.collectAsStateWithLifecycle()
+    var showSettingsSheet by rememberSaveable { mutableStateOf(false) }
+
     when (val state = uiState) {
         ChatUiState.Loading -> LoadingContent()
         is ChatUiState.Failed -> FailedContent(rawCause = state.rawCause, onBack = onBack)
@@ -85,12 +90,26 @@ fun ChatScreen(
                 onPickImages = viewModel::addImages,
                 onRemoveAttachment = viewModel::removeAttachment,
                 onStop = viewModel::stop,
-                onReset = viewModel::reset,
+                onReset = viewModel::resetConversation,
+                onSettings = { showSettingsSheet = true },
+                onBack = onBack,
                 onImageCaptured = viewModel::addImageBitmap,
                 onCameraError = viewModel::reportCameraError,
                 onAudioCaptured = viewModel::addAudio,
                 onAudioError = viewModel::reportAudioError,
             )
+    }
+
+    if (showSettingsSheet && uiState is ChatUiState.Ready) {
+        InferenceSettingsBottomSheet(
+            viewModel = viewModel,
+            supportThinking = modelCaps.supportThinking,
+            onDismiss = { showSettingsSheet = false },
+        )
+    }
+
+    if (reinitInProgress) {
+        ReinitProgressDialog()
     }
 }
 
@@ -154,6 +173,8 @@ private fun ReadyContent(
     onRemoveAttachment: (Int) -> Unit,
     onStop: () -> Unit,
     onReset: () -> Unit,
+    onSettings: () -> Unit,
+    onBack: () -> Unit,
     onImageCaptured: (Bitmap) -> Unit,
     onCameraError: (String, Throwable?) -> Unit,
     onAudioCaptured: (ByteArray, Long) -> Unit,
@@ -209,11 +230,25 @@ private fun ReadyContent(
         topBar = {
             TopAppBar(
                 title = { Text(modelName) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                            contentDescription = stringResource(R.string.btn_back),
+                        )
+                    }
+                },
                 actions = {
+                    IconButton(onClick = onSettings, enabled = !isGenerating) {
+                        Icon(
+                            imageVector = Icons.Outlined.Tune,
+                            contentDescription = stringResource(R.string.chat_action_settings),
+                        )
+                    }
                     IconButton(onClick = onReset, enabled = !isGenerating) {
                         Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = stringResource(R.string.btn_reset),
+                            imageVector = Icons.Outlined.Refresh,
+                            contentDescription = stringResource(R.string.chat_action_reset),
                         )
                     }
                 },
