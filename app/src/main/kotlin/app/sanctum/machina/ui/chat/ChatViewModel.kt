@@ -163,6 +163,15 @@ constructor(
         val sb = StringBuilder()
         val thinkingSb = StringBuilder()
 
+        // Gemma 4 emits reasoning as inline `<|think|>` tokens that LiteRT-LM's
+        // Jinja chat template only injects when `enable_thinking=true` is passed
+        // via `extraContext`. Without this, the template renders in answer-only
+        // mode and `message.channels["thought"]` stays null — `accumulateThinking`
+        // would still gate the UI, but no thinking tokens would ever arrive.
+        // Matches Gallery reference (`LlmChatViewModel.kt:216`).
+        val extraContext: Map<String, String>? =
+            if (accumulateThinking) mapOf("enable_thinking" to "true") else null
+
         helper.runInference(
             model = model,
             input = normalized,
@@ -206,7 +215,7 @@ constructor(
             images = images,
             audioClips = audioClips,
             coroutineScope = viewModelScope,
-            extraContext = null,
+            extraContext = extraContext,
         )
     }
 

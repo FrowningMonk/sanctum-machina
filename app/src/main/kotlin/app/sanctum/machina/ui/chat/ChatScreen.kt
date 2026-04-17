@@ -352,15 +352,22 @@ private fun MessageList(
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
-    LaunchedEffect(messages.size) {
+    // AC-8 autoscroll — single combined effect keyed on list size and the
+    // growing length of BOTH the last message's body and its thinking
+    // block so streaming reasoning also re-scrolls. `scrollOffset =
+    // Int.MAX_VALUE / 2` lands the viewport at the bottom of the last
+    // item, which keeps newly-emitted tokens visible even when the
+    // assistant bubble grows past the viewport height — plain
+    // `animateScrollToItem(lastIndex)` would anchor the top of the item
+    // and clip the bottom during long streams.
+    val lastTextLen = messages.lastOrNull()?.text?.length ?: 0
+    val lastThinkingLen = messages.lastOrNull()?.thinkingText?.length ?: 0
+    LaunchedEffect(messages.size, lastTextLen, lastThinkingLen) {
         if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.lastIndex.coerceAtLeast(0))
-        }
-    }
-    LaunchedEffect(messages.lastOrNull()?.text?.length) {
-        // Non-animated follow during streaming avoids main-thread jitter on every token.
-        if (messages.isNotEmpty()) {
-            listState.scrollToItem(messages.lastIndex.coerceAtLeast(0))
+            listState.animateScrollToItem(
+                index = messages.lastIndex,
+                scrollOffset = Int.MAX_VALUE / 2,
+            )
         }
     }
     LazyColumn(

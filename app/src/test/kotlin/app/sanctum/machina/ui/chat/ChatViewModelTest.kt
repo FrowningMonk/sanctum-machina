@@ -390,6 +390,38 @@ class ChatViewModelTest {
         val assistant = vm.messages.value.last { it.role == MessageRole.ASSISTANT }
         assertEquals("hello world", assistant.text)
         assertEquals("thought-1 thought-2", assistant.thinkingText)
+        // LiteRT-LM Jinja template only emits `<|think|>` tokens when
+        // enable_thinking is passed via extraContext — without this the
+        // model answers directly and message.channels["thought"] stays null.
+        assertEquals(
+            "send must forward enable_thinking=true when accumulation is on",
+            mapOf("enable_thinking" to "true"),
+            fakeHelper.lastExtraContext,
+        )
+    }
+
+    @Test
+    fun send_thinkingDisabled_extraContextNull() = runTest(dispatcher) {
+        val model = Model(
+            name = "m",
+            llmSupportThinking = true,
+            configs = createLlmChatConfigs(supportThinking = true),
+        )
+        model.preProcess()
+        fakeRegistry.setModel(model)
+        // No override — default ENABLE_THINKING is false.
+        val vm = buildViewModel()
+        advanceUntilIdle()
+
+        vm.send("hi")
+        advanceUntilIdle()
+
+        assertEquals(
+            "extraContext must be null when thinking is off — otherwise " +
+                "Gemma would emit reasoning we'd silently drop",
+            null,
+            fakeHelper.lastExtraContext,
+        )
     }
 
     @Test
@@ -753,6 +785,7 @@ private class FakeLlmHelper(
     private val sharedCalls: MutableList<String>,
 ) : LlmModelHelper {
     var lastResultListener: ResultListener? = null
+    var lastExtraContext: Map<String, String>? = null
     var runInferenceCalls = 0
 
     override fun initialize(
@@ -792,6 +825,7 @@ private class FakeLlmHelper(
         runInferenceCalls += 1
         sharedCalls += "runInference"
         lastResultListener = resultListener
+        lastExtraContext = extraContext
     }
 
     override fun stopResponse(model: Model) {
