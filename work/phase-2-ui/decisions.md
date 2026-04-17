@@ -231,6 +231,31 @@ Round-1 fixes applied (commit d6f0fe1): M1+M3 Main-dispatch capture handling (st
 
 ---
 
+## Task 9: AudioRecorderBottomSheet (AudioRecord, lifecycle-aware)
+
+**Status:** Done
+**Commit:** 0a6625d (impl 85ef16a + review-round-1 4cc3ffe + pcm-to-wav fix 0a6625d)
+**Agent:** main agent
+**Summary:** Added `AudioRecorderBottomSheet` — ModalBottomSheet that records raw PCM 16 kHz mono via `AudioRecord` on `Dispatchers.IO`, auto-stops at 30 s, and commits through a single idempotent `finish()` path shared between the Stop button and the auto-stop branch (D5, D13, D14). `ChatViewModel` gained `addAudio(pcm, durationMs)` + `reportAudioError` (D27 "audio" component). Native resource release is guaranteed by `DisposableEffect.onDispose`; `LifecycleEventEffect(ON_PAUSE)` flips the `completed` CAS and synchronously stops the recorder before the dismiss animation so AC-19 interruption genuinely drops the buffer (round-1 fix).
+**Deviations:** (1) user-spec D7 claim "litertlm ест PCM" was factually wrong — Honor 200 smoke of AC-13 showed headerless PCM triggers `onError` and marks the message `interrupted`, visually identical to pressing Stop. Ported Gallery's `ChatMessageAudioClip.genByteArrayForWav` as pure `pcmToWav(pcm, sampleRate)` in `:core-runtime/common/MediaUtils` and wrap at the litertlm boundary in `ChatViewModel.send`; `Attachment.Audio.pcm` still stores raw PCM for Phase-3 Room compactness. (2) Four TDD anchors deferred to manual smoke (`timerCountsUpTo30ThenAutoStops`, `stopButtonSavesByteArrayToViewModel`, `stateNotInitializedShowsSnackbarAndDismisses`, `onPauseReleasesAndDismisses`) — require physical mic + `compose-ui-test`, which Phase-2 strategy excludes (precedent: Task 8). Pure helpers (`formatTimer`, `isAudioDenialPermanent`) covered instead.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved_with_suggestions, 0 critical / 2 major / 10 minor → [logs/working/task-9/code-reviewer-1.json](logs/working/task-9/code-reviewer-1.json)
+- security-auditor: approved, 0 critical / 0 major / 4 minor → [logs/working/task-9/security-auditor-1.json](logs/working/task-9/security-auditor-1.json)
+- test-reviewer: passed, 2 minor → [logs/working/task-9/test-reviewer-1.json](logs/working/task-9/test-reviewer-1.json)
+
+Round-1 fixes applied (commit 4cc3ffe): M1 AC-19 race closed by `completed.set(true)` + synchronous `recorder.stop()` inside `LifecycleEventEffect(ON_PAUSE)` before the dismiss animation — IO-loop `finish()` short-circuits and the buffer is truly dropped (also resolves security-auditor minor 1); M2 `RecorderHandle.recorder/job` marked `@Volatile` for JMM happens-before across Main/IO; dropped unused `stream` field; `formatTimer_negativeMillis_clampsToZero` switched from `-42L` to `-1_500L` so the test actually exercises the `coerceAtLeast(0L)` branch (Long division truncates `-42/1000` to 0 on its own); `addAudio_alreadyHasAudio_isNoOp` now `assertSame`s the first PCM reference. Round 2 not run — same precedent as Tasks 5/6/7/8 (round-1 verdicts `approved` / `approved_with_suggestions`, both majors addressed with surgical fixes, smokes re-green). Deferred with rationale: `elapsedMs` cross-thread Compose write (Task-8 precedent — tolerant, flagged only); `completed` CAS not guarding `onError` (VM dedupes, optional); permanent-denial launcher re-entry (mirrors Task 8 CameraBottomSheet — Phase-3 polish with persisted `wasRequestedOnce`); `audio_record_start` / `audio_record_timer_format` / `attachment_audio_disabled` unused-string audit (two of three are actually used — `attachment_audio_disabled` in MultimodalInputBar, `audio_record_timer_format` in ThumbnailStrip/MessageBubble — false positive; `audio_record_start` orphan from Task 5 intentional, no separate start button).
+
+**Verification:**
+- `./gradlew :app:testDebugUnitTest --tests "*AudioRecorder*" --tests "*ChatViewModelTest"` → 25 passed, 0 failures (9 `AudioRecorderBottomSheetTest` + 16 `ChatViewModelTest`)
+- `./gradlew :core-runtime:testDebugUnitTest --tests "*MediaUtilsPureTest"` → 11 passed, 0 failures (2 new `pcmToWav_*` cases)
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL
+- User-verify on Honor 200: AC-12 (timer + Stop → thumbnail with duration), AC-15 (RECORD_AUDIO on-demand, denial snackbar, permanent-denial → Open settings), AC-19 (background / call / lock → sheet closes, buffer dropped), AC-20 (mic disabled when audio attached), 30-sec auto-stop — all confirmed. AC-13 (end-to-end audio inference) confirmed after pcm-to-wav fix — without the RIFF/WAVE header, litertlm invoked `onError` and marked the response `interrupted`.
+
+---
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.
