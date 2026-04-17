@@ -623,7 +623,7 @@ class ChatViewModelTest {
         assertTrue("messages must clear", vm.messages.value.isEmpty())
         assertTrue("attachments must clear", vm.attachments.value.isEmpty())
         assertEquals(
-            listOf(R.string.settings_systemprompt_applied_snackbar),
+            listOf(R.string.settings_semilight_applied_snackbar),
             events,
         )
         assertEquals(

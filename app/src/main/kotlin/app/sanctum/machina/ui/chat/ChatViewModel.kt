@@ -285,15 +285,30 @@ constructor(
     /**
      * Reads the current engine config snapshot and reports whether
      * resetting to allowlist defaults would require an engine reinit
-     * (i.e. accelerator or enable_thinking would change). The bottom
-     * sheet uses this to decide whether the Default button must surface
-     * `HeavyChangeDialog` first.
+     * (i.e. accelerator would change). The bottom sheet uses this to
+     * decide whether the Default button must surface `HeavyChangeDialog`
+     * first.
      */
     fun needsHeavyResetToDefaults(): Boolean {
         val model = registry.getModel(modelName) ?: return false
         val current = model.configValues
         val defaults = computeDefaults(model)
         return classifyApplyLevel(current, defaults) == ApplyLevel.HEAVY
+    }
+
+    /**
+     * Returns whether applying [target] would route through the heavy
+     * (cleanup + initialize) flow per current D15 classification. The
+     * bottom-sheet UI calls this to decide whether to surface
+     * `HeavyChangeDialog`. Single source of truth — the sheet must NOT
+     * keep its own copy of the heavy-field set, so reclassification
+     * (e.g. `enable_thinking` heavy → semi-light) propagates everywhere.
+     */
+    fun needsHeavyApply(target: PerModelSettings): Boolean {
+        val model = registry.getModel(modelName) ?: return false
+        val current = model.configValues
+        val merged = EffectiveConfig.merge(computeDefaults(model), target)
+        return classifyApplyLevel(current, merged) == ApplyLevel.HEAVY
     }
 
     /** Observable snapshot of the persisted overrides for the active model. */
@@ -327,10 +342,12 @@ constructor(
     }
 
     /**
-     * Semi-light apply (D15) for `systemPromptDefault`: the engine stays
-     * loaded but `resetConversation(systemPrompt = …)` rebuilds the
-     * conversation under the new instruction. UI history clears (D15
-     * documents the wipe) and a snackbar surfaces the action.
+     * Semi-light apply (D15) for `systemPromptDefault` and
+     * `enableThinking` (Honor 200 smoke 2026-04-18 confirmed the latter):
+     * the engine stays loaded, `resetConversation(systemPrompt = …)`
+     * wipes the KV cache and the next turn picks up the new flag /
+     * prompt via Jinja-template rendering. UI history clears and a
+     * snackbar surfaces the action.
      */
     fun applySystemPromptAndReset() {
         viewModelScope.launch {
@@ -343,7 +360,7 @@ constructor(
             registry.resetConversation(modelName, systemPrompt = effective)
             _messages.value = emptyList()
             _attachments.value = emptyList()
-            _snackbar.tryEmit(R.string.settings_systemprompt_applied_snackbar)
+            _snackbar.tryEmit(R.string.settings_semilight_applied_snackbar)
         }
     }
 
@@ -530,13 +547,18 @@ constructor(
         current: Map<String, Any>,
         target: Map<String, Any>,
     ): ApplyLevel {
+        // D15 (post-2026-04-18 smoke): only `accelerator` is heavy. Smoke on
+        // Honor 200 with Gemma-4-E4B-it via litertlm 0.10.0 confirmed that
+        // `enable_thinking` flips correctly through `resetConversation`
+        // alone — no engine teardown needed because the flag only affects
+        // Jinja-template rendering of the next turn and the KV cache is
+        // wiped by the reset.
         val heavyChanged = current[ConfigKeys.ACCELERATOR.label] !=
-            target[ConfigKeys.ACCELERATOR.label] ||
-            current[ConfigKeys.ENABLE_THINKING.label] !=
-            target[ConfigKeys.ENABLE_THINKING.label]
+            target[ConfigKeys.ACCELERATOR.label]
         if (heavyChanged) return ApplyLevel.HEAVY
-        val semiChanged = current[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label] !=
-            target[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label]
+        val semiChanged = SEMI_LIGHT_FIELD_LABELS.any {
+            current[it] != target[it]
+        }
         if (semiChanged) return ApplyLevel.SYSTEM_PROMPT
         val lightChanged = LIGHT_FIELD_LABELS.any { current[it] != target[it] }
         if (lightChanged) return ApplyLevel.LIGHT
@@ -618,6 +640,13 @@ constructor(
             ConfigKeys.TOPK.label,
             ConfigKeys.TOPP.label,
             ConfigKeys.MAX_TOKENS.label,
+        )
+
+        // Semi-light = needs `resetConversation` (KV-cache wipe + new
+        // turn picks up the change) but NOT an engine teardown.
+        private val SEMI_LIGHT_FIELD_LABELS: Set<String> = setOf(
+            ConfigKeys.SYSTEM_PROMPT_DEFAULT.label,
+            ConfigKeys.ENABLE_THINKING.label,
         )
     }
 }

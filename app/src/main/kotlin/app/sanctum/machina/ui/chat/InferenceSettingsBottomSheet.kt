@@ -109,15 +109,12 @@ fun InferenceSettingsBottomSheet(
         setAccelerator(accelerator.value)
     }.build()
 
-    fun isHeavyApplyNeeded(target: PerModelSettings): Boolean {
-        val current = viewModel.currentEffectiveConfig()
-        val merged = EffectiveConfig.merge(viewModel.allowlistDefaults(), target)
-        val acceleratorChanged = current[ConfigKeys.ACCELERATOR.label] !=
-            merged[ConfigKeys.ACCELERATOR.label]
-        val thinkingChanged = current[ConfigKeys.ENABLE_THINKING.label] !=
-            merged[ConfigKeys.ENABLE_THINKING.label]
-        return acceleratorChanged || thinkingChanged
-    }
+    // Heavy-vs-semi-light gating delegates to the VM so the D15
+    // classification has a single source of truth (`classifyApplyLevel`).
+    // Keeping a parallel copy of the heavy-field set in the sheet caused
+    // the Round-1-experiment confusion where the sheet still asked for
+    // confirmation on `enable_thinking` after the VM had already
+    // reclassified it as semi-light.
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -188,7 +185,7 @@ fun InferenceSettingsBottomSheet(
                 Button(
                     onClick = {
                         val target = buildOverrides()
-                        if (isHeavyApplyNeeded(target)) {
+                        if (viewModel.needsHeavyApply(target)) {
                             pendingHeavyApply = HeavyAction.Save(target)
                         } else {
                             viewModel.saveAndApplySettings(target)

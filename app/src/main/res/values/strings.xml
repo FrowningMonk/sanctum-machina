@@ -52,7 +52,8 @@
   <string name="settings_accelerator_cpu">CPU</string>
   <string name="settings_value_float_format">%1$.2f</string>
   <string name="settings_value_int_format">%1$d</string>
-  <string name="settings_systemprompt_applied_snackbar">Системный промпт применён, контекст чата сброшен</string>
+  <!-- Shown after a semi-light apply (systemPromptDefault or enableThinking) — both wipe the engine context. -->
+  <string name="settings_semilight_applied_snackbar">Настройки применены, контекст чата сброшен</string>
 
   <!-- Heavy-change confirmation dialog (D12) -->
   <string name="heavy_change_dialog_title">Изменить параметр модели</string>
