@@ -256,6 +256,53 @@ Round-1 fixes applied (commit 4cc3ffe): M1 AC-19 race closed by `completed.set(t
 
 ---
 
+## Task 11: EffectiveConfig + InferenceSettingsBottomSheet + HeavyChangeDialog + ReinitProgressDialog + ChatViewModel state machines + ChatScreen final integration
+
+**Status:** Done
+**Commit:** 6f8a943 (impl 142ad5b + review-round-1 79f5619 + thinking/autoscroll fixes 944b3b3 + D15 lock-in 6f8a943)
+**Agent:** main agent
+**Summary:** Pure `EffectiveConfig.merge(defaults, overrides?)` (D16, 8 unit tests), `InferenceSettingsBottomSheet` with 7 fields (conditional `enable_thinking`), and a `ChatViewModel` D15 classifier that routes Apply / Default through light (sampling), semi-light (`resetConversation` — `systemPromptDefault` + `enable_thinking` after smoke), or heavy (`accelerator` — `cleanup + initialize` gated by `HeavyChangeDialog` + `ReinitProgressDialog`). Constructor now applies persisted overrides into `model.configValues` before `registry.initialize` so `awaitInitialize` sees the user's accelerator and system prompt. `ChatScreen` TopAppBar gained Back / Settings / Reset, hosts the sheet and the modal reinit dialog, and `MessageList` autoscroll consolidated into a single `LaunchedEffect(size, lastTextLen, lastThinkingLen)` with `scrollOffset = Int.MAX_VALUE / 2` so streaming output stays visible past viewport height. Two latent bugs fixed during device smoke: `extraContext` was hard-coded `null` (Gemma 4 needs `mapOf("enable_thinking" to "true")` for the Jinja template to inject `<|think|>` tokens — without this the reasoning channel stayed empty), and the autoscroll anchored the top of the last item so long streams clipped off-screen.
+**Deviations:**
+- **D15 reclassification (semi-light over heavy for `enableThinking`).** Tech-spec D15 marked the field heavy provisional. Honor 200 smoke (Gemma-4-E4B-it / litertlm 0.10.0) confirmed `resetConversation` is sufficient — moved to semi-light, `cleanup + initialize` reserved for `accelerator` only. Tech-spec D15 updated.
+- **Per-model settings keyed by `Model.name`, not `Model.modelId`.** Tech-spec D3 specifies `Model.modelId` for rename-stability, but `Model` doesn't expose `modelId` (only `AllowedModel` does). Phase-2 allowlist names are stable; Phase 3 can migrate when Room schema lands.
+- **Lint Error pre-existing in ChatScreen.kt:71** (`LocalContextGetResourceValueCall` — `context.getString(stringRes)` inside `LaunchedEffect`). Untouched by this task; the `LocalResources` fix attempted needs a Compose-BOM bump that's out of scope. Smoke commands `:app:test` and `:app:assembleDebug` both pass; full `./gradlew build` would fail on this pre-existing lint Error only. Documented for Phase-2 closing infra-task.
+- **Snackbar text reworded** from "Системный промпт применён…" to "Настройки применены, контекст чата сброшен" — needed after enableThinking joined the semi-light set.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved_with_suggestions, 0 critical / 0 major / 5 minor / 4 nit → [logs/working/task-11/code-reviewer-1.json](logs/working/task-11/code-reviewer-1.json)
+- security-auditor: approved, 0 critical / 0 major / 3 minor → [logs/working/task-11/security-auditor-1.json](logs/working/task-11/security-auditor-1.json)
+- test-reviewer: passed, 0 critical / 0 major / 5 minor → [logs/working/task-11/test-reviewer-1.json](logs/working/task-11/test-reviewer-1.json)
+
+Round-1 fixes (commit 79f5619): dropped dead `LaunchedEffect(reinitInProgress)` in the sheet (code-reviewer M1); replaced `"GPU"`/`"CPU"` literals with `Accelerator.GPU.label`/`Accelerator.CPU.label` (code-reviewer N1/N2); documented `pendingHeavyApply` rotation behaviour in KDoc (code-reviewer M3); added 4096-char clamp on `systemPromptDefault` (security-auditor minor-2); strengthened `applyHeavySetting_initCrash_failedState` with `R.string.chat_load_failed_title` snackbar assertion, `applySystemPromptAndReset_resetsWithPrompt` and `resetConversation_clearsAll` with cleanup/init delta baselines (test-reviewer findings 1–3). Round 2 not run — same precedent as Tasks 5–10 (verdicts non-blocking, fixes mechanical and smoke-verified). Deferred with rationale: code-reviewer M2 redundant `helper.stopResponse` (intentional UX call per D21 step 2), M4 type-drift NONE→LIGHT (harmless — `convertValueToTargetType` normalises at read time), M5 `Model.configValues` concurrency (current writers serialise via `lifecycleMutex`); security-auditor minor-1 UI-only slider clamp, minor-3 `protobuf-javalite` `api` exposure (Phase-3 domain-type boundary); test-reviewer finding 4 single-slot `FakeAppSettingsRepository`, finding 5 `sharedCalls` clear ergonomics — all latent or cosmetic.
+
+Post-review device-smoke findings on Honor 200 fixed in commit 944b3b3:
+1. **Reasoning channel stayed empty.** `ChatViewModel.send` hard-coded `extraContext = null`. LiteRT-LM's Gemma-4 Jinja template only injects the `<|think|>` token when `enable_thinking=true` is passed via `extraContext`; without it the model answered directly and `message.channels["thought"]` stayed null. Forwarded `mapOf("enable_thinking" to "true")` when `accumulateThinking` is on (mirrors Gallery `LlmChatViewModel.kt:216`). Two new tests pin the contract.
+2. **Autoscroll clipped long streams.** Plain `animateScrollToItem(lastIndex)` anchors the top of the last item; as the assistant bubble grew past the viewport the bottom (where new tokens append) clipped off-screen. Consolidated the two LaunchedEffects into one keyed on `(messages.size, lastTextLen, lastThinkingLen)` with `scrollOffset = Int.MAX_VALUE / 2` to anchor the bottom of the last item.
+
+**Verification:**
+- `./gradlew :app:test --tests EffectiveConfigTest --tests ChatViewModelTest` → 35 passed (8 EffectiveConfig + 27 ChatViewModel), 0 failures
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL
+- User-verify on Honor 200 (Gemma-4-E4B-it):
+  - **AC-4** (settings sheet, 7 fields, conditional `enableThinking`): ✓
+  - **AC-8** (autoscroll during stream): ✓ after `scrollOffset` fix
+  - **AC-18** (heavy reinit confirmation + progress dialog for accelerator): ✓ — engine genuinely re-initialised (5–30 s, same flow as initial load)
+  - **AC-21** (Reset clears history + engine context): ✓
+  - **D15 classification table:**
+    | Field | Expected | Observed |
+    |---|---|---|
+    | `temperature` / `topK` / `topP` / `maxTokens` | light | light, no reinit, next answer uses new value |
+    | `systemPromptDefault` | semi-light | semi-light, snackbar + history clears, engine stays Ready |
+    | `accelerator` GPU↔CPU | heavy | heavy, HeavyChangeDialog → ReinitProgressDialog → engine on new backend |
+    | `enableThinking` | heavy provisional | **semi-light confirmed** — `resetConversation` alone flips the flag; D15 updated, code locked in |
+
+**Backlog (recorded in `NOTES.md` for Phase 5):**
+- Free-scroll during stream (sticky-to-bottom + floating ↓ button) — feature idea from device smoke; ~30 lines, isolated to `ChatScreen.kt`.
+- Hide empty `ThinkingBlock` when Gemma 4 adaptive-reasoning skips thinking on a trivial query — UX polish, optional.
+
+---
+
 ## Task 10: MessageBubble extraction + ThinkingBlock + markdown rendering + thinking accumulation + systemInstruction wiring
 
 **Status:** Done

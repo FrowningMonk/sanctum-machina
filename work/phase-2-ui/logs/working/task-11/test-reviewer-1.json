@@ -1,0 +1,77 @@
+{
+  "status": "passed",
+  "summary": "All 18 mandated TDD anchors (6 EffectiveConfig + 12 ChatViewModel) map to at least one test with meaningful assertions; the shared-call list faithfully proves the heavy-apply ordering (stopResponse \u2192 cleanup \u2192 initialize) on a single timeline. FakeAppSettingsRepository/FakeModelRegistry/FakeLlmHelper are faithful to their interfaces and drive the real ChatViewModel through its real branches. Three minor assertion gaps noted (error-log/snackbar on heavy-init crash, initializeCalls unchanged for semi-light systemPrompt apply, no-cleanup/no-init assertion for resetConversation) \u2014 none hide bugs, all fail the litmus test if the behaviour regresses only in the direction the current tests cover, but adding the small complementary asserts would tighten the net. No pre-existing test was weakened; every new test has result-level or state-level assertions (no mock-only patterns).",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:523-549 (applyHeavySetting_initCrash_failedState)",
+      "issue": "Tech-spec explicitly enumerates \"ErrorLog.e вызван\" and the production code emits `_snackbar.tryEmit(R.string.chat_load_failed_title)` on init failure, but the test asserts only the Failed state and the reinitInProgress flag. If a future refactor silently swallowed the snackbar emit or dropped the errorLog call, this test would still pass.",
+      "recommendation": "Inside `runTest`, call `val events = collectSnackbar(vm)` before `vm.applyHeavySetting()` and assert `assertTrue(R.string.chat_load_failed_title in events)` after `advanceUntilIdle`. For the error log, inject a spy/fake ErrorLog (or count file lines under the Robolectric app dir) and assert component=\"inference-init\" was logged once. If ErrorLog is awkward to intercept, at minimum assert the snackbar \u2014 that single extra line covers 80% of the regression surface the spec calls out."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:551-593 (applySystemPromptAndReset_resetsWithPrompt)",
+      "issue": "The test asserts `cleanupCalls == 0` (no full reinit) but does not assert `initializeCalls` is unchanged from the init-baseline. If a regression wired applySystemPromptAndReset through the heavy path (calling initialize without cleanup), this test would still be green because there is no upper bound on initializeCalls.",
+      "recommendation": "Capture `val initBefore = fakeRegistry.initializeCalls` before `vm.applySystemPromptAndReset()` and assert `assertEquals(initBefore, fakeRegistry.initializeCalls)` after `advanceUntilIdle`. Symmetric to the existing cleanupCalls==0 assertion; one added line."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:595-624 (resetConversation_clearsAll)",
+      "issue": "Reset (↻) must keep the engine loaded per D23 \u2014 spec text: \"resetConversation() очищает сообщения, аттачменты и контекст движка с systemPrompt\", not cleanup+re-initialize. The test asserts messages/attachments clear and lastResetSystemPrompt, but does not verify that cleanup/initialize were NOT called. A regression routing reset through heavy would pass.",
+      "recommendation": "Capture `cleanupBefore = fakeRegistry.cleanupCalls` and `initBefore = fakeRegistry.initializeCalls` before `vm.resetConversation()`; after `advanceUntilIdle`, assert both are unchanged. Alternatively assert `sharedCalls` after `sharedCalls.clear()` equals `listOf(\"resetConversation\")` \u2014 that single call proves D23 (engine stays loaded)."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:664-680 (FakeAppSettingsRepository)",
+      "issue": "The fake ignores the `modelId` parameter \u2014 a single `MutableStateFlow<PerModelSettings?>` is shared across all model IDs. Current tests only use modelId \"m\" so this is latent, but if a future test seeds settings for two models (e.g. switching model mid-session), the fake will silently cross-wire them and mask the bug.",
+      "recommendation": "Change the store to `MutableMap<String, MutableStateFlow<PerModelSettings?>>` with a helper `fun flowFor(id: String)` returning `getOrPut(id) { MutableStateFlow(null) }`. `observePerModelSettings(id)` returns `flowFor(id)`; `savePerModelSettings(id, s)` sets `flowFor(id).value = s`. Keeps the current behavior for single-model tests, correct for multi-model tests."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:65-78 (shared mutable state across all tests)",
+      "issue": "`sharedCalls` is recreated in @Before but then handed to both fakes by reference. Most tests are fine, but two new heavy-path tests (`applyHeavySetting_sequencing_stopCleanupInitialize` at :502 and `applySystemPromptAndReset_resetsWithPrompt` at :571) rely on `sharedCalls.clear()` to erase init-time \"initialize\" calls before asserting sequence. A future test that forgets the clear would silently leak the constructor's initialize into the assertion. Not a bug today, but a footgun.",
+      "recommendation": "Extract a helper `private fun TestScope.sharedCallsSinceVmInit(vm: ChatViewModel): List<String>` that snapshots `sharedCalls` at VM construction time and returns the delta. Or simpler: add `sharedCalls.clear()` immediately after `buildViewModel() + advanceUntilIdle()` inside `buildViewModel()` itself so every test starts from a clean slate. Documents the convention and removes the per-test boilerplate."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "litmusTest": {
+      "checked": 18,
+      "passed": 18,
+      "failed": 0
+    },
+    "coverageAssessment": "excellent",
+    "pyramidBalance": {
+      "unit": 30,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  },
+  "coverageTable": [
+    {"anchor": "overridesNull_returnsDefaults", "test": "EffectiveConfigTest.overridesNull_returnsDefaults", "status": "pass"},
+    {"anchor": "partialOverrides_mergedCorrectly", "test": "EffectiveConfigTest.partialOverrides_mergedCorrectly", "status": "pass"},
+    {"anchor": "boolOverride_explicitFalse_overridesTrue", "test": "EffectiveConfigTest.boolOverride_explicitFalse_overridesTrue", "status": "pass"},
+    {"anchor": "typeSafety_protoFloatToKotlinFloat", "test": "EffectiveConfigTest.typeSafety_protoFloatToKotlinFloat", "status": "pass"},
+    {"anchor": "pureFunction_defaultsNotMutated", "test": "EffectiveConfigTest.pureFunction_defaultsNotMutated", "status": "pass"},
+    {"anchor": "emptyEqualsNull_defaultInstance", "test": "EffectiveConfigTest.emptyEqualsNull_defaultInstance", "status": "pass"},
+    {"anchor": "addImage_updatesAttachments", "test": "ChatViewModelTest.addImages_belowLimit_addsAll", "status": "pass"},
+    {"anchor": "addImage_11thRejected_snackbarFlag", "test": "ChatViewModelTest.addImages_exceedsLimit_clipsToTen + addImages_alreadyAtLimit_noneAdded", "status": "pass"},
+    {"anchor": "removeAttachment_removesCorrectIndex", "test": "ChatViewModelTest.removeAttachment_validIdx_removes", "status": "pass"},
+    {"anchor": "send_emptyTextEmptyAttachments_noInference", "test": "ChatViewModelTest.send_emptyTextEmptyAttachments_noInference", "status": "pass"},
+    {"anchor": "send_thinkingEnabled_accumulates", "test": "ChatViewModelTest.send_thinkingEnabled_accumulates", "status": "pass"},
+    {"anchor": "send_thinkingDisabled_skips", "test": "ChatViewModelTest.send_thinkingDisabled_skips", "status": "pass"},
+    {"anchor": "send_llmSupportThinkingFalse_skips", "test": "ChatViewModelTest.send_llmSupportThinkingFalse_skips", "status": "pass"},
+    {"anchor": "applyLightOverrides_updatesConfigValues_noCleanup", "test": "ChatViewModelTest.applyLightOverrides_updatesConfigValues_noCleanup", "status": "pass"},
+    {"anchor": "applyHeavySetting_sequencing_stopCleanupInitialize", "test": "ChatViewModelTest.applyHeavySetting_sequencing_stopCleanupInitialize", "status": "pass (sequence proven via single sharedCalls timeline)"},
+    {"anchor": "applyHeavySetting_initCrash_failedState", "test": "ChatViewModelTest.applyHeavySetting_initCrash_failedState", "status": "partial (state + reinitInProgress asserted; snackbar + errorLog not asserted)"},
+    {"anchor": "applySystemPromptAndReset_resetsWithPrompt", "test": "ChatViewModelTest.applySystemPromptAndReset_resetsWithPrompt", "status": "partial (cleanup==0 asserted, initializeCalls baseline not asserted)"},
+    {"anchor": "resetConversation_clearsAll", "test": "ChatViewModelTest.resetConversation_clearsAll", "status": "partial (messages/attachments/lastResetSystemPrompt asserted; cleanup/initialize not-called guard missing)"}
+  ],
+  "verdict": "passed \u2014 zero critical, zero major. Five minor findings are tightening suggestions, not blockers. The heavy-apply sequencing test correctly uses a single shared-call timeline (not two concatenated lists) and proves strict ordering. No test was weakened vs prior rounds; every new anchor asserts real state or result (no mock-call-only patterns)."
+}
