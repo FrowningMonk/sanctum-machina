@@ -303,6 +303,62 @@ Post-review device-smoke findings on Honor 200 fixed in commit 944b3b3:
 
 ---
 
+## Task 12: Code Audit (Phase 2 closure)
+
+**Status:** Done
+**Commit:** 9b435f2 (audit, read-only) + 59a96a2 (follow-up T-M2 fix landed under Task 14)
+**Agent:** code-reviewer (auditor IS the reviewer; no separate ревью-раунды)
+**Summary:** Full Phase-2 code audit across seven axes — module boundary (TAC-7/TAC-8), lifecycle hygiene (CameraX bind/unbind + AudioRecord release), autoscroll performance, permission-flow consistency, markdown safety (`SafeMarkdown` + `SafeUriHandler`), cross-component duplicate init, shared-resources compliance. Verdict **approved** — 0 blocking / 0 major, two non-blocking low observations already documented in Task 11 decisions (NB-1 `modelName`-vs-`modelId` persistence key; NB-2 `classifyApplyLevel` raw-`Map<String, Any>` equality — latent type-drift).
+**Deviations:** None. Two non-blocking low items map 1-to-1 onto already-deferred Task 11 items — carried forward to Phase-3 Room migration, no new follow-up tasks needed.
+
+**Reviews:** auditor IS the reviewer.
+- code-reviewer (audit): approved, 0 critical / 0 major / 0 medium / 2 low → [logs/audit/task-12-audit-report.md](logs/audit/task-12-audit-report.md)
+
+**Verification:**
+- Smoke grep 1 — `:core-runtime` / `:core-settings` for `androidx.compose`, `android.app.Activity`, `androidx.activity`, ViewModel: all empty ✓
+- Smoke grep 2 — `AudioRecord` constructor / `release()`: single constructor at `AudioRecorderBottomSheet.kt:330`, two release paths (init-failure + `DisposableEffect.onDispose`) + `ON_PAUSE` synchronous-stop race-closer ✓
+- Smoke grep 3 — `bindToLifecycle` / `unbindAll`: single bind at `CameraBottomSheet.kt:205`, defensive `unbindAll` immediately before + unconditional `unbindAll` in `onDispose` ✓
+- User-verify: report read — no critical findings to escalate; two low items already tracked.
+
+---
+
+## Task 13: Security Audit (Phase 2 closure)
+
+**Status:** Done
+**Commit:** 9b435f2 (audit, read-only)
+**Agent:** security-auditor (auditor IS the reviewer)
+**Summary:** OWASP Top-10 (mobile) + OWASP MASVS v2 sweep across the eight scoped areas — permission model (on-demand per sheet), privacy hardening (`allowBackup=false` + `dataExtractionRules` excluding root), attachment OOM vectors (inSampleSize two-pass + off-Main PNG compress), content-URI handling (Photo Picker opaque handles via `openInputStream`), DataStore permissions (app-private `filesDir`), Intent handlers (only `MainActivity` exported, LAUNCHER only), `SafeUriHandler` scheme allow-list (exactly `{http, https}`, case-insensitive), hardcoded-secrets scan (zero hits). Verdict **approved** — 0 critical / 0 high / 2 medium (both carried over from Task 5 — `INTERNET` permission breadth, Gradle dependency verification) / 3 low.
+**Deviations:** None. Two mediums are pre-existing Phase-1/Phase-2 hardening gaps, no new risk introduced by audit scope. Three lows (mailto/custom-deeplink regression tests, `file://`/null-scheme branch in `MediaUtils.openStream` — unreachable from user input today, small defensive logging improvements) queued for Phase 3.
+
+**Reviews:** auditor IS the reviewer.
+- security-auditor (audit): approved, 0 critical / 0 high / 2 medium / 3 low → [logs/audit/task-13-security-audit.md](logs/audit/task-13-security-audit.md)
+
+**Verification:**
+- Manifest smoke — `aapt dump xmltree` confirms `allowBackup=false`, `dataExtractionRules=@xml/data_extraction_rules`, `usesCleartextTraffic=false`, only `MainActivity` exported.
+- `SafeUriHandler` allow-list enumeration: `ALLOWED_SCHEMES = setOf("http", "https")`; scheme match via `scheme?.lowercase()`; `SafeUriHandlerTest` covers 14 cases (4 allowed incl. case variants + 8 blocked + 2 edge).
+- Secrets grep — `api_key|token|secret|password|Bearer |Authorization:|BEGIN PRIVATE KEY|AIza[0-9A-Za-z-_]{35}`: zero real hits across `:app`, `:core-runtime`, `:core-settings`, `build.gradle.kts`, `local.properties` (gitignored, holds only `sdk.dir`).
+- User-verify: report read — no critical/high findings; 2 mediums already tracked as Task 5 deferrals.
+
+---
+
+## Task 14: Test Audit (Phase 2 closure)
+
+**Status:** Done
+**Commit:** 9b435f2 (audit, read-only) + 59a96a2 (T-M2 fix — `runBlocking` → `runTest` in `ErrorLogTest`)
+**Agent:** test-reviewer (auditor IS the reviewer)
+**Summary:** Full test-quality sweep — 13 test files / 134 @Test methods across `:app` (80), `:core-runtime` (48), `:core-settings` (6). Dimensions: meaningful assertions, Robolectric hygiene (8/8 classes `@Config(sdk=[33])`, no `@Shadow`), DataStore `TemporaryFolder`, suspend hygiene (`runTest` vs `runBlocking`), `ChatViewModelTest` scenario coverage, `EffectiveConfigTest` D16 properties, `SafeUriHandlerTest` scheme enumeration (TAC-13), `fixtureMatchesProductionAsset` (TAC-6). AC→test matrix complete — every AC/US maps to either a unit test or user-spec-approved `manual-smoke` (AC-13/14/16/22, US-1..US-7). Verdict **PASS**, 0 critical / 2 major (both closed during finalisation) / 6 minor. T-M2 (`runBlocking` in `ErrorLogTest`) fixed in commit `59a96a2`. Gradle re-run gap closed by live aggregate smoke in the finalisation pass.
+**Deviations:** Task 11 decisions.md claimed "27 cases" for `ChatViewModelTest`; actual count is 26 (off-by-one, not a regression). No other drift.
+
+**Reviews:** auditor IS the reviewer.
+- test-reviewer (audit): PASS, 0 critical / 2 major (closed) / 6 minor → [logs/task-14-audit-report.md](logs/task-14-audit-report.md)
+
+**Verification:**
+- Live aggregate: `./gradlew :app:testDebugUnitTest :core-runtime:testDebugUnitTest :core-settings:testDebugUnitTest` → `BUILD SUCCESSFUL` in 8s; XML sweep confirms **134 tests / 0 failures / 0 skipped** (66 `:app` + 62 `:core-runtime` + 6 `:core-settings`).
+- T-M2 post-fix: `./gradlew :core-runtime:testDebugUnitTest --tests '*.ErrorLogTest'` → 8/8 passed with `runTest` wrapper; full aggregate re-confirmed green.
+- User-verify: report and AC→test matrix read — every AC covered, `manual-smoke` marks match user-spec approved set.
+
+---
+
 ## Task 10: MessageBubble extraction + ThinkingBlock + markdown rendering + thinking accumulation + systemInstruction wiring
 
 **Status:** Done
