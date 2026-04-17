@@ -3,7 +3,7 @@ package app.sanctum.machina.core.log
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -38,7 +38,7 @@ class ErrorLogTest {
   }
 
   @Test
-  fun knownComponents_accepted() = runBlocking {
+  fun knownComponents_accepted() = runTest {
     val allowed = listOf(
       "download",
       "inference-init",
@@ -57,12 +57,12 @@ class ErrorLogTest {
   }
 
   @Test(expected = IllegalArgumentException::class)
-  fun unknownComponent_throwsIAE(): Unit = runBlocking {
+  fun unknownComponent_throwsIAE(): Unit = runTest {
     errorLog.e("not-a-real-component", "should fail")
   }
 
   @Test
-  fun unknownComponent_doesNotWriteFile(): Unit = runBlocking {
+  fun unknownComponent_doesNotWriteFile(): Unit = runTest {
     try {
       errorLog.e("mystery", "fails before open")
     } catch (_: IllegalArgumentException) {
@@ -72,7 +72,7 @@ class ErrorLogTest {
   }
 
   @Test
-  fun causeChainBounding_truncatesAt200() = runBlocking {
+  fun causeChainBounding_truncatesAt200() = runTest {
     val longMessage = "x".repeat(500)
     val cause = RuntimeException(longMessage)
     errorLog.e("inference", "desc", cause)
@@ -87,7 +87,7 @@ class ErrorLogTest {
   }
 
   @Test
-  fun causeChainBounding_shortMessage_notPadded() = runBlocking {
+  fun causeChainBounding_shortMessage_notPadded() = runTest {
     val cause = IllegalStateException("short")
     errorLog.e("inference", "desc", cause)
     val content = logFile.readText().trimEnd('\n')
@@ -95,7 +95,7 @@ class ErrorLogTest {
   }
 
   @Test
-  fun nullCauseMessage_emitsEmptyTail() = runBlocking {
+  fun nullCauseMessage_emitsEmptyTail() = runTest {
     val cause = RuntimeException() // null message
     errorLog.e("inference", "desc", cause)
     val content = logFile.readText().trimEnd('\n')
@@ -103,14 +103,14 @@ class ErrorLogTest {
   }
 
   @Test
-  fun descriptionSanitization_controlWhitespaceReplaced() = runBlocking {
+  fun descriptionSanitization_controlWhitespaceReplaced() = runTest {
     errorLog.e("inference", "line1\nline2\tcol2\rtrail")
     val content = logFile.readText().trimEnd('\n')
     assertEquals("ERROR [inference] line1 line2 col2 trail", content)
   }
 
   @Test
-  fun descriptionTruncation_cappedAt500() = runBlocking {
+  fun descriptionTruncation_cappedAt500() = runTest {
     errorLog.e("inference", "a".repeat(1000))
     val desc = logFile.readText().trimEnd('\n').substringAfter("ERROR [inference] ")
     assertEquals(500, desc.length)
