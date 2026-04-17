@@ -114,6 +114,62 @@ fun calculatePeakAmplitude(buffer: ByteArray, bytesRead: Int = buffer.size): Flo
 }
 
 /**
+ * Wraps raw little-endian 16-bit PCM mono audio in a canonical 44-byte
+ * RIFF/WAVE header. Ports Gallery `ChatMessageAudioClip.genByteArrayForWav`
+ * — confirmed by smoke on Honor 200 that litertlm 0.10.0's
+ * `Content.AudioBytes` rejects headerless PCM and invokes the error
+ * listener (user-spec claim "litertlm ест PCM" was factually wrong).
+ *
+ * Assumes 1 channel, 16 bits/sample. Not a stream — builds the full byte
+ * array in memory. Safe at Phase-2 sizes: 30 s × 16 kHz × 2 B = ~960 KB.
+ */
+fun pcmToWav(pcm: ByteArray, sampleRate: Int): ByteArray {
+  val channels = 1
+  val bitsPerSample = 16
+  val byteRate = sampleRate * channels * bitsPerSample / 8
+  val blockAlign = channels * bitsPerSample / 8
+  val dataSize = pcm.size
+  val riffChunkSize = dataSize + 36 // total file size minus the leading 8 "RIFF<size>" bytes
+
+  val header = ByteArray(44)
+  // "RIFF" + chunk size + "WAVE"
+  header[0] = 'R'.code.toByte(); header[1] = 'I'.code.toByte()
+  header[2] = 'F'.code.toByte(); header[3] = 'F'.code.toByte()
+  writeLeInt(header, 4, riffChunkSize)
+  header[8] = 'W'.code.toByte(); header[9] = 'A'.code.toByte()
+  header[10] = 'V'.code.toByte(); header[11] = 'E'.code.toByte()
+  // "fmt " sub-chunk
+  header[12] = 'f'.code.toByte(); header[13] = 'm'.code.toByte()
+  header[14] = 't'.code.toByte(); header[15] = ' '.code.toByte()
+  writeLeInt(header, 16, 16)                    // PCM fmt chunk size
+  writeLeShort(header, 20, 1)                   // PCM format tag
+  writeLeShort(header, 22, channels.toShort())
+  writeLeInt(header, 24, sampleRate)
+  writeLeInt(header, 28, byteRate)
+  writeLeShort(header, 32, blockAlign.toShort())
+  writeLeShort(header, 34, bitsPerSample.toShort())
+  // "data" sub-chunk
+  header[36] = 'd'.code.toByte(); header[37] = 'a'.code.toByte()
+  header[38] = 't'.code.toByte(); header[39] = 'a'.code.toByte()
+  writeLeInt(header, 40, dataSize)
+
+  return header + pcm
+}
+
+private fun writeLeInt(buf: ByteArray, offset: Int, value: Int) {
+  buf[offset] = (value and 0xff).toByte()
+  buf[offset + 1] = ((value shr 8) and 0xff).toByte()
+  buf[offset + 2] = ((value shr 16) and 0xff).toByte()
+  buf[offset + 3] = ((value shr 24) and 0xff).toByte()
+}
+
+private fun writeLeShort(buf: ByteArray, offset: Int, value: Short) {
+  val v = value.toInt()
+  buf[offset] = (v and 0xff).toByte()
+  buf[offset + 1] = ((v shr 8) and 0xff).toByte()
+}
+
+/**
  * Opens a read stream for [uri] or returns null on any I/O or permission failure.
  * Callers treat null as "image unavailable" — see `decodeSampledBitmapFromUri`
  * edge case in task 3 (URI pointing to a missing file).

@@ -7,6 +7,8 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.sanctum.machina.R
+import app.sanctum.machina.core.common.pcmToWav
+import app.sanctum.machina.core.data.SAMPLE_RATE
 import app.sanctum.machina.core.log.ErrorLog
 import app.sanctum.machina.core.registry.ModelRegistry
 import app.sanctum.machina.core.runtime.LlmModelHelper
@@ -110,7 +112,13 @@ constructor(
         val model = registry.getModel(modelName) ?: error("Model not initialized")
 
         val images = pending.filterIsInstance<Attachment.Image>().map { it.bitmap }
-        val audioClips = pending.filterIsInstance<Attachment.Audio>().map { it.pcm }
+        // Wrap raw PCM in a RIFF/WAVE header at the litertlm boundary —
+        // user-spec claim "litertlm ест PCM" was wrong (confirmed on
+        // Honor 200 smoke: headerless PCM → onError → message marked
+        // `interrupted`). Attachment.Audio keeps raw PCM for in-memory
+        // compactness and Phase-3 Room serialisation.
+        val audioClips = pending.filterIsInstance<Attachment.Audio>()
+            .map { pcmToWav(it.pcm, SAMPLE_RATE) }
 
         _messages.update { current ->
             current +
