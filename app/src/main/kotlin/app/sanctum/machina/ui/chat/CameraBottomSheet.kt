@@ -22,8 +22,9 @@ import androidx.camera.lifecycle.awaitInstance
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -225,7 +226,7 @@ private fun CameraPreviewContent(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(CameraSheetHeight),
+            .fillMaxHeight(),
     ) {
         AndroidView(
             factory = { ctx ->
@@ -234,7 +235,7 @@ private fun CameraPreviewContent(
                 }
             },
             update = { /* PreviewView self-updates from surfaceProvider. */ },
-            modifier = Modifier.fillMaxWidth().height(CameraSheetHeight),
+            modifier = Modifier.fillMaxSize(),
         )
 
         IconButton(
@@ -305,14 +306,6 @@ private fun CameraPreviewContent(
         }
     }
 }
-
-/**
- * Fixed height for the camera preview area — wide enough for a recognisable
- * preview, short enough to leave the shutter button at thumb reach on a 6"
- * display. Not tied to screen aspect ratio; the ModalBottomSheet host caps
- * height at the top-system-bar inset.
- */
-private val CameraSheetHeight = 480.dp
 
 /**
  * Target edge for CameraX `ImageCapture`. Matches `ChatViewModel`'s
