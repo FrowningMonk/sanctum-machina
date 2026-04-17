@@ -98,6 +98,8 @@ fun ChatScreen(
                 onReset = viewModel::reset,
                 onImageCaptured = viewModel::addImageBitmap,
                 onCameraError = viewModel::reportCameraError,
+                onAudioCaptured = viewModel::addAudio,
+                onAudioError = viewModel::reportAudioError,
             )
     }
 }
@@ -164,18 +166,23 @@ private fun ReadyContent(
     onReset: () -> Unit,
     onImageCaptured: (Bitmap) -> Unit,
     onCameraError: (String, Throwable?) -> Unit,
+    onAudioCaptured: (ByteArray, Long) -> Unit,
+    onAudioError: (String, Throwable?) -> Unit,
 ) {
     // rememberSaveable survives rotation / process death restore so a half-typed
     // prompt isn't lost on configuration change.
     var text by rememberSaveable { mutableStateOf("") }
     // rememberSaveable so a rotation mid-capture doesn't silently dismiss the
     // camera sheet — composition rebuilds with the sheet still open and
-    // CameraX rebinds to the new lifecycle (R8).
+    // CameraX rebinds to the new lifecycle (R8). Same rationale applies to
+    // the audio sheet, though AC-19 ON_PAUSE closes it on backgrounding.
     var showCameraSheet by rememberSaveable { mutableStateOf(false) }
+    var showAudioSheet by rememberSaveable { mutableStateOf(false) }
     val hasAudioAttachment = attachments.any { it is Attachment.Audio }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val cameraDeniedMsg = stringResource(R.string.permission_camera_denied)
+    val audioDeniedMsg = stringResource(R.string.permission_audio_denied)
     val openSettingsLabel = stringResource(R.string.permission_open_settings)
 
     // Capture callers via rememberUpdatedState so the remembered callbacks
@@ -196,7 +203,7 @@ private fun ReadyContent(
             onStop = { stopRef.value() },
             onPickImages = { uris -> pickImagesRef.value(uris) },
             onOpenCamera = { showCameraSheet = true },
-            onOpenAudioRecorder = { /* task 9 */ },
+            onOpenAudioRecorder = { showAudioSheet = true },
         )
     }
     val inputState = MultimodalInputState(
@@ -262,6 +269,30 @@ private fun ReadyContent(
                         }
                     } else {
                         snackbarHostState.showSnackbar(cameraDeniedMsg)
+                    }
+                }
+            },
+        )
+    }
+
+    if (showAudioSheet) {
+        AudioRecorderBottomSheet(
+            onDismiss = { showAudioSheet = false },
+            onSaveAudio = onAudioCaptured,
+            onAudioError = onAudioError,
+            onPermissionDenied = { permanent ->
+                scope.launch {
+                    if (permanent) {
+                        val result = snackbarHostState.showSnackbar(
+                            message = audioDeniedMsg,
+                            actionLabel = openSettingsLabel,
+                            duration = SnackbarDuration.Long,
+                        )
+                        if (result == SnackbarResult.ActionPerformed) {
+                            context.openAppSettings()
+                        }
+                    } else {
+                        snackbarHostState.showSnackbar(audioDeniedMsg)
                     }
                 }
             },

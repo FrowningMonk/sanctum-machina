@@ -222,6 +222,92 @@ class ChatViewModelTest {
     }
 
     @Test
+    fun addAudio_createsAudioAttachment() = runTest(dispatcher) {
+        val vm = buildViewModel()
+        advanceUntilIdle()
+
+        val pcm = byteArrayOf(1, 2, 3, 4)
+        vm.addAudio(pcm, durationMs = 1234L)
+        advanceUntilIdle()
+
+        val audio = vm.attachments.value.single() as Attachment.Audio
+        assertSame("pcm must be stored by reference, not copied", pcm, audio.pcm)
+        assertEquals(1234L, audio.durationMs)
+    }
+
+    @Test
+    fun addAudio_alreadyHasAudio_isNoOp() = runTest(dispatcher) {
+        // AC-20 / D13: MAX_AUDIO_CLIP_COUNT = 1 — the VM is the defensive
+        // guard behind the disabled mic button in MultimodalInputBar.
+        val vm = buildViewModel()
+        advanceUntilIdle()
+        vm.addAudio(byteArrayOf(9), durationMs = 1_000L)
+        advanceUntilIdle()
+
+        vm.addAudio(byteArrayOf(10, 11), durationMs = 2_000L)
+        advanceUntilIdle()
+
+        val audio = vm.attachments.value.single() as Attachment.Audio
+        assertEquals(1_000L, audio.durationMs)
+        assertEquals(1, audio.pcm.size)
+    }
+
+    @Test
+    fun addAudio_coexistsWithImages() = runTest(dispatcher) {
+        val vm = buildViewModel()
+        advanceUntilIdle()
+        vm.addImageBitmap(stubBitmap())
+        advanceUntilIdle()
+
+        vm.addAudio(byteArrayOf(1, 2), durationMs = 500L)
+        advanceUntilIdle()
+
+        assertEquals(2, vm.attachments.value.size)
+        assertTrue(vm.attachments.value[0] is Attachment.Image)
+        assertTrue(vm.attachments.value[1] is Attachment.Audio)
+    }
+
+    @Test
+    fun reportAudioError_emitsSnackbarAndAcceptsValidComponent() = runTest(dispatcher) {
+        val vm = buildViewModel()
+        advanceUntilIdle()
+        val events = collectSnackbar(vm)
+
+        // "audio" is in the ErrorLog D27 whitelist — must not throw.
+        vm.reportAudioError(
+            "audio record init failed",
+            IllegalStateException("mic busy"),
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(R.string.audio_record_init_failed),
+            events,
+        )
+    }
+
+    @Test
+    fun send_transfersAudioAttachmentAndClears() = runTest(dispatcher) {
+        fakeRegistry.model = Model(name = "m", llmSupportAudio = true)
+        val vm = buildViewModel()
+        advanceUntilIdle()
+        val pcm = byteArrayOf(5, 6, 7)
+        vm.addAudio(pcm, durationMs = 2_000L)
+        advanceUntilIdle()
+
+        vm.send("")
+        advanceUntilIdle()
+
+        // Audio attachment transferred into the USER message (AC-26), and
+        // the staging area clears so MultimodalInputBar returns to idle.
+        assertTrue(vm.attachments.value.isEmpty())
+        val user = vm.messages.value.first { it.role == MessageRole.USER }
+        val audio = user.attachments.single() as Attachment.Audio
+        assertSame(pcm, audio.pcm)
+        assertEquals(2_000L, audio.durationMs)
+    }
+
+    @Test
     fun reportCameraError_emitsSnackbarAndAcceptsValidComponent() = runTest(dispatcher) {
         val vm = buildViewModel()
         advanceUntilIdle()

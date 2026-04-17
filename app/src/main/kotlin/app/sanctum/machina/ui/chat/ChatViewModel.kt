@@ -259,6 +259,20 @@ constructor(
     }
 
     /**
+     * Adds an [Attachment.Audio] produced by [AudioRecorderBottomSheet]
+     * (AC-12, D5). Enforces `MAX_AUDIO_CLIPS = 1` (AC-20, D13) — if an
+     * audio clip is already staged, the call is a no-op. The sheet's mic
+     * button is also disabled in that state (see [MultimodalInputBar]);
+     * this VM guard is a defensive second line for TOCTOU and tests.
+     */
+    fun addAudio(pcm: ByteArray, durationMs: Long) {
+        _attachments.update { current ->
+            if (current.any { it is Attachment.Audio }) current
+            else current + Attachment.Audio(pcm, durationMs)
+        }
+    }
+
+    /**
      * Called from [CameraBottomSheet] when CameraX bind/takePicture fails
      * (D27 — "camera" component). Logs via [ErrorLog] and surfaces a user-
      * visible snackbar. The sheet dismisses itself; no state reset needed
@@ -267,6 +281,17 @@ constructor(
     fun reportCameraError(description: String, cause: Throwable?) {
         viewModelScope.launch { errorLog.e("camera", description, cause) }
         _snackbar.tryEmit(R.string.camera_init_failed)
+    }
+
+    /**
+     * Called from [AudioRecorderBottomSheet] when `AudioRecord` fails to
+     * reach `STATE_INITIALIZED` (D27 — "audio" component, R9 for
+     * MIUI/HarmonyOS). Logs and emits the `audio_record_init_failed`
+     * snackbar; the sheet dismisses itself.
+     */
+    fun reportAudioError(description: String, cause: Throwable?) {
+        viewModelScope.launch { errorLog.e("audio", description, cause) }
+        _snackbar.tryEmit(R.string.audio_record_init_failed)
     }
 
     override fun onCleared() {
