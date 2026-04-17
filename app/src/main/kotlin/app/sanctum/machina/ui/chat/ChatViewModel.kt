@@ -8,6 +8,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.sanctum.machina.R
 import app.sanctum.machina.core.common.pcmToWav
+import app.sanctum.machina.core.data.ConfigKeys
 import app.sanctum.machina.core.data.SAMPLE_RATE
 import app.sanctum.machina.core.log.ErrorLog
 import app.sanctum.machina.core.registry.ModelRegistry
@@ -120,10 +121,24 @@ constructor(
         val audioClips = pending.filterIsInstance<Attachment.Audio>()
             .map { pcmToWav(it.pcm, SAMPLE_RATE) }
 
+        // D9/AC-14 gate — only surface and accumulate reasoning when the
+        // model exposes the channel AND the user has opted in via
+        // enable_thinking. Evaluated once per send() so a mid-stream flip
+        // of the config value can't leave the bubble half-populated.
+        val enableThinking =
+            model.configValues[ConfigKeys.ENABLE_THINKING.label] as? Boolean == true
+        val accumulateThinking = model.llmSupportThinking && enableThinking
+        val initialThinkingText: String? = if (accumulateThinking) "" else null
+
         _messages.update { current ->
             current +
                 Message(MessageRole.USER, normalized, attachments = pending) +
-                Message(MessageRole.ASSISTANT, text = "", streaming = true)
+                Message(
+                    MessageRole.ASSISTANT,
+                    text = "",
+                    streaming = true,
+                    thinkingText = initialThinkingText,
+                )
         }
         // Clear the staging area so the ThumbnailStrip empties — the
         // attachments now live inside the USER Message for history rendering
@@ -135,16 +150,22 @@ constructor(
         val startMs = System.currentTimeMillis()
         var firstTokenMs = 0L
         val sb = StringBuilder()
+        val thinkingSb = StringBuilder()
 
         helper.runInference(
             model = model,
             input = normalized,
-            resultListener = { partial, done, _ ->
+            resultListener = { partial, done, partialThinking ->
                 // Drop emissions that arrive after stop() — LiteRT-LM may deliver a trailing
                 // partial/done pair between cancelProcess() and actual thread teardown.
                 if (_messages.value.lastOrNull()?.interrupted == true) return@runInference
                 if (firstTokenMs == 0L && partial.isNotEmpty()) {
                     firstTokenMs = System.currentTimeMillis()
+                }
+                if (accumulateThinking && !partialThinking.isNullOrEmpty()) {
+                    thinkingSb.append(partialThinking)
+                    val snapshot = thinkingSb.toString()
+                    updateLastAssistant { it.copy(thinkingText = snapshot) }
                 }
                 if (partial.isNotEmpty()) {
                     sb.append(partial)

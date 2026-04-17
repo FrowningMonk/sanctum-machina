@@ -5,23 +5,16 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.provider.Settings
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Refresh
@@ -49,9 +42,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
@@ -234,6 +224,7 @@ private fun ReadyContent(
         Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
             MessageList(
                 messages = messages,
+                supportThinking = modelCaps.supportThinking,
                 modifier = Modifier.weight(1f),
             )
             if (attachments.isNotEmpty()) {
@@ -320,7 +311,11 @@ private fun Context.openAppSettings() {
 }
 
 @Composable
-private fun MessageList(messages: List<Message>, modifier: Modifier = Modifier) {
+private fun MessageList(
+    messages: List<Message>,
+    supportThinking: Boolean,
+    modifier: Modifier = Modifier,
+) {
     val listState = rememberLazyListState()
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
@@ -339,90 +334,8 @@ private fun MessageList(messages: List<Message>, modifier: Modifier = Modifier) 
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        items(messages) { message -> MessageBubble(message) }
-    }
-}
-
-@Composable
-private fun MessageBubble(message: Message) {
-    val isUser = message.role == MessageRole.USER
-    val bubbleColor =
-        if (isUser) MaterialTheme.colorScheme.primaryContainer
-        else MaterialTheme.colorScheme.surfaceVariant
-    val alignment = if (isUser) Alignment.End else Alignment.Start
-
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = alignment,
-    ) {
-        Column(
-            modifier =
-                Modifier.widthIn(max = 320.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(bubbleColor)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            if (isUser && message.attachments.isNotEmpty()) {
-                MessageAttachmentsRow(attachments = message.attachments)
-            }
-            if (message.text.isNotEmpty() || message.interrupted) {
-                val suffix =
-                    if (message.interrupted) stringResource(R.string.chat_message_interrupted_suffix)
-                    else ""
-                Text(
-                    text = message.text + suffix,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
-            message.footer?.let { footer ->
-                Text(
-                    text = footer,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
-}
-
-private val MessageAttachmentSize = 56.dp
-private const val MESSAGE_ATTACHMENTS_PER_ROW = 5
-
-/**
- * FlowRow wraps to new rows — 10 × 56dp tiles with 4dp spacing = 2 rows of
- * 5 inside the 296dp bubble content width (320dp − 24dp horizontal padding).
- * All attachments visible without internal scroll; LazyRow previously clipped
- * to the first 4 tiles which felt like data loss to the user.
- */
-@Composable
-private fun MessageAttachmentsRow(attachments: List<Attachment>) {
-    FlowRow(
-        maxItemsInEachRow = MESSAGE_ATTACHMENTS_PER_ROW,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        for (attachment in attachments) {
-            Box(
-                modifier = Modifier
-                    .size(MessageAttachmentSize)
-                    .clip(RoundedCornerShape(8.dp))
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outline,
-                        shape = RoundedCornerShape(8.dp),
-                    ),
-            ) {
-                when (attachment) {
-                    is Attachment.Image -> Image(
-                        bitmap = attachment.bitmap.asImageBitmap(),
-                        contentDescription = stringResource(R.string.attachment_image_label),
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop,
-                    )
-                    is Attachment.Audio -> AudioAttachmentTile(durationMs = attachment.durationMs)
-                }
-            }
+        items(messages) { message ->
+            MessageBubble(message = message, supportThinking = supportThinking)
         }
     }
 }
