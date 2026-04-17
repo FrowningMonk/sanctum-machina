@@ -15,6 +15,38 @@ Decompose tech-spec Implementation Tasks into individual task files with paralle
 **Output:** `work/{feature}/tasks/*.md` (validated)
 **Language:** Task files in English, communication in Russian
 
+## Rules
+
+### R1. `verify: user` requires visible UI delivery in the same task
+
+`verify: [smoke, user]` means the user can open the current build and
+validate the feature. This only holds if the task itself commits a UI
+element the user can interact with.
+
+Plumbing-only tasks — data-model fields, VM state accumulators, engine
+wiring, ConfigKey/allowlist parsing, DataStore plumbing — use
+`verify: [smoke]`. Their user-facing validation rolls up into the **last
+task of the slice that delivers the UI control exposing the plumbing**.
+
+Symptom to catch: §Verify-user lists steps like "toggle X in settings
+sheet" or "enable Y and observe Z" — but the toggle/control doesn't exist
+until a later task. The user ends up unable to verify, has to either skip
+or hack a temporary default. Decomposition regret.
+
+**Task-creator behaviour:** treat tech-spec's verify hint as a starting
+point, not a contract. Re-derive from the task's Files-to-create/modify
+list. If the files touch only backend slices (`ViewModel.kt` state,
+`:core-runtime/*`, `:core-settings/*`, new ConfigKeys, allowlist parsing)
+with no new user-facing composable — downgrade to `verify: [smoke]` and
+add a note in §Verify-user: "end-to-end user verification deferred to
+task N (UI delivery)".
+
+**Validators behaviour:** `task-validator` / `reality-checker` flag any
+task with `verify: [smoke, user]` whose §Verify-user steps reference a
+control that the task itself doesn't create and that isn't already in the
+codebase at the task's `depends_on` level. Treat as a major finding —
+these slip silently and cost real time at user-verify.
+
 ## Phase 1: Create Tasks
 
 1. Ask user for feature name if not provided.
@@ -36,6 +68,7 @@ Decompose tech-spec Implementation Tasks into individual task files with paralle
    - depends_on, wave, skills, reviewers, verify (from tech-spec)
    - teammate_name (if specified in tech-spec, optional)
    Each task-creator copies the template to `tasks/{N}.md` first, then edits each section in place. This ensures no sections are skipped.
+   Each task-creator applies **R1** (see Rules above) when setting `verify` in frontmatter — downgrade to `[smoke]` for plumbing-only tasks.
 
 7. Confirm each task-creator returned a file path. Skip reading task content — preserve context budget for validation phase.
 8. Git commit: `draft(tasks): create {N} tasks from tech-spec for {feature}`
@@ -79,7 +112,7 @@ Launch both in parallel:
 After individual validation passes, run a final cross-task check:
 
 1. Launch both validators on ALL tasks in a single batch (not split into smaller batches):
-   - `task-validator` — focus: shared resource ownership (one owner, consumers depend_on owner), no competing instances in same wave
+   - `task-validator` — focus: shared resource ownership (one owner, consumers depend_on owner), no competing instances in same wave; **R1 enforcement** — for every task with `verify: [smoke, user]`, confirm the task's Files-to-create list actually delivers the UI control that §Verify-user references; flag as major if §Verify-user depends on controls owned by a later task
    - `reality-checker` — focus: duplicate heavy resource init, hidden dependencies, inconsistent approaches across tasks
 
 2. If issues found → launch `task-creator` in fix mode for affected tasks. Re-validate fixed tasks.
