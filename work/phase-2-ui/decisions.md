@@ -256,6 +256,31 @@ Round-1 fixes applied (commit 4cc3ffe): M1 AC-19 race closed by `completed.set(t
 
 ---
 
+## Task 10: MessageBubble extraction + ThinkingBlock + markdown rendering + thinking accumulation + systemInstruction wiring
+
+**Status:** Done
+**Commit:** 68859da (impl f13a55e + review-round-1 fix 68859da)
+**Agent:** main agent
+**Summary:** Pulled the private `MessageBubble` composable out of `ChatScreen.kt` into its own file and put a new `ThinkingBlock` above the assistant's `SafeMarkdown` body — collapsible, `drawBehind` outline-variant line, muted `onSurfaceVariant` text, auto-expand via `LaunchedEffect(inProgress)` matching Gallery's `MessageBodyThinking.kt` (D9, AC-7, AC-14, AC-18). `ChatViewModel` now consumes the 3rd `ResultListener` arg via a per-send `StringBuilder`, gated once per send on `model.llmSupportThinking && ENABLE_THINKING` so a mid-stream config flip can't half-populate the bubble. Closed the D24 loop in `DefaultModelRegistry.awaitInitialize` — extracted `internal fun buildSystemInstruction(configValues)` and pass its result to `llmModelHelper.initialize(systemInstruction = ...)`; blank / missing / non-`String` values collapse to `null` (5-case `SystemInstructionTest` pins the mapping). Round-1 nits: renamed `trimmed` → `nonBlank` (takeIf doesn't trim), softened the test suite KDoc so its opening sentence reflects helper-only coverage, and added `assertEquals(1, contents.size)` to lock the Contents shape.
+**Deviations:** None from tech-spec D9/D24/D28. Forward-looking nits left for later phases per the reviewers' own "acceptable to defer" verdicts: (1) `ThinkingBlock.expanded` is plain `remember { mutableStateOf }` — resets when the LazyColumn item scrolls off and back on; addressed when Phase-3 Room gives messages a stable id. (2) No hard cap on `thinkingSb` buffer or on `systemPrompt` length — in-memory only today, flagged for Phase-3 when DataStore user overrides flow into `SYSTEM_PROMPT_DEFAULT`. (3) `ChatViewModel` thinking-accumulation unit test is explicitly scoped to Task 11 per tech-spec Testing Strategy; manual verification of AC-7/14/18 on Honor 200 carries Task 10.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved, 0 blocker / 0 major / 1 minor / 3 nit → [logs/working/task-10/code-reviewer-1.json](logs/working/task-10/code-reviewer-1.json)
+- security-auditor: approved, 0 blocker / 0 major / 0 minor / 2 nit → [logs/working/task-10/security-auditor-1.json](logs/working/task-10/security-auditor-1.json)
+- test-reviewer: approved, 0 blocker / 0 major / 1 minor / 2 nit, anchors 1/2 covered, anchor-3 optional → [logs/working/task-10/test-reviewer-1.json](logs/working/task-10/test-reviewer-1.json)
+
+Round-1 fixes applied (commit 68859da): three nits addressed — rename `trimmed` → `nonBlank` in `buildSystemInstruction`, soften `SystemInstructionTest` opening KDoc, lock `Contents` shape with `assertEquals(1, contents.size)` before `filterIsInstance<Content.Text>()`. Round 2 not run — same precedent as Tasks 5/6/7/8/9 (all round-1 verdicts `approved`, no majors/blockers, deferred items explicitly tracked). Other observations deferred with rationale: ThinkingBlock recompose-loss → Phase-3 when messages get stable ids; thinkingSb/systemPrompt length caps → Phase-3 DataStore override surface; awaitInitialize call-site end-to-end test → Task 11 `ChatViewModelTest` covers VM-level thinking paths and AC-4 manual smoke on Honor 200 covers the full plumbing; anchor-3 ThinkingBlock Compose UI test → optional per task file + tech-spec, AC-7/14/18 rely on manual smoke.
+
+**Verification:**
+- `./gradlew :core-runtime:test` → BUILD SUCCESSFUL (all tests green, including 5 new `SystemInstructionTest` cases)
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL
+- `./gradlew :app:test` → BUILD SUCCESSFUL (no regressions in existing suites)
+- User-verify on Honor 200: deferred to manual smoke per task-file §Verify-user — AC-7 (markdown in assistant reply), AC-14 (thinking collapsible, auto-expand during stream), AC-18 (thinking hidden when `llmSupportThinking=false`), AC-4 (systemPromptDefault actually reaches engine, answer style shifts after edit). D15 smoke note — whether `enableThinking` can be flipped via `resetConversation` without reinit — pending Honor 200 session; result lands in Task 11 once the settings sheet is wired.
+
+---
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.
