@@ -59,9 +59,11 @@ class AudioRecorderBottomSheetTest {
     @Test
     fun formatTimer_negativeMillis_clampsToZero() {
         // Guard against `System.currentTimeMillis` going backwards on NTP
-        // re-sync mid-recording. Negative durations render "00:00" rather
-        // than a spurious negative readout.
-        assertEquals("00:00", formatTimer(-42L))
+        // re-sync mid-recording. Uses -1500 ms (not -42 ms) because
+        // Kotlin Long division truncates `-42/1000` to 0 on its own —
+        // the clamp branch only fires for magnitudes ≥ 1000. Without
+        // `coerceAtLeast(0L)`, -1500 ms would render as "00:-1".
+        assertEquals("00:00", formatTimer(-1_500L))
     }
 
     @Test

@@ -204,7 +204,6 @@ private fun AudioRecorderContent(
         }
         recorderRef.recorder = recorder
         val stream = ByteArrayOutputStream()
-        recorderRef.stream = stream
         recorderRef.job = scope.launch(Dispatchers.IO) {
             val buffer = ByteArray(minBufferSize)
             try {
@@ -238,14 +237,23 @@ private fun AudioRecorderContent(
                 r.release()
             }
             recorderRef.recorder = null
-            recorderRef.stream = null
         }
     }
 
     LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) {
-        // AC-19: drop the half-finished buffer on call/background/lock.
-        // DisposableEffect.onDispose handles the actual release on sheet
-        // teardown triggered here via `onPauseDismiss`.
+        // AC-19: flip the idempotency latch *before* starting the dismiss
+        // animation so the IO loop's pending 30-sec `finish()` (or any
+        // in-flight Stop tap) becomes a no-op and the recorded buffer is
+        // truly dropped. Synchronous `stop()` also signals the loop to
+        // exit its while immediately rather than continuing to write into
+        // the ByteArrayOutputStream during the ~300 ms sheet-hide
+        // animation. `DisposableEffect.onDispose` still performs the
+        // native `release()` when composition tears down.
+        completed.set(true)
+        runCatching {
+            val r = recorderRef.recorder ?: return@runCatching
+            if (r.recordingState == AudioRecord.RECORDSTATE_RECORDING) r.stop()
+        }
         onPauseDismiss()
     }
 
@@ -297,11 +305,17 @@ private fun AudioRecorderContent(
  * ticks) does not churn the native reference. Populated by the
  * `LaunchedEffect` that starts the read loop; cleared by
  * `DisposableEffect.onDispose`.
+ *
+ * Fields are `@Volatile` because the IO recording coroutine and the
+ * Main-thread Compose callbacks (Stop button, `onDispose`,
+ * `LifecycleEventEffect`) both read/write them; the native resource
+ * reference must be visible across threads without tearing.
  */
 private class RecorderHandle {
+    @Volatile
     var recorder: AudioRecord? = null
+    @Volatile
     var job: Job? = null
-    var stream: ByteArrayOutputStream? = null
 }
 
 /**

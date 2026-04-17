@@ -241,7 +241,8 @@ class ChatViewModelTest {
         // guard behind the disabled mic button in MultimodalInputBar.
         val vm = buildViewModel()
         advanceUntilIdle()
-        vm.addAudio(byteArrayOf(9), durationMs = 1_000L)
+        val firstPcm = byteArrayOf(9)
+        vm.addAudio(firstPcm, durationMs = 1_000L)
         advanceUntilIdle()
 
         vm.addAudio(byteArrayOf(10, 11), durationMs = 2_000L)
@@ -249,7 +250,11 @@ class ChatViewModelTest {
 
         val audio = vm.attachments.value.single() as Attachment.Audio
         assertEquals(1_000L, audio.durationMs)
-        assertEquals(1, audio.pcm.size)
+        // `assertSame` so a future refactor like `current.map { it }` that
+        // silently copies the PCM bytes on every update is caught — the
+        // VM contract is pass-by-reference for efficiency with ~960 KB
+        // 30-s clips.
+        assertSame("first clip must survive by reference", firstPcm, audio.pcm)
     }
 
     @Test
