@@ -1,7 +1,7 @@
 ---
 created: 2026-04-18
 status: approved
-branch: dev
+branch: phase/2.5-logexport
 size: M
 ---
 
