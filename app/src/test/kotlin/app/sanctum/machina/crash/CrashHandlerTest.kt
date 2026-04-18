@@ -126,8 +126,8 @@ class CrashHandlerTest {
 
         val content = crashLog.readText(Charsets.UTF_8)
         assertTrue(
-            "must contain truncation marker, got tail:\n${content.takeLast(200)}",
-            content.contains("[truncated at 100 KB]")
+            "marker must appear at the end of the file, got tail:\n${content.takeLast(200)}",
+            content.trimEnd().endsWith("[truncated at 100 KB]")
         )
         assertTrue(
             "head must be preserved (starts with record header), got head:\n${content.take(200)}",
@@ -153,7 +153,7 @@ class CrashHandlerTest {
     }
 
     @Test
-    fun nullMessageException_doesNotCrash() {
+    fun nullMessageException_rendersEmptyMessageNotLiteralNull() {
         val killer = RecordingKiller(crashLog)
         val handler = CrashHandler(context, killer)
         val ex = RuntimeException()
@@ -162,6 +162,15 @@ class CrashHandlerTest {
 
         assertEquals(1, killer.callCount)
         assertTrue("crash.log must exist after null-message exception", crashLog.exists())
+        val content = crashLog.readText(Charsets.UTF_8)
+        assertTrue(
+            "message line must be empty (not the literal 'null'), got:\n$content",
+            content.contains("\nmessage: \n")
+        )
+        assertFalse(
+            "message line must not render kotlin's 'null' fallback, got:\n$content",
+            content.contains("message: null")
+        )
     }
 
     private class RecordingKiller(private val crashLog: File) : Killer {

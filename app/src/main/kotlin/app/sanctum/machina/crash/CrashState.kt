@@ -37,15 +37,17 @@ class CrashState @Inject constructor(
     private val _state = MutableStateFlow(false)
     val hasUnresolvedCrash: StateFlow<Boolean> = _state.asStateFlow()
 
+    init {
+        refresh()
+    }
+
     fun refresh() {
         _state.value = crashLog.exists() && !dismissedFlag.exists()
     }
 
     fun markDismissed() {
         logsDir.mkdirs()
-        if (!dismissedFlag.exists()) {
-            dismissedFlag.createNewFile()
-        }
+        dismissedFlag.createNewFile()
         refresh()
     }
 

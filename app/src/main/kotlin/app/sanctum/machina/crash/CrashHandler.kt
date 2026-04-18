@@ -76,22 +76,24 @@ class CrashHandler(
     private fun buildCrashRecord(thread: Thread, throwable: Throwable): String {
         val timestamp = OffsetDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
         val typeName = throwable.javaClass.name
-        val message = throwable.message.orEmpty()
-            .replace('\n', ' ')
-            .replace('\r', ' ')
+        val message = scrubSingleLine(throwable.message.orEmpty())
+        val threadName = scrubSingleLine(thread.name)
         val stack = StringWriter().also { sw ->
             PrintWriter(sw).use { pw -> throwable.printStackTrace(pw) }
         }.toString()
         return buildString {
             append("=== Sanctum Machina crash record ===\n")
             append("timestamp: ").append(timestamp).append('\n')
-            append("thread: ").append(thread.name).append('\n')
+            append("thread: ").append(threadName).append('\n')
             append("ExceptionType: ").append(typeName).append('\n')
             append("message: ").append(message).append('\n')
             append('\n')
             append(stack)
         }
     }
+
+    private fun scrubSingleLine(raw: String): String =
+        raw.replace('\n', ' ').replace('\r', ' ')
 
     private fun headTruncate(text: String, limitBytes: Int): String {
         val bytes = text.toByteArray(Charsets.UTF_8)
