@@ -112,6 +112,34 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 
 ---
 
+## Task 5: SanctumApplication handler install + AndroidManifest activity
+
+**Status:** Done
+**Commit:** 70e7fc4
+**Agent:** main agent
+**Summary:** Подключена машинерия Task 2 и Task 4 к OS-видимым точкам. В `AndroidManifest.xml` между `MainActivity` и `SystemForegroundService` добавлен `<activity android:name=".crash.CrashReportActivity">` с шестью атрибутами из Decision 3 (`process=":crash"`, `exported="false"`, `excludeFromRecents="true"`, `taskAffinity=""`, `theme="@style/Theme.Sanctum"`), без `<intent-filter>`. В `SanctumApplication.onCreate` добавлен guard `if (getProcessName() == packageName) { installCrashHandler() }` строго до существующего `DefaultDownloadRepository.mainActivityFqn = …` (Decision 4; порядок «сначала handler, потом FQN» страхует от ClassLoader-падения на FQN-строке). `installCrashHandler()` — приватный одно-оператор, ставит `Thread.setDefaultUncaughtExceptionHandler(CrashHandler(applicationContext, Killer.Default))`, без try/catch (внутренние сбои ловит сам handler через outer try/catch в Task 2).
+**Deviations:** None.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: OK → [logs/working/task-5/code-reviewer-1.json](logs/working/task-5/code-reviewer-1.json)
+- security-auditor: OK → [logs/working/task-5/security-auditor-1.json](logs/working/task-5/security-auditor-1.json)
+- test-reviewer: OK → [logs/working/task-5/test-reviewer-1.json](logs/working/task-5/test-reviewer-1.json)
+
+**Verification:**
+- `./gradlew :app:testDebugUnitTest --tests "*SanctumApplicationTest*"` → BUILD SUCCESSFUL, 2 tests green (оба бранча Decision 4). Через `testDebugUnitTest`, т.к. `--tests` не работает на lifecycle `:test` (см. Task 2).
+- `./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL (full app suite, 0 regressions).
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL (manifest merger принял новую `<activity>`-декларацию; Task 4 FQN `app.sanctum.machina.crash.CrashReportActivity` разрешился).
+- `grep -n "android:process=\":crash\"" app/src/main/AndroidManifest.xml` → ровно 1 совпадение (line 49).
+- `grep -n "getProcessName" app/src/main/kotlin/app/sanctum/machina/SanctumApplication.kt` → 1 совпадение (line 17, внутри guard'а).
+- `grep -n "setDefaultUncaughtExceptionHandler" app/src/main/kotlin/app/sanctum/machina/SanctumApplication.kt` → 1 совпадение (line 24, внутри `installCrashHandler()` который вызывается только из guard-блока).
+- `git diff main -- gradle/libs.versions.toml app/build.gradle.kts` → empty (AC «Никаких новых зависимостей»).
+
+**Test harness note:** процесс-имя стабируется через reflection на `ActivityThread.mBoundApplication.processName` — того же поля, которое `Application.getProcessName()` читает на API 28+. Путь выбран по варианту (б) из task spec; вариант (а) (подкласс `SanctumApplication`) отпадает, т.к. класс `final` + `@HiltAndroidApp`, а task явно запрещает делать его `open` ради тестируемости. `@Before`/`@After` симметрично сохраняют и восстанавливают и global uncaught handler, и `processName`, чтобы не пачкать соседние Robolectric-классы.
+
+---
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.
