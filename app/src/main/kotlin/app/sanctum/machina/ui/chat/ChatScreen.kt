@@ -45,6 +45,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -65,10 +66,10 @@ fun ChatScreen(
     val modelCaps by viewModel.modelCaps.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
-    val context = LocalContext.current
-    LaunchedEffect(viewModel) {
+    val resources = LocalResources.current
+    LaunchedEffect(viewModel, resources) {
         viewModel.snackbar.collect { stringRes ->
-            snackbarHostState.showSnackbar(context.getString(stringRes))
+            snackbarHostState.showSnackbar(resources.getString(stringRes))
         }
     }
 
