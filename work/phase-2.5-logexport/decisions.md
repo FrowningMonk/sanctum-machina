@@ -83,6 +83,35 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 - `grep -rEn "@Provides\s+(fun\s+)?(provideLogExportManager|provideCrashState|provideDeviceInfoCollector|provideLogcatReader)" app/src/main/kotlin/app/sanctum/machina/logexport/` → 0 hits (LogExportModule scope discipline AC).
 - `git diff main -- gradle/libs.versions.toml app/build.gradle.kts` → empty (no new deps AC).
 
+## Task 4: CrashReportActivity (non-Hilt) + RestartCrashBanner composable
+
+**Status:** Done
+**Commit:** 4933c4d (fixes on top of 204886e implementation)
+**Agent:** main agent
+**Summary:** Добавлены два файла в `app/.../crash/`: `CrashReportActivity` — plain `ComponentActivity` без `@AndroidEntryPoint` (Decision 5), инстанциирует `LogExportManager` через secondary context-only ctor из Task 3, SAF `CreateDocument("text/plain")` с именем `sanctum-log-yyyyMMdd-HHmm.txt` (Locale.ROOT), in-flight guard через `mutableStateOf`-backed поле (чтобы кнопка «Сохранить лог» атомарно disable-илась при рекомпозиции), `try/finally` в корутине SAF-callback'а очищает guard для всех трёх веток (success / IOException / cancel); success-путь удаляет `crash.log` и `finish()`-ится. `RestartCrashBanner` — чистый stateless composable `Card { Row { Icon, Text, TextButton, IconButton } }` с `Icons.Outlined.Warning` (декоративная, contentDescription=null) и `Icons.Outlined.Close` (с CD); никакого internal `remember`. Smoke-гейты зелёные; end-to-end user-верификация отложена до Task 6/7 по R1-даунгрейду из task spec.
+**Deviations:** `launching` реализован как `mutableStateOf`-backed property (не plain `var`, как в implementation hints) — требуется для атомарной рекомпозиции кнопки `enabled`. Документировано KDoc на поле. В round-1 фиксах добавлены S4-1 `FLAG_SECURE` на окно активности (defense-in-depth против Recents-скринов) и S4-3 `Toast.makeText(applicationContext, ...)` (избегаем Activity-leak через Toast view). S4-2 (race между `writeTo` и `delete()` при rotation-cancel lifecycleScope) — принят как известный эргономический edge-case по task spec «На crash-экране это приемлемо (редкий кейс)»; нет PII-expose, пользовательский файл сохранён до delete().
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: 3 low-severity observations → [logs/working/task-4/code-reviewer-1.json](logs/working/task-4/code-reviewer-1.json)
+- security-auditor: 4 findings (2 applied, 2 deferred) → [logs/working/task-4/security-auditor-1.json](logs/working/task-4/security-auditor-1.json)
+- test-reviewer: OK → [logs/working/task-4/test-reviewer-1.json](logs/working/task-4/test-reviewer-1.json)
+
+*Round 2 (after fixes):*
+- code-reviewer: OK → [logs/working/task-4/code-reviewer-2.json](logs/working/task-4/code-reviewer-2.json)
+- security-auditor: OK → [logs/working/task-4/security-auditor-2.json](logs/working/task-4/security-auditor-2.json)
+
+**Verification:**
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL (9s, `app-debug.apk` собран).
+- `./gradlew :app:lintDebug` → 0 errors, 48 warnings (ни одно не атрибутировано `crash/CrashReportActivity.kt` или `crash/RestartCrashBanner.kt`).
+- `grep -n "AndroidEntryPoint" app/src/main/kotlin/app/sanctum/machina/crash/CrashReportActivity.kt` → 0 совпадений (Decision 5 AC).
+- `grep -n "CreateDocument" app/src/main/kotlin/app/sanctum/machina/crash/CrashReportActivity.kt` → 1 совпадение (Decision 2 AC).
+- `grep -n "Icons.Outlined.Warning\|Icons.Outlined.Close" app/src/main/kotlin/app/sanctum/machina/crash/RestartCrashBanner.kt` → оба совпадения.
+- User-verification (US-A crash path, SAF behaviour, cancel/error branches) отложена до Task 6 (dev-gesture trigger) и Task 7 (banner wiring) по R1-даунгрейду task spec.
+
+---
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.
