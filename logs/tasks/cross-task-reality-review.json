@@ -1,0 +1,78 @@
+{
+  "validator": "reality-checker",
+  "batch": "cross-task",
+  "iteration": "cross-1",
+  "scope": "cross-task integration only",
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "task": 6,
+      "issue": "TapCounter constructor API mismatch. Task 3 defines TapCounter with signature `class TapCounter(private val nowNanos: () -> Long, private val maxGapNanos: Long = 2_000_000_000L, private val threshold: Int = 7)` with method `fun tap(): Boolean` returning true/false. Task 6 instantiates it as `TapCounter(nowNanos = { System.nanoTime() }, onTrigger = { showDialog = true })` — passing a named `onTrigger` callback that does not exist in the Task 3 constructor. This will not compile: `onTrigger` is an unresolved parameter name, and the Task 3 TapCounter has no such callback. All three TDD Anchor test cases in TapCounterTest confirm the `tap(): Boolean` return-value API with no callback.",
+      "fix": "Either (a) update Task 6 to use the boolean-return API — `val triggered = tapCounter.tap(); if (triggered) showDialog = true` inside the `Modifier.clickable { }` lambda, or (b) update Task 3's TapCounter definition to also accept an optional `onTrigger: (() -> Unit)? = null` callback and call it on the seventh tap in addition to returning true. Option (a) requires only a Task 6 change. Option (b) requires coordinated changes to Task 3 (production code + TapCounterTest). Option (a) is preferred — it is simpler and does not break the existing test contract."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 3,
+      "issue": "LogExportModule Hilt wiring: Task 3 mentions creating a `@Module @InstallIn(SingletonComponent::class) object LogExportModule` only for the `CommandRunner` interface binding (DefaultCommandRunner). However, the tech-spec Shared Resources table states 'LogExportManager (main proc): owner LogExportModule (Hilt @Singleton)' and 'CrashState (main proc): owner LogExportModule (Hilt @Singleton)'. CrashState is a plain `@Singleton class … @Inject constructor` (Task 2) — Hilt auto-generates its binding without a module, which is correct. LogExportManager is also a `@Singleton class … @Inject constructor` — same situation. The tech-spec's phrasing 'owned by LogExportModule' is slightly misleading: no explicit @Provides is needed for either class. However, Task 3 Details hint says LogExportModule is needed only for the CommandRunner interface binding. This is correct but inconsistently stated in the tech-spec. The actual risk: if Task 3's implementer reads the tech-spec Shared Resources table and creates explicit @Provides methods for LogExportManager and CrashState inside LogExportModule, that would conflict with their @Inject constructors and cause Hilt duplicate binding errors. The tasks do not protect against this misread.",
+      "fix": "Add an explicit note to Task 3 Details section clarifying: 'LogExportModule only binds the CommandRunner interface to DefaultCommandRunner. Do NOT add @Provides for LogExportManager or CrashState — their @Inject constructors are sufficient for Hilt auto-binding.' Alternatively update the tech-spec Shared Resources table phrasing from 'LogExportModule (Hilt @Singleton)' to 'auto-bound via @Inject constructor; CommandRunner bound via LogExportModule'."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 3,
+      "issue": "Non-Hilt constructor for CrashReportActivity (Decision 5): Task 4 must instantiate LogExportManager directly in onCreate without Hilt. Task 3 defines LogExportManager as `@Singleton class LogExportManager @Inject constructor(@ApplicationContext private val context: Context, private val deviceInfo: DeviceInfoCollector, private val logcat: LogcatReader)`. Task 3 Details say 'For Task 4 (non-Hilt in :crash process) предусмотреть secondary constructor or companion factory'. However, the DeviceInfoCollector itself depends on a DeviceInfoProvider interface, and LogcatReader depends on a CommandRunner interface. Task 4 says 'instantiate LogExportManager directly via non-Hilt constructor in onCreate — pass applicationContext, PackageInfo via packageManager.getPackageInfo(...), ActivityManager via getSystemService(...)'. The mismatch: Task 4 describes passing PackageInfo and ActivityManager directly, but LogExportManager's primary @Inject constructor takes DeviceInfoCollector and LogcatReader — not PackageInfo/ActivityManager directly. Task 4 does acknowledge it must read Task 3's actual signature ('exact набор параметров сверить перед имплементацией'), but the description still implies direct flat args. The non-Hilt secondary constructor must be explicitly designed in Task 3, not left as 'точная форма на усмотрение реализатора'. If the implementer forgets it, Task 4 will fail to compile.",
+      "fix": "Add a concrete acceptance criterion to Task 3: 'LogExportManager exposes a secondary non-Hilt constructor (or companion factory method) that accepts Context only and internally constructs AndroidDeviceInfoProvider and DefaultCommandRunner — verified by Task 4 compiling without Hilt injection.' The exact shape (secondary constructor vs companion factory) can remain at implementer's discretion, but the AC must exist."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 6,
+      "issue": "hilt-navigation-compose dependency check: Task 6 Details says 'Hilt + hilt-navigation-compose — удостовериться, что androidx.hilt:hilt-navigation-compose есть в app/build.gradle.kts. Если нет — добавить (и в gradle/libs.versions.toml). Это единственная возможная новая зависимость.' However, `hilt.navigation.compose` is already present in app/build.gradle.kts at line 66 (`implementation(libs.hilt.navigation.compose)`). The task implies it might need to be added, which would incorrectly direct the implementer to add a duplicate dependency entry. This is a minor misdirection but could cause a build error if the implementer blindly adds it again.",
+      "fix": "Update Task 6 Details to state: 'hilt-navigation-compose is already in app/build.gradle.kts (libs.hilt.navigation.compose) — no new dependency needed.' Remove the conditional 'Если нет — добавить' instruction."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 11,
+      "issue": "Task 11 references upstream audit output filenames for Tasks 8, 9, 10 as: `code-audit-report.md`, `security-audit-report.md`, `test-audit-report.md`. Checking the actual task files: Task 8 Acceptance Criteria says 'Отчёт написан и сохранён в work/phase-2.5-logexport/logs/working/task-8/code-audit-report.md' — matches. Task 9 Acceptance Criteria says 'Отчёт написан в work/phase-2.5-logexport/logs/working/task-9/security-audit-report.md' — matches. Task 10 Acceptance Criteria says 'Отчёт записан в work/phase-2.5-logexport/logs/working/task-10/test-audit-report.md' — matches. All three filenames are consistent. This check PASSES — no issue with filename cross-references.",
+      "fix": "No action needed — filenames are consistent across Tasks 8, 9, 10, and 11."
+    },
+    {
+      "severity": "minor",
+      "category": "cross-task-integration",
+      "task": 4,
+      "issue": "SAF filename format consistency: Tasks 4, 6, 7 all use `sanctum-log-YYYYMMDD-HHmm.txt`. Task 4 Details says `SimpleDateFormat(\"yyyyMMdd-HHmm\", Locale.ROOT)` — correct. Task 6 Details says `SimpleDateFormat(\"yyyyMMdd-HHmm\", Locale.ROOT)` — correct. Task 7 Implementation hints says `SimpleDateFormat(\"'sanctum-log-'yyyyMMdd-HHmm'.txt'\", Locale.ROOT)` — also correct but uses a slightly different pattern form (embedding the prefix/suffix in the format string vs concatenating). All three use Locale.ROOT and SimpleDateFormat, not java.time. Substantively equivalent output. No inconsistency in output format, but the pattern string form differs between Task 7 and Tasks 4/6.",
+      "fix": "No functional fix needed. Optionally harmonize Task 7's SimpleDateFormat pattern to `\"yyyyMMdd-HHmm\"` with string concatenation (`\"sanctum-log-${timestamp}.txt\"`) to match Tasks 4 and 6 style, purely for readability consistency."
+    },
+    {
+      "severity": "minor",
+      "category": "cross-task-integration",
+      "task": 2,
+      "issue": "In-flight guard semantics across CrashReportActivity (Task 4) and RestartCrashBanner / ModelManagerScreen (Task 7): Task 4 uses `var launching = false` (plain Activity field). Task 7 uses `val inFlight = remember { mutableStateOf(false) }` at screen level. Both clear in `finally`. This is correct per their respective hosting environments (non-Hilt Activity field vs Compose state). Snackbar approach: Task 4 uses Toast (Activity context, no Scaffold), Tasks 6 and 7 use Snackbar (Compose screens with SnackbarHost). This is consistent with Compose conventions — no divergence. All error paths in Tasks 4, 6, 7 preserve crash.log on IOException and show user-visible feedback. No cross-task inconsistency found here.",
+      "fix": "No action needed — approaches are consistent with their respective contexts."
+    },
+    {
+      "severity": "minor",
+      "category": "cross-task-integration",
+      "task": 11,
+      "issue": "Task 11 Gradle gates include `./gradlew :core-runtime:test` and `./gradlew :core-settings:test`. settings.gradle.kts confirms both `:core-runtime` and `:core-settings` are included modules (`include(':app', ':core-runtime', ':core-settings')`). These modules exist. No issue.",
+      "fix": "No action needed — modules confirmed in settings.gradle.kts."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 11,
+    "claims_verified": 31,
+    "issues_found": 7,
+    "critical": 1,
+    "major": 4,
+    "minor": 2
+  },
+  "notes": {
+    "finding_5_status": "PASS finding — Task 11 audit filename cross-references are correct. Included in findings list as confirmation per request scope.",
+    "finding_7_status": "PASS finding — in-flight guard and Snackbar vs Toast consistency verified correct.",
+    "finding_8_status": "PASS finding — :core-runtime and :core-settings modules confirmed to exist."
+  }
+}
