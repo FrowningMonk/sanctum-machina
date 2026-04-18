@@ -78,7 +78,7 @@ interface CommandRunner {
  * result so the caller renders `[logcat unavailable: empty]` — never throws
  * into the export pipeline.
  */
-class DefaultCommandRunner : CommandRunner {
+class DefaultCommandRunner @Inject constructor() : CommandRunner {
 
     override fun run(argv: List<String>, timeoutMs: Long): LogcatResult {
         val process = try {
