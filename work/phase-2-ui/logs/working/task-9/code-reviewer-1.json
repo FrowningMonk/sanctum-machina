@@ -1,0 +1,131 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "AudioRecorderBottomSheet implements AC-12/AC-15/AC-19/AC-20 against the Gallery AudioRecorderPanel reference with correct AudioRecord lifecycle ordering (stop→release), idempotent finish() via AtomicBoolean CAS, DisposableEffect teardown, permission parity with CameraBottomSheet, and the ErrorLog 'audio' component that matches the whitelist enabled in core-runtime (D27). ChatViewModel.addAudio enforces MAX_AUDIO_CLIP_COUNT=1 defensively behind the disabled mic button, and test coverage for the pure helpers (formatTimer, isAudioDenialPermanent) + all VM paths (addAudio, no-op on duplicate, coexistence with images, send transfer, reportAudioError snackbar) is solid — recording-flow tests are correctly deferred to manual smoke per tech-spec Testing Strategy / Task 3 + Task 8 precedent. No critical issues. Main concern: a narrow AC-19 race where a 30-sec auto-stop or Stop tap landing inside the ON_PAUSE→DisposableEffect.onDispose window can still save the buffer the user intended to drop — a one-line `completed.set(true)` in LifecycleEventEffect closes it. Thread-safety of `RecorderHandle` mutable fields and cross-thread Compose state writes from the IO read loop are the other two major-but-non-blocking findings.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/AudioRecorderBottomSheet.kt",
+      "line": 245,
+      "severity": "major",
+      "category": "architecture",
+      "suggestion": "`LifecycleEventEffect(ON_PAUSE)` calls `onPauseDismiss()` only, which merely schedules `scope.launch { sheetState.hide(); onDismiss() }` on Main. Between that dispatch and `DisposableEffect.onDispose` actually firing (after `showAudioSheet=false` propagates and composition exits), the IO read loop keeps running — it checks `recordingState == RECORDSTATE_RECORDING` only between `recorder.read()` blocking returns. During the hide-animation window (~150-300 ms), two paths can still commit audio: (a) the 30-sec auto-stop boundary inside `while (...)` fires → `finish()` → `onSave` → `addAudio`; (b) an in-flight Stop tap the user pressed milliseconds before the phone call interrupt races the same way. Either path violates AC-19 (\"drop the half-finished buffer on call/background/lock\"). The idempotency guard `completed: AtomicBoolean` is already in place — set it preemptively inside the lifecycle effect: `completed.set(true); onPauseDismiss()`. That makes the subsequent `finish()` CAS fail and `onSave` never fires, leaving `DisposableEffect.onDispose` to release the native recorder. Probability is low per individual recording, but AC-19 is specifically the edge case this sheet exists to honour.",
+      "benefit": "Closes the one remaining AC-19 hole — no audio attachment can sneak into the VM during a call/background/lock interrupt, even if the 30-sec boundary or a Stop tap lands in the animation window.",
+      "optional": false
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/AudioRecorderBottomSheet.kt",
+      "line": 301,
+      "severity": "major",
+      "category": "best-practices",
+      "suggestion": "`RecorderHandle.recorder`, `job`, and `stream` are plain `var` fields written from the IO thread (inside the `LaunchedEffect`'s `scope.launch(Dispatchers.IO)` block: lines 205-208) and read from Main (Stop button handler at lines 282-284, `DisposableEffect.onDispose` at lines 233-241). The JMM gives no happens-before guarantee for plain `var` across threads, so in principle Main could observe a null `recorder` even after IO has assigned it, or a stale job reference after `finish`. In practice this works on ARM because the assignments happen inside coroutine suspension points that emit memory barriers, and `AudioRecord.getMinBufferSize` / constructor issue their own barriers — but the contract is implicit. Clean fix: annotate the three fields `@Volatile` (cheapest), or hold them in `AtomicReference` (matches the existing `AtomicBoolean completed` style at line 184). Same fix removes the `runCatching { ... ?: return@runCatching }` double-check idiom at line 283 — the field's atomicity is the guarantee, not the snapshot inside runCatching.",
+      "benefit": "Makes the cross-thread contract explicit and matches the `AtomicBoolean completed` pattern already in use for terminal-path idempotency.",
+      "optional": false
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/AudioRecorderBottomSheet.kt",
+      "line": 217,
+      "severity": "major",
+      "category": "best-practices",
+      "suggestion": "`elapsedMs = now` (line 217) writes a Compose `mutableLongStateOf` from the IO read loop. Compose's global snapshot tolerates cross-thread state writes and posts the recomposition to Main, so this works — but the convention in this codebase (and the camera sheet review flagged the same for `capturing = false`) is to mutate Compose state on Main. Wrap the two writes (`elapsedMs = now` and the pre-finish final clamp) with `withContext(Dispatchers.Main.immediate) { elapsedMs = now }`, or compute `elapsedMs` via a derived state off a `StateFlow<Long>` that the IO loop emits to. Cheapest option: after the loop exits, do one `withContext(Dispatchers.Main) { elapsedMs = finalMs }` before `finish()` — the per-read-tick update then becomes best-effort. Note that Gallery's reference writes from IO too (line 262 of AudioRecorderPanel.kt), so this is strictly a codebase-style tightening, not a Gallery regression.",
+      "benefit": "Eliminates implicit reliance on Compose's cross-thread tolerance; matches the convention used elsewhere in the codebase for VM/UI state transitions.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/AudioRecorderBottomSheet.kt",
+      "line": 304,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "`RecorderHandle.stream` field is set at line 207 but never read back — the read loop captures `stream` as a local variable (line 206) and every subsequent reader uses that local. The dispose path at line 241 nulls `recorderRef.stream = null` but that's a no-op because nothing reads it. Drop the field from `RecorderHandle` (and the `stream = stream` assignment) to avoid misleading a future reader into thinking it's shared state; pass the stream into `finish()` via the closure (already does so via parameter). Minor, but the file KDoc at lines 298-300 calls this out as \"Populated by the LaunchedEffect ... cleared by DisposableEffect.onDispose\" which implies consumers exist.",
+      "benefit": "Removes dead state that implies multi-reader semantics where there are none; simplifies the RecorderHandle contract.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/res/values/strings.xml",
+      "line": 82,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "`audio_record_start` (\"Записать\") and `audio_record_timer_format` (\"%1$d с\") are declared but unreferenced — the sheet's only action label is `audio_record_stop` (line 290 of AudioRecorderBottomSheet.kt), and the timer renders directly via `formatTimer(elapsedMs)` which produces \"MM:SS\" without going through a stringResource. Either wire `audio_record_timer_format` through (nice if the string ever needs localisation beyond `\"%02d:%02d\"`) or remove both unused keys to keep strings.xml lean. Similar observation for `attachment_audio_disabled` at line 74 — the mic button is simply `enabled = false`, no snackbar is shown on tap, so the resource is unused. The user preference is terse / no ceremony, so removing unused keys is the cheaper fix.",
+      "benefit": "Keeps strings.xml grep-consistent — every declared key has a caller.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/AudioRecorderBottomSheet.kt",
+      "line": 314,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "`buildRecorder` has `@SuppressLint(\"MissingPermission\")` and a good KDoc explaining that the caller gates the call behind a permission check. Consider also adding `@RequiresPermission(Manifest.permission.RECORD_AUDIO)` — the pair is idiomatic in AndroidX: SuppressLint silences the lint warning at the call site, RequiresPermission documents the contract for callers and makes static analysis flag mis-use. Zero runtime cost.",
+      "benefit": "Self-documents the permission contract; helps lint catch a future caller who forgets to gate the call.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/AudioRecorderBottomSheet.kt",
+      "line": 155,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "Same blank-sheet flash flagged in CameraBottomSheet review: while the OS permission dialog is up (between the `LaunchedEffect(Unit)` firing at line 145 and the launcher returning), `ModalBottomSheet` is already in composition with `hasPermission = false`, so the `if (hasPermission)` branch renders an empty sheet. Two fixes: (a) only render `ModalBottomSheet` when `hasPermission == true` (cleanest — delays sheet animation until after permission grant); (b) render a small progress indicator in the empty branch. The CameraBottomSheet precedent accepted the flash; if the decision is to keep parity, leave as-is. If the task-9 author wants to address it for both sheets, it's a joint 3-line change.",
+      "benefit": "Removes the blank-sheet frame behind the OS permission dialog on first use; matches if decided jointly with CameraBottomSheet.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/AudioRecorderBottomSheet.kt",
+      "line": 187,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "The UI renders \"00:00\" + red dot from the moment `AudioRecorderContent` composes — but `recorder.startRecording()` only runs after `buildRecorder()` succeeds inside the `LaunchedEffect(Unit)` (line 211). Between composition-start and IO-thread `startRecording()`, the user sees a recording-UI without actual recording happening. Window is milliseconds on most devices but can be 100+ ms on slow OEMs. Cosmetic; fix would be a `var started by remember { mutableStateOf(false) }` flipped to true on the IO thread after `startRecording()` returns and conditionally showing the pulsing red indicator. Low priority — the `LaunchedEffect` runs synchronously from Main's recompose loop, so the perceived delay is usually negligible.",
+      "benefit": "Polishes the first frame of the recording UI; matches the stated intent that the red dot means \"actively recording\".",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/AudioRecorderBottomSheet.kt",
+      "line": 231,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "`DisposableEffect(Unit)` keys on a constant. The same precedent comment from the CameraBottomSheet review applies — if `LocalLifecycleOwner.current` or `scope` ever changes under this composable (nested NavHost, custom Compose host), the effect won't re-run and the recorder would stay bound to the stale handles. Key on `scope` (since `scope` is the one that ownes the job lifetime): `DisposableEffect(scope)`. Current Phase-2 topology never triggers this, and Gallery keys on Unit too, so it's purely a robustness nit. Flag for consistency with the note left on task 8.",
+      "benefit": "Future-proofs against nested-host scenarios; matches the Task 8 precedent note.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/AudioRecorderBottomSheet.kt",
+      "line": 121,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "`animateAndDismiss` is defined inline inside `AudioRecorderBottomSheet` (line 121) and also effectively duplicated in `CameraBottomSheet` (line 117). Pure helper, same shape — extract to a small internal file `BottomSheetDismiss.kt` in the same package: `internal fun CoroutineScope.animateAndDismiss(sheetState: SheetState, onDismiss: () -> Unit)`. Task 11 plans \"shared sheet host state\" per tech-spec, so the extraction has a downstream home. Not in scope for Task 9; flag as foreseeable cleanup. Matches the task-8 note about `showCameraSheet` / `showAudioSheet` becoming an `ActiveSheet` sealed class.",
+      "benefit": "Reduces duplicated sheet-dismiss logic and preps for Task 11 consolidation.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/AudioRecorderBottomSheet.kt",
+      "line": 283,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "`runCatching { val r = recorderRef.recorder ?: return@runCatching; if (r.recordingState == AudioRecord.RECORDSTATE_RECORDING) r.stop() }` reads as a defensive box around two operations that in practice don't throw under normal lifecycle: `recorder` access is a field read, `recordingState` / `stop()` are documented to be safe on an initialised AudioRecord. The runCatching is probably there to absorb `IllegalStateException` from a stop() called on a recorder already released by `onDispose` (race). That's plausible; add a one-line comment explaining which exception is being absorbed so a future reader doesn't tighten this to a specific catch or remove the guard entirely.",
+      "benefit": "Makes the implicit race documentation explicit; matches the already-excellent KDoc comments elsewhere in the file.",
+      "optional": true
+    },
+    {
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/AudioRecorderBottomSheetTest.kt",
+      "line": 13,
+      "severity": "minor",
+      "category": "testing",
+      "suggestion": "The class KDoc honestly documents that `stopButtonSavesByteArrayToViewModel`, `onPauseReleasesAndDismisses`, and `stateNotInitializedShowsSnackbarAndDismisses` are covered by manual smoke on Honor 200 — consistent with Task 3 / Task 8 precedent and tech-spec § Testing Strategy. No action needed. As with the camera sheet review, a class-level `// TODO: cover in androidTest when Compose UI tests land` marker would make the deferred work discoverable via grep rather than by remembering to read the KDoc. Purely discoverability.",
+      "benefit": "Makes the deferred Compose-UI coverage searchable by convention (matches the feedback left on AudioRecorderBottomSheetTest's sibling CameraBottomSheetTest).",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 268,
+      "severity": "minor",
+      "category": "architecture",
+      "suggestion": "`addAudio` silently no-ops when an audio attachment already exists (line 270-272). The KDoc at line 263-266 calls this out as a defensive TOCTOU guard behind the disabled mic button — good. Consider symmetry with `addImages` / `addImageBitmap`: those emit `R.string.attachment_max_images_reached` when the cap is hit. The audio-cap equivalent `R.string.attachment_audio_disabled` already exists (strings.xml line 74) but is currently unused (see separate finding on strings.xml). Either wire a snackbar here for diagnostic parity with images — the user presumably did something (rapid tap, stale UI) to get past the disabled mic — or accept the asymmetry because the UI gate is stronger for audio (a `!hasAudioAttachment` enable flag on the button vs the images path which only clips post-decode). Non-blocking; the KDoc documents the intent.",
+      "benefit": "Aligns the audio-cap surface behaviour with the images-cap surface, or explicitly documents why they diverge.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 5,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 2,
+    "minorIssuesCount": 10,
+    "testCoverageAssessment": "adequate"
+  }
+}
