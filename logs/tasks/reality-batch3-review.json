@@ -1,0 +1,127 @@
+{
+  "validator": "reality-checker",
+  "batch": [7, 8, 9],
+  "iteration": 1,
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 7,
+      "issue": "Task 7 implementation hint references 'ChatScreen.kt:258' for the SnackbarHost line and 'ChatScreen.kt:68-74' for state creation + collect. Actual ChatScreen.kt line 258 is exactly 'snackbarHost = { SnackbarHost(hostState = snackbarHostState) },' and lines 68-74 match the pattern described. However, the snackbarHostState in ChatScreen is created at the top-level ChatScreen composable (line 68), while the Scaffold that consumes it (line 258) is inside the private ReadyContent composable. Task 7 treats these as a single flat pattern, but the actual code has a two-composable structure (outer ChatScreen creates state, passes it down via parameter to ReadyContent which owns the Scaffold). The implementer for ModelManagerScreen (a single-composable file) should be aware the pattern does not apply identically — in ModelManagerScreen both state creation and Scaffold will be in the same function body, which is simpler, not harder. This is a 'pattern description is slightly imprecise' finding, not a blocker.",
+      "fix": "Annotate in task or hint that in ChatScreen the SnackbarHostState is created in the outer composable and passed into ReadyContent as a parameter before reaching Scaffold at line 258 — in ModelManagerScreen both will be in the same composable. No structural change required; implementer should be aware."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 7,
+      "issue": "Task 7 Details section describes ModelManagerScreen as 'функциональный @Composable с Scaffold(topBar = {...}) { innerPadding -> ModelList(...) }'. Verified against actual file: this is accurate. However, the current ModelList signature passes innerPadding directly as 'contentPadding = innerPadding' (line 72 of ModelManagerScreen.kt). Task 7 step 9 instructs the implementer to pass 'PaddingValues(0.dp)' to ModelList inside a Column that gets 'Modifier.padding(innerPadding)'. This is a correct approach, but it changes how ModelList receives its padding — the existing call site will need to be changed from 'contentPadding = innerPadding' to 'contentPadding = PaddingValues(0.dp)'. The task does not explicitly call out this existing call-site change. Minor omission; implementer can infer it, but it could cause a subtle regression if only the outer Column is added without updating the ModelList call.",
+      "fix": "Add a note to step 9 explicitly stating: change the existing 'contentPadding = innerPadding' in the ModelList call to 'contentPadding = PaddingValues(0.dp)' after wrapping in Column(Modifier.padding(innerPadding))."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 7,
+      "issue": "Task 7 instruction step 3 says to collect 'CrashState.hasUnresolvedCrash' via 'collectAsStateWithLifecycle()'. The import 'androidx.lifecycle.compose.collectAsStateWithLifecycle' is already present in ModelManagerScreen.kt (line 32) — this is confirmed from the actual file. Zero risk: the API is already imported and used on line 45 ('val models by viewModel.models.collectAsStateWithLifecycle()'). This is a positive confirmation, not a finding, but recorded to document the verification was performed.",
+      "fix": "No fix needed. collectAsStateWithLifecycle is already imported and used."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 7,
+      "issue": "Task 7 says ModelManagerViewModel currently has fields for 'models: StateFlow<List<ModelEntry>>', 'navEvents', and callbacks 'onDownload/onCancel/onLoad'. Verified: actual ModelManagerViewModel.kt matches exactly. However, the ViewModel uses a plain '@Inject constructor(private val registry: ModelRegistry)' — adding 'CrashState' and 'LogExportManager' as additional constructor parameters is straightforward Hilt extension. The task correctly identifies this. One nuance: ModelManagerViewModel currently has no existing unit test file (not found in test tree matching the pattern). Task 7 TDD Anchor says 'if the point of injection is ModelManagerViewModel and it has an existing unit test — its greenness after constructor expansion is part of regression'. Since no such test exists, this regression condition is vacuously satisfied and poses no risk.",
+      "fix": "No fix needed. Confirmed no existing ModelManagerViewModel unit test — the TDD caveat in the anchor is moot."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 8,
+      "issue": "Task 8 'What to do' step 3 instructs the auditor to run 'grep -rEn \"androidx.compose|androidx.activity\" core-runtime/src/main core-settings/src/main' and expects 0 matches. Reality-check confirmed: 0 matches in both modules right now (pre-implementation). This grep is correct and will remain valid post-tasks-1-7 because no Phase 2.5 code touches core-runtime or core-settings. The grep command syntax is correct for bash (works on both Linux and Windows git-bash). No issue — recorded as verification.",
+      "fix": "No fix needed. Grep is correct and baseline is clean."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 8,
+      "issue": "Task 8 lists 'app/src/main/kotlin/app/sanctum/machina/crash/CrashHandler.kt', 'CrashState.kt', 'Killer.kt', 'CrashReportActivity.kt', 'RestartCrashBanner.kt' and all logexport files as files to read in the audit. Reality-check at this point in time (pre-implementation): none of these files exist — the crash/ and logexport/ directories are not present in the repo. This is expected behavior for an Audit Wave task (depends_on: [1..7]), but it confirms that Task 8 is correctly gated on all Wave 1+2 tasks completing. As long as the dependency chain is enforced, this is not a problem.",
+      "fix": "No fix needed. Files are correctly pre-implementation; depends_on [1,2,3,4,5,6,7] properly gates execution."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 8,
+      "issue": "Task 8 includes 'SanctumApplication.kt' changes in the read list. The current SanctumApplication.kt (13 lines) will be modified by Task 5 to add the process-name guard and CrashHandler install. Task 8 audit should read the post-Task-5 state. This is correctly implied by depends_on:[1..7], but the task does not explicitly note the auditor must read the modified version, not the original. Minor documentation gap.",
+      "fix": "No fix needed functionally; depends_on ensures the correct version will be present. Optionally add a note in the context files list that these are 'post-Tasks-1-7 modified versions'."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 OWASP A06 check instructs to verify 'diff of app/build.gradle.kts and gradle/libs.versions.toml against main in dep-sections'. The tech-spec explicitly states 'No new external dependencies'. This grep/diff is straightforward and correct. The current state of both files (pre-implementation) has no phase-2.5 deps, confirming the baseline. Post-implementation, Task 9 auditor should confirm the diff remains clean. No issue with the approach.",
+      "fix": "No fix needed."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 states 'grep -rEn \"Runtime.getRuntime().exec|sh -c|ProcessBuilder(\\\"/bin\" app/src/main/kotlin/app/sanctum/machina/' → 0 matches expected (only LogcatReader's fixed-argv ProcessBuilder allowed). The grep pattern 'ProcessBuilder(\\\"/bin' will match ProcessBuilder calls with '/bin' as the first argument — this correctly excludes 'ProcessBuilder(\"logcat\", ...)' which starts with 'logcat'. Pattern semantics are correct. The 'Runtime.getRuntime().exec' part also correctly targets the shell-execution anti-pattern. Grep is valid.",
+      "fix": "No fix needed. Grep semantics are correct."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 checks 'grep -n \"android:exported=\\\"true\\\"\" app/src/main/AndroidManifest.xml → 0 matches on CrashReportActivity'. Current manifest shows MainActivity has 'android:exported=\"true\"' (required for LAUNCHER intent-filter). The grep will return 1 match (for MainActivity), not 0. Task 9 says '0 matches on CrashReportActivity' — meaning the auditor should verify CrashReportActivity specifically is not exported=true. The grep as written will find the MainActivity match and may confuse an automated check. The intent is correct but the literal grep command returns a false positive for MainActivity.",
+      "fix": "Refine the grep to 'grep -n \"CrashReportActivity\" app/src/main/AndroidManifest.xml | grep -v \"exported=\\\"true\\\"\"' or document that the expected output is 'MainActivity has exported=true (expected, it is the LAUNCHER), CrashReportActivity must not'. Alternatively document 'zero matches on the CrashReportActivity line' explicitly."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 31,
+    "issues_found": 9
+  },
+  "verification_notes": {
+    "task_7": {
+      "ModelManagerScreen_exists": true,
+      "ModelManagerScreen_has_Scaffold": true,
+      "ModelManagerScreen_has_SnackbarHost": false,
+      "ModelManagerScreen_comment": "Scaffold at line 55, no SnackbarHost — code-research §3 claim verified correct",
+      "ModelList_is_private_composable": true,
+      "ModelList_receives_contentPadding_as_innerPadding": true,
+      "ModelList_comment": "Current call: contentPadding = innerPadding (line 72). Task 9 restructuring will need to change this.",
+      "ChatScreen_snackbarHostState_line_68": true,
+      "ChatScreen_SnackbarHost_line_258": true,
+      "ChatScreen_rememberCoroutineScope_present": true,
+      "ChatScreen_comment": "ChatScreen.kt line 195: val scope = rememberCoroutineScope() — in ReadyContent, not the outer composable. Task 7 pattern reference is directionally correct.",
+      "hiltViewModel_import_present_in_ModelManagerScreen": true,
+      "collectAsStateWithLifecycle_import_present": true,
+      "ModelManagerViewModel_constructor_injectable": true,
+      "ModelManagerViewModel_has_HiltViewModel_annotation": true,
+      "crash_directory_pre_exists": false,
+      "logexport_directory_pre_exists": false,
+      "comment_pre_impl": "crash/ and logexport/ dirs absent — expected, tasks 1-7 not yet executed"
+    },
+    "task_8": {
+      "all_audit_target_files_will_exist_post_tasks_1_7": true,
+      "grep_core_runtime_compose_baseline_clean": true,
+      "grep_core_settings_compose_baseline_clean": true,
+      "AndroidManifest_no_crash_process_yet": true,
+      "strings_xml_no_phase25_keys_yet": true,
+      "Theme_Sanctum_exists_in_themes_xml": true,
+      "HeavyChangeDialog_exists": true,
+      "ChatScreen_SnackbarHost_pattern_correct_reference": true,
+      "ErrorLog_whitelist_unchanged_confirmed_pre_impl": true
+    },
+    "task_9": {
+      "AndroidManifest_MainActivity_exported_true": true,
+      "AndroidManifest_no_CrashReportActivity_yet": true,
+      "owasp_a03_ProcessBuilder_argv_approach_correct": true,
+      "owasp_a05_Theme_Sanctum_exists": true,
+      "owasp_a06_no_new_deps_in_tech_spec": true,
+      "SAF_CreateDocument_correct_mime_type": true,
+      "DeviceInfoCollector_check_feasible": true,
+      "grep_exported_true_ambiguity": true,
+      "grep_exported_true_comment": "Current manifest has MainActivity exported=true. Post-impl, grep will return 1 match (MainActivity) not 0. Auditor must filter."
+    }
+  }
+}

@@ -1,0 +1,131 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3],
+  "iteration": 1,
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_function",
+      "task": 2,
+      "issue": "Test handlerShape_noSuspendCallsNoCoroutineImports uses Java reflection (CrashHandler::class.java.declaredMethods) to check for Continuation parameters. The test needs kotlin-reflect or at minimum kotlin-stdlib to run. However, kotlin-reflect is NOT in app/build.gradle.kts testImplementation dependencies — only junit, robolectric, androidx.test.core, kotlinx-coroutines-test, and litertlm are. The test will compile (plain Java reflection via .java.declaredMethods does NOT require kotlin-reflect) but the intent in the TDD anchor is clear that this is Java-reflection-only, which is fine. Marking major because the task description references 'reflection-level check' and the implementer may attempt to use KClass.declaredMemberFunctions (which does need kotlin-reflect and would fail at runtime). The task should explicitly warn to use CrashHandler::class.java.declaredMethods, not CrashHandler::class.declaredMemberFunctions.",
+      "fix": "Add an explicit note in the TDD anchor clarifying that the reflection test MUST use Java reflection via CrashHandler::class.java.declaredMethods (no kotlin-reflect import needed) and NOT Kotlin reflection KClass.declaredMemberFunctions. If kotlin-reflect is actually required for any other test in the task, add testImplementation(libs.kotlin.reflect) to app/build.gradle.kts — the alias libs.kotlin-reflect already exists in gradle/libs.versions.toml line 49."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 2,
+      "issue": "Task 2 Details section says: 'CrashState: private val logsDir by lazy { File(context.filesDir, \"logs\") } (ленивость важна потому что context.filesDir может быть не готов в момент DI-wiring)'. This is a false premise on Android — context.filesDir is available any time after Application.onCreate() completes. Hilt @Singleton construction is deferred until the singleton is first requested (typically inside @AndroidEntryPoint.onCreate), not at Application wiring time. The lazy is not harmful but the stated rationale is misleading and may confuse the implementer into thinking early Hilt wiring is a risk when it isn't.",
+      "fix": "Remove or rephrase the lazy rationale. Either keep lazy for style consistency (acceptable) or use a direct field — both are correct. The justification 'filesDir may not be ready at DI-wiring time' is architecturally incorrect for Android; remove it from the hint to avoid confusion."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 2,
+      "issue": "The Details section for CrashHandler.kt prescribes a full constructor signature including a third parameter crashWriter: (File, String) -> Unit with a default. This is a concrete implementation detail that goes beyond a hint — it defines the exact internal seam signature. While the seam pattern is correct and consistent with the project's handrolled-fakes approach, the full signature prescription crosses the line from 'hint' into 'implementation prescription', per the validation checklist category.",
+      "fix": "Soften the hint to: 'Expose an internal file-writing seam (e.g., a constructor-injected function or a protected method) to enable the handlerInternalFailure_killsOnce test without filesystem-permission manipulation. The exact shape is up to the implementer.' Remove the verbatim crashWriter: (File, String) -> Unit signature from the hint."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 3,
+      "issue": "The Details section for TapCounter.kt prescribes a verbatim class body with exact field names (count, lastTapNanos), exact method body logic including the if-branch structure, and explicit counter-reset sequence (count = 0 before return true). This is pseudocode-level implementation prescription, not a hint pointing to a pattern.",
+      "fix": "Replace the prescriptive body with: 'TapCounter tracks tap count and last-tap timestamp internally. A tap within the window increments the counter; a gap beyond the threshold resets to 1. On reaching 7, reset and return true. Keep state private. No Android imports — pure JVM.' Remove the verbatim field/method assignments."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 3,
+      "issue": "The Details section for LogExportManager.kt includes a verbatim Kotlin expression: context.contentResolver.openOutputStream(uri)?.use { it.write(content.toByteArray(Charsets.UTF_8)) } ?: throw IOException(\"openOutputStream returned null\"). This is a complete code line, not a hint.",
+      "fix": "Replace with: 'writeTo should use ContentResolver.openOutputStream(uri) wrapped in .use{}. A null return must be surfaced as an IOException so the caller (Wave 2 UI) handles a single error type.' Remove the literal code expression."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 3,
+      "issue": "LogExportManagerTest::writeTo_ioException_surfaces relies on ShadowContentResolver to force openOutputStream to throw. Robolectric 4.12 ships ShadowContentResolver and does support registering fake stream providers, but the exact API to force an IOException from openOutputStream (as opposed to returning null) typically requires subclassing ShadowContentResolver or using ContentProvider fakes — it is not a one-liner. The task does not explain HOW to accomplish this, leaving the implementer to discover that ShadowContentResolver.registerInputStream/openOutputStream mocking requires either a custom shadow or a ContentProvider stub. This is a feasibility gap, not a blocker, but the implementer may spend significant time discovering the approach.",
+      "fix": "Add a hint in the TDD anchor for writeTo_ioException_surfaces: 'Use a custom ContentProvider stub registered via Robolectric.buildActivity or ProviderInfo, or subclass ShadowContentResolver and annotate with @Implements — the shadow's openOutputStream can be overridden to throw. Alternatively, inject the ContentResolver as a constructor parameter seam so tests can provide a fake directly.' This prevents wasted discovery time."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 1,
+      "issue": "Task 1 Acceptance Criteria states: './gradlew :app:lintDebug — не появились новые ошибки/предупреждения по UnusedResources... допустимо, что UnusedResources загорится временно до задач 4/6/7'. This contradicts the tech-spec Acceptance Criteria which lists 'MissingClass / UnusedResources / HardcodedText unchanged' as a gate. Running lintDebug after Task 1 alone WILL produce UnusedResources warnings for all ~12 new keys, which formally breaks the tech-spec AC. The task acknowledges this but does not state whether the lint check is expected to be skipped or suppressed for the wave-1 gate.",
+      "fix": "Add explicit guidance: 'The UnusedResources warnings from new keys are expected and acceptable at Task 1 completion — do not add lint suppression annotations. The tech-spec lint AC is evaluated holistically after Task 7, not per-task. Document the temporary lint state in the post-completion report.' This avoids a potential (incorrect) decision to add @SuppressLint annotations."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 41,
+    "issues_found": 6
+  },
+  "verification_log": {
+    "A_reality": {
+      "strings_xml_exists": "PASS — app/src/main/res/values/strings.xml confirmed at 101 lines",
+      "btn_close_exists": "PASS — line 25 'btn_close' = 'Закрыть'",
+      "btn_cancel_exists": "PASS — line 16 'btn_cancel' = 'Отмена'",
+      "ErrorLog_kt_path": "PASS — core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt exists",
+      "ErrorLogTest_kt_path": "PASS — core-runtime/src/test/kotlin/app/sanctum/machina/core/log/ErrorLogTest.kt exists",
+      "ErrorLog_singleton_annotation": "PASS — @Singleton class ErrorLog @Inject constructor(@ApplicationContext) confirmed",
+      "ErrorLog_ALLOWED_COMPONENTS": "PASS — internal val, 8 components, does not include 'crash'",
+      "ErrorLog_e_is_suspend": "PASS — suspend fun e(...) confirmed line 69",
+      "ErrorLogTest_robolectric_pattern": "PASS — @RunWith(RobolectricTestRunner::class) @Config(sdk=[33]) ApplicationProvider.getApplicationContext() deleteRecursively confirmed",
+      "app_build_gradle_kts_exists": "PASS — confirmed 82 lines",
+      "robolectric_in_testImplementation": "PASS — testImplementation(libs.robolectric) line 78",
+      "androidx_test_core_in_testImplementation": "PASS — testImplementation(libs.androidx.test.core) line 79",
+      "coroutines_test_in_testImplementation": "PASS — testImplementation(libs.kotlinx.coroutines.test) line 80",
+      "junit_in_testImplementation": "PASS — testImplementation(libs.junit) line 77",
+      "testOptions_isIncludeAndroidResources": "PASS — testOptions.unitTests.isIncludeAndroidResources = true line 43",
+      "robolectric_version": "PASS — 4.12 in libs.versions.toml",
+      "SanctumApplication_kt_exists": "PASS — 13 lines, DefaultDownloadRepository.mainActivityFqn assignment confirmed",
+      "DefaultDownloadRepository_mainActivityFqn_field": "PASS — found in DownloadRepository.kt line 81 (class defined in same file, not a separate DefaultDownloadRepository.kt)",
+      "AboutScreen_kt_exists": "PASS — 99 lines, AboutFooter composable with BuildConfig.VERSION_NAME confirmed",
+      "AboutFooter_versionName_host": "PASS — BuildConfig.VERSION_NAME as 7-tap host candidate confirmed",
+      "HeavyChangeDialog_two_button_pattern": "PASS — AlertDialog with confirmButton/dismissButton confirmed",
+      "Theme_Sanctum_exists": "PASS — app/src/main/res/values/themes.xml contains Theme.Sanctum",
+      "decisions_md_exists": "PASS — work/phase-2.5-logexport/decisions.md exists",
+      "ux_guidelines_md_exists": "PASS — .claude/skills/project-knowledge/references/ux-guidelines.md exists",
+      "hilt_android_in_deps": "PASS — implementation(libs.hilt.android) line 65",
+      "minSdk_31": "PASS — minSdk = 31 line 15",
+      "buildConfig_enabled": "PASS — buildFeatures { buildConfig = true } line 29",
+      "kotlin_reflect_in_app_build_gradle": "NOT PRESENT — no testImplementation(libs.kotlin.reflect) in app/build.gradle.kts; reflection test in Task 2 uses Java reflection which does not require it"
+    },
+    "B_feasibility": {
+      "task1_steps_concrete": "PASS — XML key names, grouping, reuse decision are all concrete",
+      "task2_steps_concrete": "PASS — file-by-file instructions, seam pattern, test list are actionable",
+      "task3_steps_concrete": "PASS — class-by-class breakdown with interface shapes",
+      "wave1_no_cross_dependencies": "PASS — tasks 1,2,3 all declare depends_on:[] and are independent",
+      "task2_does_not_modify_SanctumApplication": "PASS — AC explicitly states SanctumApplication not touched",
+      "task2_does_not_modify_AndroidManifest": "PASS — AC explicitly states manifest not touched",
+      "CrashHandler_no_suspend": "PASS — enforced by test and AC explicitly",
+      "StateFlow_from_kotlinx": "PASS — kotlinx.coroutines.flow.StateFlow is in the coroutines lib already on classpath",
+      "ShadowContentResolver_availability": "PASS — ships with robolectric 4.12; however exact IOException-forcing API requires implementation guidance (see finding)"
+    },
+    "C_hallucinations": {
+      "no_invented_APIs": "PASS — all APIs (ProcessBuilder, ContentResolver.openOutputStream, Application.getProcessName, Thread.setDefaultUncaughtExceptionHandler, Process.killProcess) are real Android SDK APIs available at minSdk 31",
+      "Application_getProcessName_api_level": "PASS — available API 28+, minSdk=31, confirmed in tech-spec Decision 4",
+      "ActivityResultContracts_CreateDocument": "PASS — part of androidx.activity 1.10.1 which is on classpath",
+      "ShadowContentResolver_class": "PASS — part of robolectric 4.12",
+      "ErrorLogTest_style_match": "PASS — all claimed patterns (RobolectricTestRunner, @Config(sdk=[33]), ApplicationProvider, deleteRecursively) confirmed in actual ErrorLogTest.kt"
+    },
+    "D_security": {
+      "ProcessBuilder_list_args_not_shell": "PASS — task explicitly uses list form ProcessBuilder(argv), test argvShape enforces this",
+      "no_hardcoded_secrets": "PASS — no secrets in any task",
+      "SAF_no_extra_permissions": "PASS — confirmed by code-research §12.1"
+    },
+    "E_tdd": {
+      "task1_no_unit_tests_justified": "PASS — strings.xml has no testable behavior; compile+lint gates are appropriate",
+      "task2_test_count": "PASS — 6 CrashHandlerTest + 8 CrashStateTest cases covering all AC",
+      "task3_test_count": "PASS — 6 TapCounter + 5 LogcatReader + 3 DeviceInfoCollector + 12 LogExportManager cases",
+      "test_paths_match_project_convention": "PASS — app/src/test/kotlin/app/sanctum/machina/... mirrors existing test layout",
+      "no_mockito_mockk": "PASS — all fakes are hand-rolled per project convention",
+      "task2_RecordingKiller_seam": "PASS — RecordingKiller reads filesDir inside kill() to verify ordering",
+      "task3_truncation_tests_directional": "PASS — head for crash.log, tail for logcat, both tested with distinctive markers"
+    },
+    "F_cross_task": {
+      "task2_task3_share_filesystem_paths": "INFO — CrashHandler (Task 2) writes crash.log, LogExportManager (Task 3) reads it; connection is filesystem-only via agreed path names. No live object sharing. No depends_on needed (per tech-spec shared resources table). PASS",
+      "task1_blocks_wave2": "PASS — tasks 4,6,7 in wave 2 depend on string keys from task 1; wave structure enforces ordering",
+      "no_duplicate_singleton_initialization": "PASS — LogExportManager is @Singleton in main process, created directly (non-Hilt) in :crash process per Decision 5; no duplicate Hilt singleton"
+    }
+  }
+}

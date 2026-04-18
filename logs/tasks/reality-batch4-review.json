@@ -1,0 +1,40 @@
+{
+  "validator": "reality-checker",
+  "batch": [10, 11],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 11,
+      "issue": "Required Skill path is wrong: task references '~/.claude/skills/pre-deploy-qa/SKILL.md' but ~/.claude/skills/ does not exist on this machine. The skill lives at the project-local path '.claude/skills/pre-deploy-qa/SKILL.md' (C:/AI-WORK/PhoneWrap/.claude/skills/pre-deploy-qa/SKILL.md).",
+      "fix": "Replace '~/.claude/skills/pre-deploy-qa/SKILL.md' with '[skills/pre-deploy-qa/SKILL.md](../../../.claude/skills/pre-deploy-qa/SKILL.md)' — same relative pattern as Task 10 uses for test-master."
+    },
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 11,
+      "issue": "Context Files section (line 78) lists 'work/phase-2.5-logexport/logs/working/task-10/test-reviewer-*.json' as the Test Audit output from Task 10. Task 10's Acceptance Criteria (AC line 51) specifies the only deliverable is 'work/phase-2.5-logexport/logs/working/task-10/test-audit-report.md' (a markdown file). No JSON file is produced by Task 10. The file pattern 'test-reviewer-*.json' does not correspond to any output defined in any upstream task.",
+      "fix": "Replace the Task 10 context reference with 'work/phase-2.5-logexport/logs/working/task-10/test-audit-report.md'. Remove the '.json' glob pattern — it will never match."
+    },
+    {
+      "severity": "major",
+      "category": "missing_file",
+      "task": 11,
+      "issue": "Context Files reference four project-knowledge paths using '~/.claude/skills/project-knowledge/references/...' (project.md, architecture.md, patterns.md, deployment.md). The '~/.claude/skills/' directory does not exist; the actual skill files are at the project-local '.claude/skills/project-knowledge/references/' (C:/AI-WORK/PhoneWrap/.claude/skills/project-knowledge/references/). The agent will fail to load these files at runtime.",
+      "fix": "Replace all four context file paths from '~/.claude/skills/project-knowledge/references/{file}.md' to relative links pointing to '.claude/skills/project-knowledge/references/{file}.md' — matching the pattern used in Task 10's Context Files section (e.g. '[architecture.md](../../../.claude/skills/project-knowledge/references/architecture.md)')."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "Task 10 depends_on: [1, 2, 3, 4, 5, 6, 7] and its 'Dependencies' note states 'задачи 1–7 завершены, тестовые файлы существуют, suite зелёный'. All 7 new test files referenced in Context Files (CrashHandlerTest.kt, CrashStateTest.kt, LogExportManagerTest.kt, DeviceInfoCollectorTest.kt, LogcatReaderTest.kt, TapCounterTest.kt, SanctumApplicationTest.kt) do not currently exist in the repo — they will be created by Tasks 2, 3, 5. This is architecturally correct (Task 10 is Wave 3), but the task text gives no fallback instruction if the test suite is red or partially incomplete when the auditor starts. The task states 'red suite = блокер аудита качества' without specifying escalation path.",
+      "fix": "Minor: add one sentence to the Details section: 'If the suite is red at the start of Task 10, escalate to task-creator to unblock Tasks 2/3/5 before proceeding.' The current text implies the auditor should simply stop, which is correct in principle but could be clearer."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 2,
+    "claims_verified": 22,
+    "issues_found": 4
+  }
+}

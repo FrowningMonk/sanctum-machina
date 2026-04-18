@@ -1,0 +1,77 @@
+{
+  "validator": "reality-checker",
+  "batch": [4, 5, 6],
+  "iteration": 1,
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_file",
+      "task": 5,
+      "issue": "Task 5 'Files to read' references `core-runtime/src/main/kotlin/app/sanctum/machina/core/data/DefaultDownloadRepository.kt`. This file does not exist. The class `DefaultDownloadRepository` lives in `DownloadRepository.kt` — the same file contains both the interface and the implementation class. The companion field `mainActivityFqn` is at `DownloadRepository.kt:81`.",
+      "fix": "Replace the reference with `core-runtime/src/main/kotlin/app/sanctum/machina/core/data/DownloadRepository.kt` in the 'Code files — read for context' section of Task 5."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 6,
+      "issue": "Task 6 implementation hint uses `::System.nanoTime` as a method reference. In Kotlin, `System.nanoTime` is a Java static method and cannot be referenced with `::` on the object; it must be either a lambda `{ System.nanoTime() }` or the companion-object reference form. The correct idiomatic Kotlin is `{ System.nanoTime() }`, not `::System.nanoTime`. The hint says `nowNanos = ::System.nanoTime` which will not compile.",
+      "fix": "Change the hint to `nowNanos = { System.nanoTime() }` in Task 6 Details / implementation hints section."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 6,
+      "issue": "Task 6 'What to do' step 5 and 'Details/imports' block suggests `java.time.LocalDateTime` and `java.time.format.DateTimeFormatter` for the suggested filename timestamp. The project's own production code (app/src/) does not use `java.time` anywhere — it is not a pattern established in this codebase. Task 4 uses `SimpleDateFormat(\"yyyyMMdd-HHmm\", Locale.ROOT)` for the identical format string. Using two different APIs for the same formatting purpose across tasks 4 and 6 is inconsistent. `java.time` is available at minSdk=31 without desugaring, so there is no compilation risk — but the inconsistency with the established project pattern and with Task 4 is an unnecessary divergence.",
+      "fix": "Replace `java.time.LocalDateTime.now().format(DateTimeFormatter.ofPattern(\"yyyyMMdd-HHmm\"))` with `SimpleDateFormat(\"yyyyMMdd-HHmm\", Locale.ROOT).format(Date())` to match the pattern used in Task 4 and the existing codebase. Update the imports list accordingly (`java.text.SimpleDateFormat`, `java.util.Date`, `java.util.Locale` instead of `java.time.*`)."
+    }
+  ],
+  "verified": {
+    "task_4": {
+      "HeavyChangeDialog_exists": "PASS — app/src/main/kotlin/app/sanctum/machina/ui/chat/HeavyChangeDialog.kt exists (37 lines). Two-button AlertDialog pattern with TextButton + stringResource — matches description exactly.",
+      "Theme_Sanctum_exists": "PASS — app/src/main/res/values/themes.xml exists, contains `<style name=\"Theme.Sanctum\" parent=\"Theme.Material3.DayNight.NoActionBar\" />`. CrashReportActivity can reference `@style/Theme.Sanctum`.",
+      "ActivityResultContracts_CreateDocument_api": "PASS — `ActivityResultContracts.CreateDocument(mimeType: String)` constructor exists in `androidx.activity:activity-compose:1.10.1` (on classpath at `libs.androidx.activity.compose`). No invented constructor shape. Cancel returns `null` URI — correct.",
+      "Icons_Outlined_Warning": "PASS — `Icons.Outlined.Warning` (CloseKt path: `androidx/compose/material/icons/outlined/WarningKt.class`) is in material-icons-core, which is transitively included. Already used in `CameraBottomSheet.kt` and `ThumbnailStrip.kt` via `Icons.Outlined.Close`.",
+      "Icons_Outlined_Close": "PASS — `Icons.Outlined.Close` exists in material-icons-core jar (`outlined/CloseKt.class`). Already used in the project at `CameraBottomSheet.kt:251` and `ThumbnailStrip.kt:102`.",
+      "Icons_Outlined_Download": "PASS — `Icons.Outlined.Download` exists in material-icons-extended jar (`outlined/DownloadKt.class`). The extended library is on classpath at `libs.androidx.compose.material.icons.extended` (1.7.8).",
+      "hilt_navigation_compose_on_classpath": "PASS — `libs.hilt.navigation.compose` (hiltNavigation 1.3.0) is declared in `libs.versions.toml` and added to `app/build.gradle.kts:66` as `implementation(libs.hilt.navigation.compose)`. `hiltViewModel()` in Task 6 is valid.",
+      "no_hallucinated_constructors": "PASS — `ActivityResultContracts.CreateDocument(\"text/plain\")` is the documented API. No invented parameters.",
+      "lifecycle_scope_available": "PASS — `androidx.lifecycle:lifecycle-runtime-ktx` is on classpath (line 52 of build.gradle.kts); provides `lifecycleScope` for `ComponentActivity`.",
+      "depends_on_complete": "PASS — Task 4 depends_on [1,2,3]: needs strings (Task 1), CrashHandler/Killer (Task 2), LogExportManager/ExportSource (Task 3). All declared."
+    },
+    "task_5": {
+      "SanctumApplication_current_state": "PASS — File exists at `app/src/main/kotlin/app/sanctum/machina/SanctumApplication.kt` (13 lines). Current `onCreate` contains exactly `super.onCreate()` + `DefaultDownloadRepository.mainActivityFqn = \"app.sanctum.machina.MainActivity\"` — matches task description of current state.",
+      "DefaultDownloadRepository_mainActivityFqn_exists": "PASS — Field `@Volatile var mainActivityFqn: String?` at `DownloadRepository.kt:81` in `companion object` of `DefaultDownloadRepository`. The field is accessible as `DefaultDownloadRepository.mainActivityFqn` from `SanctumApplication`.",
+      "Application_getProcessName_api_level": "PASS — `Application.getProcessName()` was added in API 28. `minSdk=31 > 28`, so unconditional use is safe. Tech-spec Decision 4 documents this correctly.",
+      "AndroidManifest_no_existing_CrashReportActivity": "PASS — Current `AndroidManifest.xml` (53 lines) has only `.MainActivity` as an activity. No existing `CrashReportActivity` declaration — no duplicate risk.",
+      "robolectric_test_pattern": "PASS — `ErrorLogTest.kt` in `core-runtime/src/test/` uses `@RunWith(RobolectricTestRunner::class)`, `@Config(sdk = [33])`, `ApplicationProvider.getApplicationContext()`, symmetrical `@Before`/`@After`. Robolectric 4.12 is on test classpath. Pattern is real and established.",
+      "testOptions_isIncludeAndroidResources": "PASS — `app/build.gradle.kts:43` has `testOptions { unitTests.isIncludeAndroidResources = true }`. Robolectric can resolve `R.string.*` in app tests.",
+      "no_existing_SanctumApplicationTest": "PASS — `app/src/test/kotlin/app/sanctum/machina/` contains only `ui/` subdirectory. No pre-existing `SanctumApplicationTest.kt` — new file creation is safe.",
+      "DefaultDownloadRepository_file_reference": "FAIL — Task references `core-runtime/.../core/data/DefaultDownloadRepository.kt` as context file, but the actual file is `DownloadRepository.kt`. See finding above (major).",
+      "depends_on_complete": "PASS — Task 5 depends_on [2,4]: needs CrashHandler/Killer (Task 2) and CrashReportActivity FQN to exist for manifest (Task 4). Correct."
+    },
+    "task_6": {
+      "AboutScreen_exists": "PASS — `app/src/main/kotlin/app/sanctum/machina/ui/about/AboutScreen.kt` exists (99 lines).",
+      "AboutScreen_has_SafeMarkdown": "PASS — Line 75: `SafeMarkdown(text = markdown)`.",
+      "AboutScreen_has_HorizontalDivider": "PASS — Line 76: `HorizontalDivider()`.",
+      "AboutFooter_exists": "PASS — Lines 82-99: `@Composable private fun AboutFooter()` with version Text at line 88-92 using `BuildConfig.VERSION_NAME`.",
+      "version_text_is_first_in_AboutFooter": "PASS — First `Text` (line 88) renders `R.string.about_version_format` with `versionName` — correct 7-tap target.",
+      "AboutScreen_Scaffold_has_no_snackbarHost": "PASS — Current `Scaffold` at line 52 has only `topBar` parameter. `snackbarHost` slot must be added — task correctly describes this addition.",
+      "hiltViewModel_pattern_established": "PASS — `hiltViewModel()` is used in `ChatScreen.kt:61` and `ModelManagerScreen.kt:43`. Pattern is real and established in the codebase.",
+      "java_time_consistency_issue": "NOTE — See minor finding above. No compilation risk but inconsistent with project pattern.",
+      "nanoTime_method_reference": "NOTE — See minor finding above (`::System.nanoTime` syntax is invalid).",
+      "rememberLauncherForActivityResult_pattern": "PASS — Used in `CameraBottomSheet.kt:127` and `AudioRecorderBottomSheet.kt:131` with `ActivityResultContracts.RequestPermission()`. Pattern is real; switching to `CreateDocument` is analogous.",
+      "SnackbarHost_pattern": "PASS — `ChatScreen.kt:258` uses `Scaffold(snackbarHost = { SnackbarHost(hostState = snackbarHostState) }, ...)`. Pattern is real.",
+      "AlertDialog_pattern": "PASS — `HeavyChangeDialog.kt` uses `AlertDialog` with `confirmButton`/`dismissButton`/`onDismissRequest`. Pattern matches what Task 6 prescribes.",
+      "depends_on_complete": "PASS — Task 6 depends_on [1,3,5]: needs strings (Task 1), LogExportManager+TapCounter (Task 3), CrashHandler installed for dev-gesture end-to-end (Task 5). Correct.",
+      "no_BuildConfig_DEBUG_guard": "PASS — Task correctly states no `BuildConfig.DEBUG` guard per Decision 12.",
+      "security_input_validation": "PASS — No user-controlled data flows into `LogExportManager.buildExport(About)`. SAF URI is system-provided. No injection surface.",
+      "tdd_rationale_valid": "PASS — No `ComposeTestRule` on classpath. TDD anchor deferred to compile/lint smoke is consistent with the established pattern (see `CameraBottomSheetTest.kt` KDoc at lines 24-27)."
+    }
+  },
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 37,
+    "issues_found": 3
+  }
+}
