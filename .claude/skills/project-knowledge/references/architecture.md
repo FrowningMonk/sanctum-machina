@@ -39,14 +39,17 @@ Technical architecture overview for AI agents. Helps agents understand HOW the s
 **Camera / photos:** androidx.camera 1.4.2 (CameraX)
 - **Why:** Multimodal input requires camera access. CameraX is the standard, matches Gallery.
 
-**Audio recording:** Android `MediaRecorder` (platform API, no extra dep)
-- **Why:** Simple voice input, no need for a library.
+**Audio recording:** `AudioRecord` (platform API, no extra dep)
+- **Why:** litertlm consumes raw PCM 16 kHz mono directly; `AudioRecord` delivers it without the AAC→PCM round-trip that `MediaRecorder` would force. A RIFF/WAVE header is added at the litertlm boundary in `ChatViewModel.send` via `pcmToWav` (ported from Gallery) — headerless PCM triggers an `onError` on-device. `Attachment.Audio.pcm` still stores raw PCM for Phase-3 Room compactness.
 
-**Markdown rendering in chat:** com.halilibo.compose-richtext
-- **Why:** Matches Gallery, handles code blocks + math + standard markdown in streamed responses.
+**Markdown rendering in chat:** `com.halilibo.compose-richtext:richtext-commonmark` + `richtext-ui-material3` (both `1.0.0-alpha02`, group `com.halilibo.compose-richtext` — NOT `com.halilibo.richtext`)
+- **Why:** Matches Gallery. Wrapped by project-specific `SafeMarkdown` composable that installs a scheme-whitelisted `LocalUriHandler` (http/https only — blocks `intent://`, `sms:`, `tel:`, `javascript:`, `file:`, `content:`, `data:`, `market:` from LLM-rendered markdown links).
 
-**Testing:** JUnit 5 + MockK for unit tests on `:core-runtime`; androidx.test + Room testing for DAO tests.
-- **Why:** Minimal viable test stack. Compose UI tests are explicitly not in scope.
+**Settings persistence (per-model overrides):** `androidx.datastore:datastore` 1.1.7 + `com.google.protobuf:protobuf-javalite` 4.28.3 + protobuf gradle plugin 0.9.5, isolated in the `:core-settings` module
+- **Why:** `:core-runtime` must stay UI-free; settings must be injectable via Hilt into both `:app` and `:core-runtime`. A separate module achieves build isolation and keeps a KMP path open. Schema lives in `core-settings/src/main/proto/app_settings.proto`; key for per-model overrides is `Model.modelId` (stable across renames).
+
+**Testing:** JUnit 4.13.2 + Robolectric 4.12 (for tests that need `Bitmap` / Compose resources in JVM). MockK is available but most tests use hand-rolled fakes or `FakeDataStore` + `TemporaryFolder`.
+- **Why:** JUnit 4 kept from Phase 1 (D8) — JUnit 5 migration deferred. Robolectric added in Phase 2 (D20) because `Bitmap` cannot be instantiated in pure JVM; pure-JVM helpers (`calculateInSampleSize`, `calculatePeakAmplitude`, `formatTimer`, `EffectiveConfig.merge`) are tested without Robolectric for speed. Compose UI tests explicitly not in scope.
 
 **Build tooling:** Gradle 8.x, Android Gradle Plugin 8.8.2, single `libs.versions.toml` catalog.
 - **Why:** Standard for this Android version combo; single catalog ensures pinned, reproducible versions across both modules.
@@ -80,26 +83,48 @@ PhoneWrap/                                  # Repository root, working dir
 │
 ├── app/                                    # :app gradle module — the Android application
 │   ├── build.gradle.kts                    # namespace = "app.sanctum.machina"
-│   ├── src/main/AndroidManifest.xml        # final merged manifest: permissions, SystemForegroundService, hardening flags
+│   ├── src/main/AndroidManifest.xml        # permissions (CAMERA, RECORD_AUDIO, INTERNET), SystemForegroundService,
+│   │                                       # allowBackup=false + dataExtractionRules (see patterns.md § Privacy hardening)
+│   ├── src/main/assets/about.md            # Sanctum Machina manifesto (editable markdown, rendered by AboutScreen)
+│   ├── src/main/res/xml/data_extraction_rules.xml  # cloud-backup + device-transfer excluded at root
 │   └── src/main/kotlin/app/sanctum/machina/
-│       ├── ui/                             # Compose screens (chat/, modelmanager/, theme/); SanctumApp.kt NavHost
+│       ├── ui/
+│       │   ├── about/AboutScreen.kt        # SafeMarkdown-wrapped assets/about.md
+│       │   ├── chat/                       # ChatScreen + ChatViewModel; Attachment sealed class;
+│       │   │                               # MultimodalInputBar + ThumbnailStrip; CameraBottomSheet (CameraX);
+│       │   │                               # AudioRecorderBottomSheet (AudioRecord); MessageBubble + ThinkingBlock;
+│       │   │                               # InferenceSettingsBottomSheet + HeavyChangeDialog + ReinitProgressDialog;
+│       │   │                               # EffectiveConfig; SafeMarkdown + SafeUriHandler
+│       │   ├── modelmanager/, theme/
+│       │   └── SanctumApp.kt               # NavHost: modelmanager / chat / about
 │       ├── MainActivity.kt
 │       └── SanctumApplication.kt           # @HiltAndroidApp; wires DefaultDownloadRepository.mainActivityFqn
-│                                           # Phase 2+: data/ (Room repos), di/ (app-level Hilt modules)
+│                                           # Phase 3+: data/ (Room repos), di/ (app-level Hilt modules)
 │
 ├── core-runtime/                           # :core-runtime gradle module — extracted Gallery core
 │   ├── build.gradle.kts                    # namespace = "app.sanctum.machina.core"
 │   ├── src/main/AndroidManifest.xml        # library-scope hygiene: uses-permission + service merge-override (see patterns.md)
 │   └── src/main/kotlin/app/sanctum/machina/core/
-│       ├── common/                         # shared utilities (enums, helpers)
-│       ├── data/                           # Model / ModelAllowlist / Config / DownloadRepository (data classes + repo)
-│       ├── di/                             # Hilt modules (CoreRuntimeModule, @Provides graph)
+│       ├── common/                         # enums, helpers, MediaUtils (decodeSampledBitmapFromUri / rotateBitmap /
+│       │                                   # calculatePeakAmplitude / pcmToWav), AudioClip, MultimodalContentsBuilder
+│       ├── data/                           # Model / ModelAllowlist / Config / DownloadRepository
+│       ├── di/                             # Hilt modules (CoreRuntimeModule)
 │       ├── inference/                      # LlmChatModelHelper (litertlm wrapper)
-│       ├── log/                            # ErrorLog (on-device error writer)
-│       ├── registry/                       # ModelRegistry + AllowlistLoader (+ schema guards)
-│       ├── runtime/                        # runtime helpers (ModelHelperExt, coroutine scope)
+│       ├── log/                            # ErrorLog (on-device error writer; whitelist + bounding — see patterns.md)
+│       ├── registry/                       # ModelRegistry + AllowlistLoader
+│       ├── runtime/                        # runtime helpers
 │       └── worker/                         # DownloadWorker (WorkManager foreground service)
-│                                           # Phase 2: auth/ (HF OAuth), Phase 4: embed/ (Embedder interface)
+│                                           # Phase 3+: auth/ (HF OAuth), Phase 4: embed/ (Embedder interface)
+│
+├── core-settings/                          # :core-settings gradle module — Proto DataStore for per-model overrides
+│   ├── build.gradle.kts                    # namespace = "app.sanctum.machina.core.settings"; protobuf-javalite 4.28.3
+│   ├── src/main/AndroidManifest.xml        # library hygiene: self-closing <application> (no overrides of :app flags)
+│   ├── src/main/proto/app_settings.proto   # AppSettings { map<string, PerModelSettings> per_model_overrides }
+│   │                                       # PerModelSettings: all seven fields `optional` (proto3 explicit-optional)
+│   └── src/main/kotlin/app/sanctum/machina/core/settings/
+│       ├── AppSettingsSerializer
+│       ├── AppSettingsRepository + DefaultAppSettingsRepository  # wraps IOException / CorruptionException
+│       └── di/CoreSettingsModule.kt        # Hilt @Singleton DataStore<AppSettings> at filesDir/datastore/app_settings.pb
 │
 ├── build.gradle.kts                        # Root build config
 ├── settings.gradle.kts                     # Module declarations (:app, :core-runtime)
@@ -108,7 +133,9 @@ PhoneWrap/                                  # Repository root, working dir
 └── .gitignore
 ```
 
-**Module boundary rule:** `:app` depends on `:core-runtime`; `:core-runtime` does NOT depend on `:app` or on Compose. The core module must remain UI-free so it stays extractable for future reuse (including KMP).
+**Module graph:** `:app` → `:core-runtime`, `:core-settings`. `:core-settings` → `:core-runtime` (for `ErrorLog`). `:core-runtime` has no internal dependencies.
+
+**Module boundary rule:** both `:core-runtime` AND `:core-settings` must remain UI-free — no Compose, no Activity, no ViewModel imports. Enforced by grep at audit time (TAC-7, TAC-8 in Phase 2 tech-spec). The core modules stay extractable for future reuse (KMP path).
 
 ---
 
@@ -121,7 +148,11 @@ PhoneWrap/                                  # Repository root, working dir
 - `androidx.work:work-runtime-ktx` (2.10.0) — `ModelDownloadWorker` runs as foreground service with notification, survives app kill.
 - `net.openid:appauth` (0.11.1) — OAuth for HuggingFace when downloading gated models.
 - `androidx.camera:camera-camera2` / `camera-lifecycle` / `camera-view` (1.4.2) — photo capture for multimodal input.
-- `com.halilibo:compose-richtext-commonmark` — markdown rendering in chat messages.
+- `com.halilibo.compose-richtext:richtext-commonmark` + `richtext-ui-material3` (1.0.0-alpha02) — markdown rendering in chat messages; consumed through project-local `SafeMarkdown` wrapper (not directly).
+- `com.google.protobuf:protobuf-javalite` (4.28.3) + protobuf gradle plugin (0.9.5) — proto3 runtime for `:core-settings` DataStore schema.
+- `androidx.datastore:datastore` (1.1.7) — key-value store used in `:core-settings` for per-model inference overrides.
+- `androidx.exifinterface` (1.4.1) — EXIF orientation handling in `MediaUtils.rotateBitmap` (ported from Gallery).
+- `org.robolectric:robolectric` (4.12) — test-only, enables `Bitmap` / Compose-resources in JVM unit tests.
 
 **Explicitly NOT included** (to preserve the "open-source only" manifesto and remove inherited bloat):
 - No `google-services` plugin, no `firebase-*`, no `mlkit-genai-prompt` (AICore), no `play-services-oss-licenses`.
@@ -160,6 +191,8 @@ No other external services. No telemetry endpoints. No update-check endpoints. N
 ---
 
 ## Data Model
+
+**Phase 2 reality (as of `v0.2-ui`):** Room is NOT yet introduced. Chats, messages, attachments all live in `ChatViewModel.StateFlow` and are discarded on process death. The Room schema described below is the Phase 3 target. Only the `models_meta` equivalent ships in Phase 2, implemented via Proto DataStore in `:core-settings` (schema: [core-settings/src/main/proto/app_settings.proto](core-settings/src/main/proto/app_settings.proto) — `map<string, PerModelSettings>` keyed by `Model.modelId`, every field `optional` for "use allowlist default" semantics).
 
 **Database:** SQLite via Room 2.7.x. Single database `sanctum.db` in the app's private storage.
 
