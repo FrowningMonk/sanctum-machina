@@ -5,9 +5,9 @@
 # ============================================================================
 interview_metadata:
   started: "2026-04-18 12:00:00"
-  last_updated: "2026-04-18 13:15:00"
-  status: "in_progress"
-  can_resume: true
+  last_updated: "2026-04-18 14:00:00"
+  status: "completed"
+  can_resume: false
   current_question_num: 6
   feature_size: "M"
 
@@ -579,7 +579,7 @@ phase3_integration:
 # ============================================================================
 phase4_completion:
   userspec_file: "work/phase-2.5-logexport/user-spec.md"
-  status: "pending"
+  status: "approved"
 
 # ============================================================================
 # Decision Rules
