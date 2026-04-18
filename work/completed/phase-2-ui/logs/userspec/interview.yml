@@ -1,0 +1,660 @@
+# Interview Plan for Feature Planning
+#
+# Tracks progress of adaptive discovery interview for a new feature/bug/refactoring.
+
+# ============================================================================
+# Interview Metadata
+# ============================================================================
+interview_metadata:
+  started: "2026-04-15 22:25:00"
+  last_updated: "2026-04-16 01:30:00"
+  status: "completed"
+  can_resume: false
+  current_question_num: 6
+  feature_size: "L"
+
+# ============================================================================
+# Conversation History
+# ============================================================================
+conversation_history:
+  - question_num: 1
+    timestamp: "2026-04-15 22:30:00"
+    topic: "scope_framing"
+    agent_question: |
+      1) Скоуп Phase 2 полный или режем? (L vs разбить 2a/2b)
+      2) QuickChatScreen отдельно или один ChatScreen в quick-режиме?
+      3) HuggingFace OAuth возвращаем в Phase 2 или откладываем?
+      4) Точка входа после Phase 2: (a) сразу в чат, (b) в список моделей, (c) home-экран?
+    user_answer: |
+      1) скоуп полный
+      2) согласен — один ChatScreen
+      3) HF откладываем
+      4) b) — список моделей как entry point
+    summary: "Phase 2 = L, one ChatScreen (quick-mode), no HF, entry = ModelManagerScreen"
+
+  - question_num: 3
+    timestamp: "2026-04-15 23:00:00"
+    topic: "storage format + core boundary + attachment lifecycle + renaming"
+    agent_question: |
+      Q3 clarification: DataStore vs Room vs отложить
+      Q5. Расширять :core-runtime (a) vs писать multimodal в :app (b)?
+      Q6. Attachment lifecycle: при выходе из ChatScreen + при kill процесса?
+      Q7. Переименование/иконка в Phase 2 — optional?
+    user_answer: |
+      Q3. DataStore ок — "место с параметрами вместо хардкода". Подвопрос: формат JSON?
+      Q5. (a) — расширяем ядро портированием из Gallery. Защита от поломок — тесты?
+      Q6. Да — при выходе и при kill. "Начинаем с временного чата, персистентность потом".
+      Q7. Не блокирующий, но просит настоять: позже переименовывать везде будет больнее.
+    summary: |
+      DataStore для overrides; расширение ядра в Phase 2 разрешено (порт Gallery); attachment
+      эфемерный; переименование — агент должен настоять на включении в Phase 2.
+
+  - question_num: 6
+    timestamp: "2026-04-16 00:15:00"
+    topic: "cycle-3: user stories, AC, edge cases + architectural pivot"
+    agent_question: |
+      Draft user stories US-1..US-7, edge cases + error scenarios (таблица),
+      AC обязательные AC-1..17 и желательные AC-18..20, иконка приложения.
+    user_answer: |
+      US-1 изменён: настройки инференса НЕ на отдельном экране, а кнопкой "Настройки" ВНУТРИ
+        ChatScreen (bottom sheet). Применить / Default. Применяется сразу в текущем чате.
+      US-2..US-7 — согласовано.
+      AC-5 — согласовано (убираем SettingsScreen полностью).
+      AC-6 — AboutScreen как отдельный destination, кнопка "О приложении" на начальном экране,
+        НО расположение кнопки не должно быть жёстко закреплено: вдруг начальный экран поменяется
+        или кнопку захотим перенести. Реализация — AboutScreen независимый destination,
+        любой экран может вызвать navigate("about"). Контент — scrollable markdown из assets/about.md.
+      US-1 следствие: при смене "тяжёлых" настроек (accelerator, enableThinking) нужно
+        предупреждать — требуется переинициализация engine, контекст чата сбросится.
+        Точный список "тяжёлых" полей уточнится после ручного теста на Honor 200.
+      Edge cases — все подходят.
+      Остальные AC (1-3, 7-17, 18-20) — согласовано.
+      Иконка — оставляем системный placeholder до Phase 5.
+    summary: |
+      Pivot: InferenceSettings — bottom sheet внутри ChatScreen. SettingsScreen убран.
+      AboutScreen — независимый destination. Предупреждение о reinit при смене тяжёлых настроек.
+
+  - question_num: 5
+    timestamp: "2026-04-15 23:45:00"
+    topic: "cycle-2: tech decisions based on code-research"
+    agent_question: |
+      Q8. MediaRecorder vs AudioRecord.
+      Q9. PNG vs JPEG для Bitmap → litertlm.
+      Q10. Ключ per-model settings: modelName vs modelId.
+      Q11. DataStore-код: в :app или отдельный :core-settings модуль.
+      Q12. compose-richtext + autoscroll в Phase 2.
+      Q13. Attachments in-memory vs tmp-JPEG — риски.
+      Q14. Тема: системная vs override.
+    user_answer: |
+      Q8. AudioRecord — согласен (raw PCM прямо для litertlm, без конверсии).
+      Q9. Оставляем PNG (ядро не трогаем, Gallery уже использует PNG).
+      Q10. modelId (стабильнее, стандартный формат обращения к моделям).
+      Q11. Отдельный модуль :core-settings (build speed, test isolation, KMP-путь).
+      Q12. compose-richtext в Phase 2 сразу — и thinking, и ответы. + autoscroll в AC.
+      Q13. OOM-риск на 8GB-устройствах (защищено MAX_IMAGE_COUNT=10). Rotation safe через VM StateFlow.
+      Q14. Только системная тема через isSystemInDarkTheme(). Переключатель в Settings — НЕ добавляем в Phase 2.
+           Прикручивание override темы позже = ~2-3 часа, proto3 field add без миграции.
+    summary: |
+      AudioRecord для записи; PNG оставляем; key=modelId; отдельный :core-settings модуль;
+      compose-richtext в Phase 2 + autoscroll; attachments in-memory; тема — только системная.
+
+  - question_num: 4
+    timestamp: "2026-04-15 23:15:00"
+    topic: "storage format final + multimodal unit tests"
+    agent_question: |
+      Proto DataStore (типобезопасно, бинарно) vs JSON (читаемо)?
+      Писать unit-тесты для multimodal port-классов (Contents builder, image compressor)?
+    user_answer: |
+      Формат: Proto DataStore ок. Попросил научить пользоваться им в процессе.
+      Тесты: если можно реалистично написать тест "отправка и прочитка фото" — делаем.
+    summary: |
+      Proto DataStore (по архитектурному решению проекта).
+      Unit-тесты для preparation-слоя multimodal — ДА, пишем (bitmap compressor, Contents builder,
+      audio wrapper). End-to-end инференс с фото остаётся за manual smoke (требует native litertlm).
+
+  - question_num: 2
+    timestamp: "2026-04-15 22:45:00"
+    topic: "success_criteria + testing + storage + limits + priorities"
+    agent_question: |
+      Q1. Критерий успеха Phase 2 (аналог AC-14): ежедневное использование,
+          backstops (cold start <2s, OOM-free на фото/аудио, переключение темы без рестарта)?
+      Q2. Testing: только manual smoke + unit для новой non-UI логики?
+      Q3. Где хранить per-model user overrides инференса: DataStore (a) / Room сейчас (b) / отложить (c)?
+      Q4a. Лимиты фото/аудио — сжатие до 1024 или 2048, 60-сек аудио, WAV 16kHz mono?
+      Q4b. Ранжировать болевые пробелы Phase 1.
+    user_answer: |
+      Q1. Снижаем планку: UI должен быть масштабируемый, удобный, современный, быстрый.
+          Стабильность > визуал. Делаем на годы: лучше кнопка, которая будет работать
+          всегда, чем свайп. Точный гейт сформулировать сложно.
+      Q2. UI-тесты — перебор. Оставляем существующие unit-тесты ядра (Phase 1).
+          Ядро — самое важное.
+      Q3. Не понял — прошу раскрыть термины коротко.
+      Q4a. Всю работу с вложениями берём из Gallery as-is. Это часть ядра, ядро
+           в Phase 2 не трогаем. Глобально мы пишем "обёртку".
+      Q4b. Приоритет: multimodal > настройки инференса > ризонинг > визуальная полировка
+           > внешний вид (иконка, переименование "Sanctum" → "Sanctum Machina").
+    summary: |
+      Гейт мягкий и субъективный (без TTFT-порога), стабильность приоритетнее визуала,
+      вложения и их обработка остаются в :core-runtime as-is из Gallery,
+      Phase 2 = "обёртка" над готовым ядром, не новый движок.
+      Q3 требует переформулировки с объяснением терминов.
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding
+# ============================================================================
+phase1_feature_overview:
+
+  feature_name:
+    score: 100
+    status: "complete"
+    value: "phase-2-ui"
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 90
+    status: "complete"
+    value: |
+      Phase 2 превращает Phase-1 foundation (два примитивных экрана) в полноценную чат-оболочку
+      вокруг :core-runtime. Подход — "обёртка": ядро не изобретаем, а при необходимости расширяем
+      портированием компонентов из gallery-source/ (image preprocessing, audio recording, multimodal
+      Contents builder) в :core-runtime/media/ и :core-runtime/inference/.
+
+      Добавляется:
+      1. Мультимодальный ввод (текст + фото с камеры/галереи + аудио через MediaRecorder) через
+         litertlm Contents API.
+      2. Настройки инференса per-model по схеме architecture.md (maxTokens, topK, topP, temperature,
+         enableThinking, accelerator, systemPromptDefault). Хранение — DataStore по ключу modelId
+         (переливка в Room.models_meta запланирована на Phase 3).
+      3. SettingsScreen — тема dark/light, entry в ModelManagerScreen, entry в AboutScreen.
+      4. AboutScreen — короткая страница-заглушка (полный манифест — Phase 5).
+      5. Базовая визуальная идентичность: Material 3 dark-first, три размера шрифта, один corner
+         radius, copper/brass акцент, референс Pocket LLM.
+      6. Ризонинг-канал (thinking) в чате — collapsible блок над ответом.
+      7. Переименование: app_name "Sanctum" → "Sanctum Machina" в strings.xml (агент настаивает).
+
+      Чат эфемерный (Room и Projects — Phase 3/4). Один ChatScreen, ведущий себя как quick-chat:
+      без заголовка, без "сохранить", attachments в filesDir/quick/, сессия живёт до выхода с экрана
+      или kill процесса. Entry point приложения — ModelManagerScreen. HF OAuth не добавляем
+      (обе модели — community).
+
+      Иконка приложения — остаётся placeholder из Phase 1 до Phase 5 (нужен графический дизайн).
+    gaps: ""
+    required: true
+
+  work_type:
+    score: 100
+    status: "complete"
+    value: "feature"
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 90
+    status: "complete"
+    value: |
+      Phase 1 доказала, что ядро работает, но Phase-1 UI — это "минимальная лампочка для валидации".
+      Пользоваться как ежедневным инструментом нельзя: нет мультимодальности, нет настройки инференса,
+      нет темы, нет ризонинга в чате, UI грубый. Phase 2 делает приложение пригодным к ежедневному
+      использованию solo dev'ом на Honor 200 — при этом без истории и проектов (они Phase 3/4).
+
+      Приоритет болевых пробелов (ранжировано пользователем):
+      1. Мультимодальность (текст + фото + аудио) — самое важное
+      2. Настройки инференса per-model (topK, topP, temperature, max tokens, thinking, accelerator, system prompt)
+      3. Ризонинг-канал (thinking) в чате
+      4. Визуальная полировка (тема, шрифты, Pocket LLM feel)
+      5. (опционально) Иконка приложения и корректное имя "Sanctum Machina" вместо "Sanctum"
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 90
+    status: "complete"
+    value: "Solo developer на Honor 200 (12GB RAM). Внешних пользователей нет до Phase 5."
+    gaps: ""
+    required: false
+
+  success_criteria:
+    score: 85
+    status: "complete"
+    value: |
+      Мягкий субъективный гейт, без жёсткого численного порога (Phase 2 — не валидационная фаза).
+      Phase 2 считается закрытой, когда ВСЕ пункты ниже выполнены:
+
+      Функциональные (обязательные):
+      - Текстовый чат работает как в Phase 1 (регрессия недопустима).
+      - Multimodal: отправка текста с фото (с камеры / галереи) и аудио-ввод — работает end-to-end
+        на Gemma-4-E2B и Gemma-4-E4B. Модель видит вложение и реагирует осмысленно.
+      - Ризонинг-блок (thinking) отображается collapsible над ответом, когда модель его вернула
+        (enableThinking=true).
+      - Настройки инференса per-model (maxTokens, topK, topP, temperature, enableThinking, accelerator,
+        systemPromptDefault) редактируемы через InferenceSettingsScreen. "Reset to defaults" работает.
+        Изменения применяются к следующему ходу без рестарта приложения.
+      - Переключение темы dark/light через SettingsScreen работает без рестарта приложения.
+
+      Субъективные (пользователь оценивает на Honor 200):
+      - UI воспринимается как "современный, масштабируемый, удобный" — решает пользователь при
+        финальной приёмке Phase 2.
+      - Стабильность > визуал: в спорных UX-решениях выбран более надёжный вариант (кнопка vs свайп).
+
+      Нефункциональные backstops:
+      - Использованы стабильные версии UI-библиотек (не alpha/beta).
+      - Unit-тесты :core-runtime остаются зелёными (регрессия текстового пути).
+      - Нет регрессии скорости текстового инференса (Phase-1 AC-14 продолжает соблюдаться).
+    gaps: ""
+    required: true
+
+  constraints:
+    score: 80
+    status: "complete"
+    value: |
+      Технические:
+      - Без Room (Phase 3), чаты эфемерны — живут одну сессию процесса, attachments временные
+      - Без HuggingFace OAuth
+      - Без ProjectsListScreen / ProjectDetailScreen (Phase 4)
+      - :core-runtime в Phase 2 НЕ ТРОГАЕМ — Phase 2 это "обёртка" над готовым ядром
+      - Работа с вложениями (bitmap preprocessing, audio format) — берётся из Gallery as-is, часть ядра
+      - :core-runtime без Compose / Activity / ViewModel (patterns.md)
+      Дизайн:
+      - Tone of voice: минималистичный, RU UI, без эмодзи, imperative verbs
+      - Material 3 dark-first, один corner radius, три размера шрифта, copper/brass акцент
+      - Референс: Pocket LLM primary, Claude/ChatGPT secondary
+      - Стабильность > визуал: "делаем на годы", кнопка лучше свайпа
+      - Предпочитаем стабильные свежие версии UI-библиотек
+    gaps: ""
+    required: true
+
+  testing_strategy:
+    score: 95
+    status: "complete"
+    value: |
+      - Phase 2 НЕ добавляет Compose UI-тесты (перебор для solo dev + частые UI-изменения)
+      - Существующие unit-тесты :core-runtime из Phase 1 остаются зелёными (регрессия текстового пути)
+      - НОВЫЕ unit-тесты пишем для multimodal preparation-слоя в :core-runtime:
+        * Bitmap compressor/resizer — input Bitmap → output Bitmap с корректным разрешением и форматом
+        * Multimodal Contents builder — входные (text, Bitmap?, ByteArray? audio) → litertlm Content структура
+        * Audio recorder wrapper — корректный формат файла на выходе (WAV/PCM 16kHz mono)
+        * InferenceSettings overrides repository — сохранение/чтение через Proto DataStore,
+          эффективный merge defaults + overrides, reset clears overrides
+      - End-to-end инференс с multimodal — ТОЛЬКО manual smoke на Honor 200
+        (требует native litertlm и реальную модель, не воспроизводимо в JVM-тестах)
+      - Верификация UI-специфичных AC — manual smoke на Honor 200 (по чеклисту в tech-spec)
+    gaps: ""
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios
+# ============================================================================
+phase2_user_experience:
+
+  user_stories:
+    score: 95
+    status: "complete"
+    value: |
+      US-1. Первый запуск и подготовка модели.
+        1) Запуск → ModelManagerScreen (список 2 моделей).
+        2) Скачиваю (если не скачана) → "Загрузить" → индикатор загрузки → ChatScreen.
+        3) В ChatScreen TopAppBar кнопка "Настройки" → bottom sheet с полями инференса.
+        4) "Применить" сохраняет overrides в DataStore + применяет к текущему чату.
+        5) "Default" удаляет overrides + применяет allowlist defaults.
+
+      US-2. Мультимодальный чат с фото.
+        6) Input bar: текст + 3 иконки (камера/галерея/микрофон) + Send.
+        7) Тап галерея → Photo Picker → выбор 1-10 фото → миниатюры над input bar с ✕.
+        8) Send → стриминг ответа + автоскролл. При enableThinking=true — collapsible блок над ответом.
+
+      US-3. Аудио-ввод.
+        9) Микрофон → bottom sheet с индикатором записи и таймером до 30 сек.
+        10) "Остановить" → миниатюра аудио над input bar → Send.
+
+      US-4. Изменение настроек по ходу. См. US-1 (настройки внутри чата).
+
+      US-5. Переключение между моделями.
+        11) Back в ModelManagerScreen → "Загрузить" на другой модели → engine switch.
+        12) Каждая модель использует свои overrides (или defaults).
+
+      US-6. Выход = потеря чата.
+        13) Back из ChatScreen → сессия уничтожена, Bitmap'ы освобождены. Overrides и app settings сохранены.
+
+      US-7. About-экран.
+        14) Кнопка "О приложении" на ModelManagerScreen (расположение гибкое — AboutScreen
+            отдельный destination, любой экран может вызвать navigate).
+        15) AboutScreen: scrollable markdown из assets/about.md. Пользователь редактирует .md
+            напрямую. В футере версия приложения и attribution.
+    gaps: ""
+    required: true
+
+  acceptance_criteria:
+    score: 95
+    status: "complete"
+    value: |
+      Обязательные:
+      - AC-1. Fix AllowedModel.toModel() парсинг llmSupportImage/Audio/Thinking (блокер).
+      - AC-2. app_name = "Sanctum Machina" в strings.xml + в launcher'е.
+      - AC-3. Новый модуль :core-settings с Proto DataStore, AppSettings.per_model_overrides
+              (map<modelId, PerModelSettings>).
+      - AC-4. ChatScreen TopAppBar: Settings / Reset / Back. Настройки — bottom sheet с 7 полями,
+              "Применить" + "Default". Лёгкие параметры (temperature, topK, topP, maxTokens)
+              применяются на лету. Тяжёлые (accelerator, enableThinking) требуют переинициализации;
+              перед подтверждением показывается предупреждение "Требуется переинициализация
+              модели (~5-30 сек), контекст чата сбросится".
+      - AC-5. SettingsScreen ПОЛНОСТЬЮ убран. AboutScreen — независимый destination в NavHost.
+      - AC-6. AboutScreen: scrollable markdown из assets/about.md (редактируется вручную),
+              внизу версия + attribution к Gallery/Gemma/LiteRT-LM.
+      - AC-7. ChatScreen: markdown-рендеринг ответов через compose-richtext; thinking-блок
+              collapsible над ответом с левой вертикальной линией.
+      - AC-8. Автоскролл: лента тянется к низу на новых сообщениях и при стриминге.
+      - AC-9. Input bar: OutlinedTextField + 3 кнопки (camera/gallery/mic) + Send.
+              Send disabled при пустом вводе БЕЗ вложений.
+      - AC-10. Photo Picker: выбор 1-10 фото, downscale до ~1024×1024, миниатюры с ✕.
+      - AC-11. Камера: bottom sheet с live preview (CameraX) → ImageCapture → Bitmap in-memory.
+      - AC-12. Аудио: bottom sheet, AudioRecord PCM 16 kHz mono, автостоп на 30 сек, ByteArray.
+      - AC-13. Multimodal inference end-to-end: текст + фото → осмысленный ответ на Gemma-4-E2B
+               и E4B. Manual smoke на Honor 200.
+      - AC-14. Thinking при enableThinking=true накапливается в collapsible блоке; при false — скрыт.
+      - AC-15. Runtime permissions CAMERA, RECORD_AUDIO on-demand. Отказ — snackbar.
+               Photo Picker не требует permission.
+      - AC-16. Phase 1 AC не регрессируют: текстовый чат, скачивание, engine switch.
+      - AC-17. Unit-тесты :core-runtime зелёные. Новые тесты:
+               * AppSettingsRepositoryTest (round-trip DataStore)
+               * EffectiveConfigTest (defaults ∪ overrides merge, reset)
+               * AllowlistLoaderTest расширен кейсами llmSupport*
+
+      Желательные:
+      - AC-18. Миниатюры вложений (thumbnail фото, продолжительность аудио).
+      - AC-19. Индикатор уровня при записи аудио (peak amplitude).
+      - AC-20. Поддержка > 1 ряда иконок в input bar при множественных вложениях.
+    gaps: ""
+    required: true
+
+  edge_cases:
+    score: 95
+    status: "complete"
+    value: |
+      - CAMERA permission отклонён → snackbar "Разрешите доступ к камере", функционал остального UI не ломается.
+      - RECORD_AUDIO отклонён → аналогично.
+      - Пользователь выбрал 15 фото → берём первые 10, snackbar "Максимум 10 фото".
+      - Аудио 31+ сек → автостоп на 30-й секунде.
+      - Запись прервана звонком / уходом в фон → AudioRecord release, запись отбрасывается.
+      - Kill процесса во время стрима → при повторном запуске чат пустой (эфемерный).
+      - Send пустой (нет текста и вложений) → кнопка disabled.
+      - Send только с фото без текста → разрешено, Content.Text не добавляется.
+      - Модель llmSupportThinking=false → toggle Thinking скрыт в настройках, блок в чате не показывается.
+      - Модель llmSupportImage=false → иконки camera/gallery скрыты в input bar.
+      - Смена тяжёлой настройки (accelerator/thinking) во время чата → предупреждение + reinit.
+      - Смена системной темы во время использования → Compose recompose, активная инференция не прерывается.
+      - Быстрые двойные клики Send → второй игнорируется пока inProgress=true.
+      - Back во время стрима → stopResponse(), сессия уничтожается.
+      - OOM на слабом устройстве при 10 фото → задокументирован риск, Honor 200 защищён 12GB RAM.
+    gaps: ""
+    required: true
+
+  error_scenarios:
+    score: 95
+    status: "complete"
+    value: |
+      - Ошибка init engine при смене модели → FailedContent в ChatScreen, возврат в ModelManagerScreen,
+        ErrorLog запись component="inference-init".
+      - Ошибка инференса (malformed Content, native fail) → ErrorMessage в чате, ErrorLog
+        component="inference". Нет native crash.
+      - Ошибка чтения/записи DataStore (corrupted file) → CorruptionException → возврат к defaults,
+        ErrorLog (новый component? — tech-spec решит).
+      - Ошибка MediaRecorder/AudioRecord → snackbar "Не удалось начать запись", режим записи закрывается.
+      - Ошибка при чтении фото из URI (corrupted image) → snackbar "Не удалось загрузить фото",
+        фото не добавляется в список.
+      - Permission permanently denied (Don't ask again) → snackbar с ссылкой в системные настройки.
+    gaps: ""
+    required: true
+
+  verification_strategy:
+    score: 95
+    status: "complete"
+    value: |
+      Agent-verifiable (до ручной проверки):
+      - ./gradlew :core-runtime:test → все зелёные (включая новые unit-тесты)
+      - ./gradlew build → BUILD SUCCESSFUL
+      - ./gradlew lintDebug → без критичных ошибок
+
+      User-verifiable (manual smoke на Honor 200):
+      - US-1..US-7 end-to-end
+      - AC-13 multimodal inference работает на обеих моделях
+      - AC-14 thinking появляется/скрывается
+      - AC-4 применение настроек (лёгкие на лету, тяжёлые с предупреждением + reinit)
+      - AC-16 регрессия Phase 1 (текстовый чат, скачивание, switch)
+      - Edge cases — вручную проверить permissions, лимиты, OOM не случился
+    gaps: ""
+    required: true
+
+  ui_ux_requirements:
+    score: 85
+    status: "complete"
+    value: |
+      Из ux-guidelines.md + решения Цикла 2:
+      - Material 3, тема — только системная (isSystemInDarkTheme()), переключатель не добавляем
+      - Один corner radius, три размера шрифта, Material Symbols outlined
+      - Copper/brass акцент — применяется экономно (send button, active selection)
+      - Все строки в res/values/strings.xml, RU
+      - app_name = "Sanctum Machina"
+      - ChatScreen: user bubble (right, subtle tint), assistant full-width, thinking-блок (collapsible)
+        над ответом с левой вертикальной линией (port из Gallery MessageBodyThinking)
+      - Ответы и thinking — Markdown rendering через compose-richtext
+      - Autoscroll: лента тянется к последнему сообщению при стриминге и новых пользовательских ходах
+      - Bottom input bar: текстовое поле + 3 кнопки (камера, галерея, микрофон) + Send.
+        Привью прикреплённых фото/аудио — строка миниатюр над input bar до отправки.
+      - TopAppBar chat: имя модели + кнопка "Сбросить" (refresh/reset)
+    gaps: ""
+    required: false
+
+  risks:
+    score: 90
+    status: "complete"
+    value: |
+      R1. AllowedModel.toModel() не парсит llmSupport* поля — БЛОКЕР, первая Task Phase 2.
+      R2. Тяжёлые настройки требуют reinit — UX-риск: пользователь меняет accelerator,
+          контекст чата сбрасывается. Mitigation: предупреждение перед применением.
+      R3. compose-richtext alpha-статус (1.0.0-alpha02 в Gallery) — следим за стабильностью,
+          при проблемах откатываемся на plain Text.
+      R4. litertlm 0.10.0 thinking-канал может быть unstable на Gemma-4 — manual smoke проверит.
+      R5. PNG encoding больших Bitmap → высокое потребление RAM при 10 фото.
+          MAX_IMAGE_COUNT=10 в Consts.kt защищает. На 8GB-девайсах — риск.
+      R6. Photo Picker на API 31-32 (без READ_MEDIA_IMAGES) — работает без permissions,
+          но интерфейс системный (не наш). Проверить UX на reference девайсе.
+      R7. Proto плагин 0.9.5 + AGP 8.8.2 — нет известных incompatibility, но проверить сборку.
+      R8. :core-settings как новый gradle-модуль требует настройки namespace/manifest/
+          library manifest hygiene (см. patterns.md про :core-runtime).
+    gaps: ""
+    required: true
+
+  technical_decisions:
+    score: 90
+    status: "complete"
+    value: |
+      D1. Attachments — in-memory Bitmap/ByteArray в ChatViewModel.StateFlow. Диск не трогаем.
+      D2. Per-model settings storage — Proto DataStore в новом модуле :core-settings,
+          ключ = Model.modelId (стабильный, не имя).
+      D3. Настройки — bottom sheet внутри ChatScreen, НЕ отдельный экран.
+      D4. SettingsScreen убран полностью. AboutScreen — независимый destination.
+      D5. Тема — только системная через isSystemInDarkTheme(), override добавим позже.
+      D6. AudioRecord для записи (не MediaRecorder) — raw PCM прямо в litertlm.
+      D7. Bitmap → PNG для litertlm (ядро не трогаем, Gallery-паттерн).
+      D8. compose-richtext для markdown — и thinking, и ответы с Phase 2.
+      D9. Photo Picker (API 31+) вместо ACTION_PICK — не требует permission.
+      D10. Ядро :core-runtime расширяется портированием из gallery-source (image/audio helpers),
+           но UI Compose и DataStore — в :app / :core-settings.
+    gaps: ""
+    required: false
+
+  deploy_approach:
+    score: 80
+    status: "complete"
+    value: |
+      Как Phase 1: ./gradlew :app:assembleDebug → APK на Honor 200 через adb install -r
+      или Android Studio Run. Нет CI/CD.
+    gaps: ""
+    required: false
+
+  manual_user_actions:
+    score: 70
+    status: "partial"
+    value: |
+      Первый запуск: grant POST_NOTIFICATIONS (уже в Phase 1), теперь ещё CAMERA, RECORD_AUDIO,
+      READ_MEDIA_IMAGES (Android 13+) по мере первого обращения.
+    gaps: "Нужен ли onboarding или тихий on-demand запрос?"
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context
+# ============================================================================
+phase3_integration:
+
+  integration_points:
+    score: 90
+    status: "complete"
+    value: |
+      Точки интеграции с Phase 1 :core-runtime:
+      1. LlmChatModelHelper.runInference — уже multimodal-ready (images: List<Bitmap>, audioClips: List<ByteArray>).
+         Phase 2 UI собирает Bitmap/ByteArray и пробрасывает.
+      2. ResultListener — уже имеет 3-й аргумент partialThinkingResult: String?.
+         ChatViewModel Phase 2 накапливает и рендерит thinking collapsible.
+      3. **БЛОКЕР:** AllowedModel.toModel() в core-runtime/data/ModelAllowlist.kt не парсит
+         llmSupportImage/Audio/Thinking из JSON. Первая Task Phase 2 — починить, иначе engine
+         инициализируется без vision backend и multimodal не запустится.
+      4. Model.configValues (in-memory map) — рендерится через ConfigDialog pattern (порт из Gallery).
+         Изменения пишутся в DataStore через :core-settings (override persist per modelId).
+      5. Новые Compose-экраны в :app/ui/: chat/ (переработка), modelmanager/ (+ entry в inference settings),
+         settings/ (новый), about/ (новый), theme/ (новый — CustomColors pattern).
+      6. Новый модуль :core-settings — DataStore-based persistence для inference overrides
+         (и в будущем — для theme override, default model и прочего).
+    gaps: ""
+    required: true
+
+  dependencies:
+    score: 90
+    status: "complete"
+    value: |
+      Добавляем в libs.versions.toml:
+      - androidx.camera 1.4.2 (camera-core, camera-camera2, camera-lifecycle, camera-view)
+      - com.halilibo.richtext:richtext-commonmark (~300-500 KB) для markdown
+      - androidx.datastore 1.1.7 (datastore для Proto) — в :core-settings
+      - com.google.protobuf 4.26.1 (protobuf-javalite) — runtime для generated proto
+      - com.google.protobuf plugin 0.9.5 — gradle plugin
+      - Тесты: остаёмся на JUnit 4 (как в Phase 1). MockK/JUnit 5 не тянем.
+      Существующие: litertlm 0.10.0, Hilt 2.57.1, WorkManager, Compose BOM 2026.03.00.
+      AudioRecord (platform API) — без зависимости.
+      AppAuth — в Phase 2 НЕ используем.
+    gaps: ""
+    required: false
+
+  technical_constraints:
+    score: 90
+    status: "complete"
+    value: |
+      - MAX_IMAGE_COUNT=10 (уже в Consts.kt) — защита от OOM на 8GB
+      - MAX_AUDIO_CLIP_COUNT=1 (уже в Consts.kt)
+      - MAX_AUDIO_CLIP_DURATION_SEC=30 (уже в Consts.kt)
+      - SAMPLE_RATE=16000 (уже в Consts.kt)
+      - Изображения downscale до ~1024×1024 через decodeSampledBitmapFromUri (порт из Gallery)
+      - Bitmap → Content.ImageBytes(PNG) — ядро не трогаем, PNG остаётся
+      - Audio → Content.AudioBytes(raw PCM 16kHz mono) — из AudioRecord напрямую
+      - Attachments in-memory: Bitmap держатся в ChatViewModel.StateFlow, диск не трогаем
+      - Chat session эфемерен: при выходе из ChatScreen или kill процесса — всё теряется
+    gaps: ""
+    required: false
+
+  data_requirements:
+    score: 90
+    status: "complete"
+    value: |
+      Хранится в :core-settings (Proto DataStore, файл app_settings.pb):
+
+      message AppSettings {
+        // theme: резервировано на будущее, в Phase 2 не добавляем
+        map<string, PerModelSettings> per_model_overrides = 1;  // key = Model.modelId
+      }
+      message PerModelSettings {
+        optional int32 max_tokens = 1;
+        optional int32 top_k = 2;
+        optional float top_p = 3;
+        optional float temperature = 4;
+        optional bool enable_thinking = 5;
+        optional string accelerator = 6;       // "GPU" | "CPU"
+        optional string system_prompt_default = 7;
+      }
+
+      Effective config = defaults (из allowlist) overlay overrides (из DataStore).
+      "Reset to defaults" = удаление записи по ключу modelId из map.
+
+      Attachments — in-memory Bitmap/ByteArray в ChatViewModel StateFlow. На диск не пишутся.
+    gaps: ""
+    required: false
+
+  technical_constraints:
+    score: 40
+    status: "partial"
+    value: |
+      Performance: фото до X MB (X=?), аудио до Y секунд (Y=?), иначе OOM на 12GB RAM ожидаемо ок,
+      но 8GB-устройствах может умереть. Quick-chat attachments удаляются при выходе.
+    gaps: "Лимиты ресурсов для вложений, компрессия фото перед передачей в litertlm"
+    required: false
+
+  data_requirements:
+    score: 20
+    status: "pending"
+    value: ""
+    gaps: "Где хранятся: user overrides инференса (DataStore?), тема, default model, attachments путь"
+    required: false
+
+  migration_needs:
+    score: 100
+    status: "complete"
+    value: "Нет миграций: чисто новый UI поверх Phase 1 ядра. Room в Phase 3 — пока нет схемы."
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: "work/phase-2-ui/user-spec.md"
+  status: "approved"
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+  required_threshold: 85
+  optional_threshold: 50
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty or conscious limitations"
+  priority_order:
+    - "Required items with score < 85% (lowest score first)"
+    - "Optional items mentioned by user in context"
+    - "Other optional items if user seems knowledgeable"
+  question_strategy:
+    - "3-4 questions per batch about different gaps"
+    - "Propose solutions based on PK, not just ask questions"
+    - "Challenge with substance: counterexamples, code references, unexplored scenarios"
+
+# ============================================================================
+# Interview Progress
+# ============================================================================
+progress:
+  current_phase: "completeness_check"
+  questions_asked: 6
+  last_question: "Cycle 3: user stories + AC + edge cases + architectural pivot (bottom sheet settings)"
+  total_required_score: 93
+  total_optional_score: 90
+  completion_estimate: "95%"
+  user_detail_level: "moderate"
+
+# ============================================================================
+# Notes
+# ============================================================================
+notes: |
+  - Phase 2 strictly excludes Room (Phase 3) and Projects (Phase 4).
+  - All chats are quick-mode by default: one ChatScreen, no chat_id, attachments в filesDir/quick/.
+  - Challenge: где хранятся per-model user overrides без Room? Вариант: Proto DataStore, key = modelId.
+  - Reference device: Honor 200 (12GB RAM). Но architecture.md говорит "8GB+ RAM" как target class —
+    нужно думать о лимитах фото/аудио для 8GB-устройств.
+  - UI должен эмулировать Pocket LLM (основной референс), не ChatGPT слепо.

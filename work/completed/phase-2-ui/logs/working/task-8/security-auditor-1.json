@@ -1,0 +1,51 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 4,
+    "critical": 0,
+    "major": 0,
+    "minor": 4
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "A04 Insecure Design / MASVS-RESILIENCE (memory safety)",
+      "title": "ImageCapture uses default (sensor max) resolution — transient bitmap can exceed 100 MB on high-MP devices",
+      "description": "`ImageCapture.Builder().build()` (app/src/main/kotlin/app/sanctum/machina/ui/chat/CameraBottomSheet.kt:167) does not set `setTargetResolution` / `setResolutionSelector`. CameraX therefore picks the closest match to the sensor's native size. On the reference device (Honor 200 has a 50 MP main sensor) `image.toBitmap()` at CameraBottomSheet.kt:236 allocates ~50 MP × 4 B = ~200 MB in ARGB_8888 before `ChatViewModel.downscaleIfOversized` (ChatViewModel.kt:288) shrinks it to 1024 px. On a device already close to its memory budget (Phase-1 model engines hold multi-GB weights resident), the peak allocation inside `toBitmap()` can force an OOM / `android.graphics.RecordingCanvas` failure. The bitmap itself never hits disk (D6), so the failure mode is a crash, not a leak — hence minor — but an OOM in the camera callback also leaks the `ImageProxy` (the `image.close()` call lives in a `finally` block, so it is still released, but the executor thread is reclaimed with a dangling bitmap ref). The downscale contract (R5) exists precisely for this reason; enforcing it upstream (inside CameraX) is the cheaper and safer place to bound the allocation.",
+      "location": "app/src/main/kotlin/app/sanctum/machina/ui/chat/CameraBottomSheet.kt:167",
+      "impact": "On high-MP devices: OOM crash during capture (ImageProxy allocation + Bitmap allocation + transient rotated Bitmap allocation stack up to several hundred MB). Not a confidentiality/integrity risk, but a DoS-on-self that originates inside the security boundary (user gesture → camera frame).",
+      "recommendation": "Cap the capture resolution at the same ~1024 px longest-edge invariant the VM enforces post-hoc. Minimal change:\n```kotlin\nval imageCaptureUseCase = remember {\n    ImageCapture.Builder()\n        .setResolutionSelector(\n            ResolutionSelector.Builder()\n                .setResolutionStrategy(\n                    ResolutionStrategy(\n                        Size(1024, 1024),\n                        ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,\n                    )\n                )\n                .build()\n        )\n        .build()\n}\n```\nThis keeps the peak in-memory bitmap under ~4 MB and removes the need for the defensive `downscaleIfOversized` call on the camera path.",
+      "cwe": "CWE-770 (Allocation of Resources Without Limits or Throttling)"
+    },
+    {
+      "severity": "minor",
+      "category": "A05 Security Misconfiguration / robustness",
+      "title": "`openAppSettings()` does not handle `ActivityNotFoundException`",
+      "description": "`ChatScreen.kt:277-283` calls `context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS))` without guarding against `ActivityNotFoundException`. On a stock Android/Google-mobile-services phone the Settings activity is always resolvable, but on Android Go / kiosk / stripped-down OEM builds (and corp-locked devices where Settings is disabled for the user profile) the intent can fail. An uncaught `ActivityNotFoundException` propagates to the default crash handler and kills the process.\n\nThis is also the classic entry point for intent-redirection bugs. Here the intent is constructed entirely from trusted inputs (`packageName` is `context.packageName`, not user-controlled), so there is no redirection vector — but the missing try/catch is what elevates a rare-device quirk into a reliability incident that looks, at the crash reporter, indistinguishable from an exploitability bug.",
+      "location": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatScreen.kt:277-283",
+      "impact": "Rare-device crash when the user taps the \"Open settings\" snackbar action after permanent camera denial. Not exploitable, but it terminates the chat and destroys any unsent prompt/attachments the user still had in the VM.",
+      "recommendation": "Wrap in a try/catch and emit the snackbar on failure:\n```kotlin\nprivate fun Context.openAppSettings() {\n    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {\n        data = Uri.fromParts(\"package\", packageName, null)\n        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)\n    }\n    runCatching { startActivity(intent) }\n}\n```\nSilent no-op is acceptable — the user already saw the denial snackbar; a crash is the only wrong outcome.",
+      "cwe": "CWE-755 (Improper Handling of Exceptional Conditions)"
+    },
+    {
+      "severity": "minor",
+      "category": "A09 Security Logging and Monitoring",
+      "title": "`ErrorLog.e(\"camera\", ...)` forwards CameraX exception messages that may contain HAL / SELinux paths",
+      "description": "`ChatViewModel.reportCameraError` (ChatViewModel.kt:267-270) passes the raw `Throwable` to `ErrorLog.e(\"camera\", description, cause)`. Inside ErrorLog (core-runtime/.../ErrorLog.kt:94-100) the cause is serialized as `cause::class.simpleName + \": \" + cause.message.take(200)`. CameraX / Camera2 HAL exceptions commonly surface messages like `CAMERA_DISCONNECTED: Camera service died`, `android.hardware.camera2.CameraAccessException: connect failed: /dev/video0`, or driver-specific strings with vendor IDs (`/vendor/etc/camera/imx800.xml`). These are not high-sensitivity, but they are device-fingerprintable and sit in on-device `filesDir/logs/errors.log` under a 2 MB rotation — readable by any `adb shell run-as app.sanctum.machina cat ...` and included in future diagnostics exports.\n\nThe 200-char cap in ErrorLog is the intended mitigation (D27) and it does prevent full-stacktrace leakage. I consider this acceptable but want it explicitly acknowledged: the 200-char budget is enough to include the exception class name and a short HAL message, but not enough for a stacktrace or a full filesystem path. Task 8 does not make this worse — it consumes the existing contract. Flagging for traceability only.",
+      "location": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt:267-270",
+      "impact": "Low — hardware/driver fingerprint in on-device error log. Required adb / root access to read. No network egress channel. Within the threat model of a local-first LLM app.",
+      "recommendation": "Acceptable as implemented under D27. If the 200-char cap ever needs to shrink further for camera specifically, sanitize at the VM layer before calling `errorLog.e`:\n```kotlin\nfun reportCameraError(description: String, cause: Throwable?) {\n    val safeCause = cause?.let { RuntimeException(it::class.simpleName) }\n    viewModelScope.launch { errorLog.e(\"camera\", description, safeCause) }\n    _snackbar.tryEmit(R.string.camera_init_failed)\n}\n```\nNo change required now — documenting the decision trail.",
+      "cwe": "CWE-532 (Insertion of Sensitive Information into Log File)"
+    },
+    {
+      "severity": "minor",
+      "category": "A04 Insecure Design (permission UX hardening)",
+      "title": "Permanent-denial heuristic re-shows the system permission dialog on every sheet re-entry",
+      "description": "`CameraBottomSheet.kt:131-135` unconditionally calls `permissionLauncher.launch(Manifest.permission.CAMERA)` whenever `hasPermission` is false at composition time. After a permanent denial the OS no-ops the launch and immediately delivers `granted=false` — no visible dialog, snackbar fires, sheet dismisses. That is the intended flow the code comment describes and it is correct.\n\nHowever, there is no throttling on how many times the user can re-enter the sheet. If the user taps the camera button 5× after a permanent denial, the app fires the launcher 5×, shows the \"Open settings\" snackbar 5×, and the snackbar queue serializes them (SnackbarHostState dedupes by content, but separate `showSnackbar` calls re-enqueue). The system-permission-dialog suppression means this is not a UX spam attack vector against the user, but it does mean the permission-denial log path (if one were ever added to `ErrorLog`) would amplify. Today it does not log, so this is purely a UX concern bordering on security hardening.\n\nThe `shouldShowRequestPermissionRationale` ambiguity pre-first-prompt is correctly acknowledged in the KDoc at CameraBottomSheet.kt:66-71 — not a bug, just a documented trade-off.",
+      "location": "app/src/main/kotlin/app/sanctum/machina/ui/chat/CameraBottomSheet.kt:131-135",
+      "impact": "None today. Future-proofing: if the ErrorLog whitelist ever gets `permission-denied` or if a \"denied-too-many-times\" metric is added, the current flow will amplify it. Also: marginal battery/UI-thread cost from repeated sheet animations.",
+      "recommendation": "Optional hardening — short-circuit the launch when the OS has already permanently denied, before even opening the sheet. One approach at the ChatScreen call site:\n```kotlin\nonOpenCamera = {\n    val granted = ContextCompat.checkSelfPermission(\n        context, Manifest.permission.CAMERA\n    ) == PackageManager.PERMISSION_GRANTED\n    val permanentlyDenied = !granted && !ActivityCompat\n        .shouldShowRequestPermissionRationale(activity, Manifest.permission.CAMERA)\n        && wasRequestedOnce   // persisted bit\n    if (permanentlyDenied) showDeniedSnackbarWithSettings()\n    else showCameraSheet = true\n}\n```\nThe `wasRequestedOnce` bit is the only reliable way to distinguish \"first-ever prompt\" from \"permanently denied\" — the current heuristic accepts a one-time false positive on first launch which is the right call for Phase 2. No change required; flagging for Phase-3 polish.",
+      "cwe": "CWE-1021 (Improper Restriction of Rendered UI Layers) — loose fit"
+    }
+  ]
+}

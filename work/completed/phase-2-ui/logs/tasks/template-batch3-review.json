@@ -1,0 +1,75 @@
+{
+  "validator": "task-validator",
+  "feature": "phase-2-ui",
+  "batch": 3,
+  "tasks_checked": [11, 12, 13, 14, 15],
+  "iteration": 1,
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 12,
+      "section": "Verification Steps",
+      "issue": "No '### Automated' subsection. For an audit task this is acceptable (template marks Automated as 'always present for code tasks'), but the section skips directly to Smoke and User. Task 14 (also an audit) does include an Automated subsection with a gradlew command. Inconsistent treatment across audit tasks.",
+      "fix": "Optional: add a brief '### Automated' note ('No automated commands — audit produces a report. Prerequisite: ./gradlew test all green before starting.') to align with Task 14 style."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 12,
+      "section": "Reviewers",
+      "issue": "Reviewers section body reads 'Аудитор сам является ревьюером — отдельные reviewer-агенты не запускаются.' instead of the template's canonical path-table format. Acceptable for reviewers=[] tasks, but inconsistent with Tasks 13 and 14 which also state no reviewers yet match the same narrative approach.",
+      "fix": "No fix required — consistent across all audit tasks in this batch; the pattern is coherent for self-reviewing audit roles."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 13,
+      "section": "Frontmatter — verify field",
+      "issue": "verify: [] in frontmatter but body contains '### Smoke' and '### User' subsections in Verification Steps. The verify field is supposed to enumerate which verification types are present (cf. Task 11: verify: [smoke, user]). Having verify: [] with populated smoke/user sections creates a frontmatter/body mismatch.",
+      "fix": "Change frontmatter to 'verify: [smoke, user]' to reflect the two subsections present in the body, OR remove the Smoke/User subsections and add a note that no automated/user verification is required (audit produces a report)."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 14,
+      "section": "Frontmatter — verify field",
+      "issue": "Same verify: [] / body mismatch as Task 13: frontmatter says verify: [] but Verification Steps has both '### Automated' (gradlew test pre-check) and '### User' (report review) subsections.",
+      "fix": "Change frontmatter to 'verify: [user]' (or 'verify: [smoke, user]' if the gradlew pre-check is considered smoke) to match the body."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 14,
+      "section": "Details — audit report path",
+      "issue": "Audit report output path is 'work/phase-2-ui/logs/task-14-audit-report.md' (missing 'audit/' subdirectory), while Task 12 uses 'work/phase-2-ui/logs/audit/task-12-audit-report.md'. Inconsistent naming scheme.",
+      "fix": "Standardize to 'work/phase-2-ui/logs/audit/task-14-audit-report.md' to match Task 12's convention."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 15,
+      "section": "What to do",
+      "issue": "Step 5 says 'Верифицировать TAC-6..TAC-15' while steps 1-4 already cover TAC-1 (build), TAC-2 (:core-runtime:test), TAC-3 (:core-settings:test), TAC-4 (:app:test), TAC-5 (lint). TAC-9 (assembleDebug) is step 4 but also separately listed in AC as ':app:assembleDebug APK built (TAC-9)'. Minor redundancy / numbering overlap.",
+      "fix": "Optional: rewrite step 5 as 'Верифицировать TAC-6..8, TAC-10..15 (TAC-9 выполнен в step 4)' to avoid the impression that TAC-1..5 are excluded from agent verification."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 6,
+    "critical": 0,
+    "major": 0,
+    "minor": 6
+  },
+  "notes": {
+    "frontmatter": "Task 11: wave=4, depends_on=[10], skills=[code-writing], reviewers=[code-reviewer, security-auditor, test-reviewer], verify=[smoke, user] — all correct per spec. Task 12: wave=5 (acceptable per spec 'audit or 5'), depends_on=[11], skills=[code-reviewing], reviewers=[], verify=[] — wave and skills correct; verify=[] is technically inaccurate (body has Smoke+User) but non-blocking. Task 13: wave=audit (acceptable), depends_on=[11], skills=[security-auditor], reviewers=[] — correct; same verify=[] mismatch noted. Task 14: wave=audit (acceptable), depends_on=[11], skills=[test-master], reviewers=[] — correct; same verify=[] mismatch. Task 15: wave=final, depends_on=[12, 13, 14], skills=[pre-deploy-qa], reviewers=[], verify=[user], teammate_name=qa-runner — all correct per spec.",
+    "structure": "All mandatory sections present in correct order for all five tasks: frontmatter, title, Required Skills, Description, What to do, Acceptance Criteria, Context Files, Verification Steps (with appropriate subsections), Details, Reviewers, Post-completion. TDD Anchor correctly present in Task 11 (code task) with 6 EffectiveConfigTest + 12 ChatViewModelTest anchors. TDD Anchor correctly absent in Tasks 12-15 (audit/QA tasks — non-code output). No template placeholder text remains in any file.",
+    "tdd_anchor": "Task 11 TDD Anchor is complete and well-structured: both EffectiveConfigTest (6 cases) and ChatViewModelTest (12 cases) fully enumerate the test method names with precise scenario descriptions. All 18 TDD anchors map directly to the tech-spec testing strategy (EffectiveConfigTest and ChatViewModelTest sections). Tasks 12-15 correctly omit TDD Anchor as audit/QA tasks produce reports, not code.",
+    "ac_carry_forward": "Task 11 AC (11 items) covers all tech-spec requirements: EffectiveConfig.merge purity+type-safety, InferenceSettingsBottomSheet 7 fields + conditional enableThinking, all three apply flows (light/systemPromptDefault/heavy), default reset with heavy-reinit, TopAppBar buttons, reset semantics, autoscroll pattern, and both test suites passing (TAC-4). Task 12 AC (7 items) covers the full code audit scope from the Description axes. Task 13 AC (8 items) covers OWASP Top 10/MASVS, permission model, privacy hardening, OOM vectors, content-URI, SafeUriHandler scheme coverage, no hardcoded secrets, and report generation — complete. Task 14 AC (8 items) covers all test audit dimensions including AC→test mapping matrix and manual-smoke tagging. Task 15 AC (11 items) maps TAC-1..5 (build, tests, lint, APK), TAC-6..15 (verified or documented-deferred), manual-smoke.md, AC mapping table, deferred criteria, and AC-22 final gate — all tech-spec AVP items accounted for.",
+    "verify_sections": "Task 11 Verification Steps: Automated (gradlew test for both test classes) + Smoke (same commands + assembleDebug) + User (device checks on Honor 200 referencing AC-4/8/18/21) — appropriate for wave-4 code task. Task 12: Smoke + User only (no Automated) — acceptable for audit task. Task 13: Smoke + User only (no Automated) — acceptable. Task 14: Automated (gradlew test pre-check) + User (report review) — acceptable. Task 15: Automated (full build+test+lint+APK suite) + User (manual-smoke.md checklist on Honor 200, AC-22 gate) — complete and matches tech-spec AVP.",
+    "internal_consistency": "Skills frontmatter matches Required Skills section in all five tasks. reviewers=[] in Tasks 12-15 matches 'Reviewers: none / аудитор сам является ревьюером' narrative in each body. Context Files in all tasks include user-spec, tech-spec, decisions.md, and appropriate project-knowledge files. Task 11 Context Files additionally include task-specific source files (ConfigDialog.kt, Config.kt, DefaultModelRegistry.kt) — appropriate for implementation task.",
+    "wave_structure": "Wave 4 (Task 11, code) → Wave audit/5 (Tasks 12, 13, 14 — parallel, each depending only on [11]) → Wave final/6 (Task 15 — depends on [12, 13, 14]). Dependency graph is correct, no cycles, correct parallelization of three audit tasks. Wave naming is heterogeneous (Task 12 uses '5', Tasks 13/14 use 'audit') but all are semantically correct and equivalent.",
+    "resource_sharing": "No shared heavy resources introduced by Tasks 12-15. Task 11 adds no new Hilt singletons (EffectiveConfig is a pure object/function, InferenceSettingsBottomSheet reads AppSettingsRepository already injected in ChatViewModel). Shared resources table in tech-spec remains unchanged by Task 11's additions."
+  }
+}

@@ -1,0 +1,288 @@
+{
+  "status": "passed",
+  "summary": {
+    "totalChecks": 38,
+    "passed": 23,
+    "failed": 0,
+    "notVerifiable": 15,
+    "criticals": 0,
+    "majors": 0,
+    "minors": 0
+  },
+  "testSuite": {
+    "status": "passed",
+    "details": "134 tests / 0 failures / 0 errors / 0 skipped across :app (66) + :core-runtime (62) + :core-settings (6). Full build (./gradlew build) BUILD SUCCESSFUL. assembleDebug produced app-debug.apk."
+  },
+  "acceptanceCriteria": [
+    {
+      "criterion": "TAC-1: ./gradlew build BUILD SUCCESSFUL",
+      "status": "passed",
+      "evidence": "work/phase-2-ui/logs/working/task-15/full-build.log → BUILD SUCCESSFUL in 40s"
+    },
+    {
+      "criterion": "TAC-2: :core-runtime:test all green",
+      "status": "passed",
+      "evidence": "62 tests / 0 failures; AllowlistLoaderTest(16) + MultimodalContentsBuilderTest(8) + MediaUtilsTest(11) + MediaUtilsPureTest(11) + AudioClipTest(3) + ErrorLogTest(8) + SystemInstructionTest(5)"
+    },
+    {
+      "criterion": "TAC-3: :core-settings:test all green",
+      "status": "passed",
+      "evidence": "6 tests / 0 failures; AppSettingsRepositoryTest"
+    },
+    {
+      "criterion": "TAC-4: :app:test (EffectiveConfigTest + ChatViewModelTest + sheets + SafeUriHandler) green",
+      "status": "passed",
+      "evidence": "66 tests / 0 failures; AudioRecorderBottomSheetTest(9) + CameraBottomSheetTest(9) + ChatViewModelTest(26) + EffectiveConfigTest(8) + SafeUriHandlerTest(14)"
+    },
+    {
+      "criterion": "TAC-5: lintDebug no Error-level issues",
+      "status": "passed",
+      "evidence": "work/phase-2-ui/logs/working/task-15/lint-round2.log → BUILD SUCCESSFUL in 28s. Fixed pre-existing LocalContextGetResourceValueCall at ChatScreen.kt:71 by replacing LocalContext.current.getString with LocalResources.current.getString (Compose BOM 2026.03.00 supports LocalResources)."
+    },
+    {
+      "criterion": "TAC-6: fixtureMatchesProductionAsset green",
+      "status": "passed",
+      "evidence": "./gradlew :core-runtime:testDebugUnitTest --tests '*AllowlistLoaderTest.fixtureMatchesProductionAsset' → BUILD SUCCESSFUL"
+    },
+    {
+      "criterion": "TAC-7: rg 'androidx.compose|androidx.activity' core-runtime/src/main → empty",
+      "status": "passed",
+      "evidence": "grep -rEn 'androidx.compose|androidx.activity' core-runtime/src/main → EMPTY"
+    },
+    {
+      "criterion": "TAC-8: rg 'androidx.compose|androidx.activity' core-settings/src/main → empty",
+      "status": "passed",
+      "evidence": "grep -rEn 'androidx.compose|androidx.activity' core-settings/src/main → EMPTY"
+    },
+    {
+      "criterion": "TAC-9: aapt dump permissions includes CAMERA + RECORD_AUDIO",
+      "status": "passed",
+      "evidence": "aapt dump permissions app-debug.apk → uses-permission INTERNET, CAMERA, RECORD_AUDIO all present"
+    },
+    {
+      "criterion": "TAC-10: allowBackup=false in manifest",
+      "status": "passed",
+      "evidence": "aapt dump xmltree AndroidManifest.xml → android:allowBackup=(type 0x12)0x0 (false); android:dataExtractionRules referenced"
+    },
+    {
+      "criterion": "TAC-11: no hardcoded Russian string literals in Compose",
+      "status": "passed",
+      "evidence": "grep -rn 'Text(\"[А-Яа-я]' app/src/main → EMPTY"
+    },
+    {
+      "criterion": "TAC-12: generated AppSettings/PerModelSettings with has/get methods",
+      "status": "passed",
+      "evidence": "core-settings/build/generated/sources/proto/debug/java/.../ contains AppSettings.java, PerModelSettings.java + OrBuilder classes; grep 'hasMaxTokens|getMaxTokens|hasEnableThinking|hasAccelerator|hasSystemPromptDefault' → 15 hits in PerModelSettings.java"
+    },
+    {
+      "criterion": "TAC-13: SafeUriHandlerTest covers http/https allowed + 9 blocked schemes",
+      "status": "passed",
+      "evidence": "14 @Test methods: http_allowed, https_allowed, http_uppercase_allowed, https_mixedcase_allowed, intent_blocked, sms_blocked, tel_blocked, javascript_blocked, file_blocked, content_blocked, data_blocked, market_blocked, malformed_blocked, empty_blocked"
+    },
+    {
+      "criterion": "TAC-14: data_extraction_rules.xml blocks cloud-backup + device-transfer",
+      "status": "passed",
+      "evidence": "aapt dump xmltree res/xml/data_extraction_rules.xml → <cloud-backup><exclude domain=root path=.> + <device-transfer><exclude domain=root path=.>"
+    },
+    {
+      "criterion": "TAC-15: ErrorLogTest covers whitelist-enforcement + cause-chain bounding",
+      "status": "passed",
+      "evidence": "8 @Test methods incl. unknownComponent_throwsIAE, causeChainBounding_truncatesAt200, causeChainBounding_shortMessage_notPadded, descriptionTruncation_cappedAt500"
+    },
+    {
+      "criterion": "AC-1: AllowedModel.toModel() propagates llmSupportImage/Audio/Thinking",
+      "status": "passed",
+      "evidence": "Task 1 fix (commit 31bd1d0); AllowlistLoaderTest 16 cases cover new fields; TAC-6 confirms fixture==production"
+    },
+    {
+      "criterion": "AC-3: :core-settings module with proto schema",
+      "status": "passed",
+      "evidence": "TAC-12 proto generation + TAC-3 AppSettingsRepositoryTest (6 tests) cover save/read/merge/reset"
+    },
+    {
+      "criterion": "AC-17: Unit tests in :core-runtime/:core-settings/:app all green",
+      "status": "passed",
+      "evidence": "134 tests / 0 failures / 0 errors / 0 skipped (aggregate)"
+    },
+    {
+      "criterion": "AC-2: launcher label 'Sanctum Machina'",
+      "status": "passed",
+      "evidence": "strings.xml app_name='Sanctum Machina' (D18); confirmed on Honor 200 in Task 5 decisions.md"
+    },
+    {
+      "criterion": "AC-5: AboutScreen as separate destination",
+      "status": "passed",
+      "evidence": "Task 6 decisions.md; SanctumApp NavHost 'about' destination + ModelManagerScreen Info action; confirmed on Honor 200"
+    },
+    {
+      "criterion": "AC-6: AboutScreen renders assets/about.md + version + attribution",
+      "status": "passed",
+      "evidence": "Task 6 decisions.md user-verify; AboutScreen reads context.assets.open('about.md') (D17)"
+    },
+    {
+      "criterion": "AC-26: USER message renders attachments in history",
+      "status": "passed",
+      "evidence": "Task 7 decisions.md + ChatViewModelTest send-transfers-attachments; 5×2 FlowRow confirmed on Honor 200"
+    },
+    {
+      "criterion": "Module boundary (TAC-7/TAC-8) + code audit (Task 12)",
+      "status": "passed",
+      "evidence": "logs/audit/task-12-audit-report.md approved; :core-runtime/:core-settings UI-free"
+    },
+    {
+      "criterion": "AC-4: settings sheet 7 fields + light/semi-light/heavy apply",
+      "status": "not_verifiable",
+      "evidence": "Requires live device interaction — see manual-smoke.md §2. ChatViewModel state machines unit-tested."
+    },
+    {
+      "criterion": "AC-7: compose-richtext markdown + ThinkingBlock",
+      "status": "not_verifiable",
+      "evidence": "Visual rendering requires device — see manual-smoke.md §2, §3."
+    },
+    {
+      "criterion": "AC-8: autoscroll on stream + new message",
+      "status": "not_verifiable",
+      "evidence": "UI behaviour requires device — see manual-smoke.md §3."
+    },
+    {
+      "criterion": "AC-9: input bar layout + Send enabled/disabled",
+      "status": "not_verifiable",
+      "evidence": "Visual layout requires device; ChatViewModel send-gate unit-tested. See manual-smoke.md §3."
+    },
+    {
+      "criterion": "AC-10: Photo Picker + 10-photo clip + ✕ removal",
+      "status": "not_verifiable",
+      "evidence": "Picker is system UI — see manual-smoke.md §3."
+    },
+    {
+      "criterion": "AC-11: CameraX sheet + capture",
+      "status": "not_verifiable",
+      "evidence": "Requires physical camera — see manual-smoke.md §3."
+    },
+    {
+      "criterion": "AC-12: AudioRecord sheet + timer + 30s auto-stop",
+      "status": "not_verifiable",
+      "evidence": "Requires physical microphone — see manual-smoke.md §4."
+    },
+    {
+      "criterion": "AC-13: multimodal inference end-to-end on Gemma-4-E2B/E4B",
+      "status": "not_verifiable",
+      "evidence": "Requires running litertlm on device — see manual-smoke.md §3, §4."
+    },
+    {
+      "criterion": "AC-14: thinking block behaviour at runtime",
+      "status": "not_verifiable",
+      "evidence": "Requires live stream from model — see manual-smoke.md §2."
+    },
+    {
+      "criterion": "AC-15: runtime permissions CAMERA + RECORD_AUDIO flows",
+      "status": "not_verifiable",
+      "evidence": "System permission dialogs require device — see manual-smoke.md §3, §4."
+    },
+    {
+      "criterion": "AC-16: Phase-1 regression (text chat, download, model switch, TTFT)",
+      "status": "not_verifiable",
+      "evidence": "Requires device-side inference — see manual-smoke.md §5."
+    },
+    {
+      "criterion": "AC-18: conditional mic/camera/thinking visibility",
+      "status": "not_verifiable",
+      "evidence": "Requires visual confirmation on device — see manual-smoke.md §3."
+    },
+    {
+      "criterion": "AC-19: audio record interruption on call/pause/lock",
+      "status": "not_verifiable",
+      "evidence": "Requires device + incoming call simulation — see manual-smoke.md §4."
+    },
+    {
+      "criterion": "AC-20: mic disabled when audio already attached",
+      "status": "not_verifiable",
+      "evidence": "Visual affordance — see manual-smoke.md §4."
+    },
+    {
+      "criterion": "AC-21: settings timing (light=next-turn, semi-light=reset, heavy=reinit)",
+      "status": "not_verifiable",
+      "evidence": "Requires live engine interaction — see manual-smoke.md §2."
+    },
+    {
+      "criterion": "AC-22: final gate — explicit user approval on Honor 200",
+      "status": "not_verifiable",
+      "evidence": "By design: gate closes only on explicit user confirmation after full manual-smoke pass."
+    }
+  ],
+  "findings": [],
+  "deferredToPostDeploy": [
+    {
+      "criterion": "AC-2",
+      "reason": "Launcher label presentation is OEM-dependent (Magic OS on Honor)",
+      "verificationCondition": "Install APK on Honor 200, observe launcher",
+      "verificationSteps": "manual-smoke.md §1 — первый пункт"
+    },
+    {
+      "criterion": "AC-4, AC-21",
+      "reason": "Settings sheet + light/semi-light/heavy apply require running engine",
+      "verificationCondition": "Installed APK + downloaded Gemma-4-E2B-it and -E4B-it",
+      "verificationSteps": "manual-smoke.md §2 — light (temperature), semi-light (systemPrompt, enableThinking), heavy (accelerator GPU↔CPU)"
+    },
+    {
+      "criterion": "AC-7, AC-14",
+      "reason": "Markdown + ThinkingBlock rendering requires Compose runtime + live stream",
+      "verificationCondition": "Live chat session with enableThinking=true",
+      "verificationSteps": "manual-smoke.md §2 — раскрытый thinking-блок во время стрима, collapsed после done"
+    },
+    {
+      "criterion": "AC-8",
+      "reason": "Autoscroll behaviour is Compose LazyColumn runtime",
+      "verificationCondition": "Long-stream reply filling past viewport height",
+      "verificationSteps": "manual-smoke.md §3 — прокрутка ленты к последнему токену"
+    },
+    {
+      "criterion": "AC-9, AC-10, AC-11, AC-12",
+      "reason": "UI layout + Photo Picker + CameraX + AudioRecord require device hardware",
+      "verificationCondition": "Honor 200 with Android 14+",
+      "verificationSteps": "manual-smoke.md §3, §4"
+    },
+    {
+      "criterion": "AC-13",
+      "reason": "End-to-end multimodal inference requires litertlm native runtime",
+      "verificationCondition": "Two models downloaded, multimodal test image + short audio clip",
+      "verificationSteps": "manual-smoke.md §3 (photo × 3, × 10) + §4 (audio + text); обе модели"
+    },
+    {
+      "criterion": "AC-15",
+      "reason": "System permission dialogs + snackbar permanent-denial flow require device",
+      "verificationCondition": "Fresh install (permissions never granted)",
+      "verificationSteps": "manual-smoke.md §3 (CAMERA) + §4 (RECORD_AUDIO) — deny, permanent-deny, settings deep-link"
+    },
+    {
+      "criterion": "AC-16",
+      "reason": "Phase-1 regression — download/resume/cancel + text chat speed vs Gallery",
+      "verificationCondition": "Downloaded Gemma-4-E2B-it, text-only chat",
+      "verificationSteps": "manual-smoke.md §5 — TTFT сравнение субъективное"
+    },
+    {
+      "criterion": "AC-18",
+      "reason": "Conditional icon visibility depends on Model.llmSupport* flags at runtime",
+      "verificationCondition": "Models with different support matrices",
+      "verificationSteps": "manual-smoke.md §3 — для Gemma-4 все supports=true; negative case requires model without support"
+    },
+    {
+      "criterion": "AC-19",
+      "reason": "ON_PAUSE lifecycle requires genuine backgrounding (call/home/lock)",
+      "verificationCondition": "Second phone for incoming call simulation",
+      "verificationSteps": "manual-smoke.md §4 — звонок во время записи, Home, lock screen"
+    },
+    {
+      "criterion": "AC-20",
+      "reason": "Visual affordance check — disabled mic button",
+      "verificationCondition": "One audio clip already attached",
+      "verificationSteps": "manual-smoke.md §4"
+    },
+    {
+      "criterion": "AC-22",
+      "reason": "By-design: final gate closes only on explicit user confirmation",
+      "verificationCondition": "All US-1..US-7 passed on Honor 200",
+      "verificationSteps": "manual-smoke.md §10 — пользователь явно проставляет апрув"
+    }
+  ]
+}

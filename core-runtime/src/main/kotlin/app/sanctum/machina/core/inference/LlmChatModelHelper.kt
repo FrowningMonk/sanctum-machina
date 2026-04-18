@@ -19,6 +19,7 @@ package app.sanctum.machina.core.inference
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
+import app.sanctum.machina.core.common.MultimodalContentsBuilder
 import app.sanctum.machina.core.common.cleanUpMediapipeTaskErrorMessage
 import app.sanctum.machina.core.data.Accelerator
 import app.sanctum.machina.core.data.ConfigKeys
@@ -32,7 +33,6 @@ import app.sanctum.machina.core.runtime.CleanUpListener
 import app.sanctum.machina.core.runtime.LlmModelHelper
 import app.sanctum.machina.core.runtime.ResultListener
 import com.google.ai.edge.litertlm.Backend
-import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
@@ -44,9 +44,10 @@ import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.MessageCallback
 import com.google.ai.edge.litertlm.SamplerConfig
 import com.google.ai.edge.litertlm.ToolProvider
-import java.io.ByteArrayOutputStream
 import java.util.concurrent.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 private const val TAG = "AGLlmChatModelHelper"
 
@@ -252,45 +253,50 @@ object LlmChatModelHelper : LlmModelHelper {
 
     val conversation = instance.conversation
 
-    val contents = mutableListOf<Content>()
-    for (image in images) {
-      contents.add(Content.ImageBytes(image.toPngByteArray()))
-    }
-    for (audioClip in audioClips) {
-      contents.add(Content.AudioBytes(audioClip))
-    }
-    if (input.trim().isNotEmpty()) {
-      contents.add(Content.Text(input))
-    }
+    val callback = object : MessageCallback {
+      override fun onMessage(message: Message) {
+        resultListener(message.toString(), false, message.channels["thought"])
+      }
 
-    conversation.sendMessageAsync(
-      Contents.of(contents),
-      object : MessageCallback {
-        override fun onMessage(message: Message) {
-          resultListener(message.toString(), false, message.channels["thought"])
-        }
+      override fun onDone() {
+        resultListener("", true, null)
+      }
 
-        override fun onDone() {
+      override fun onError(throwable: Throwable) {
+        if (throwable is CancellationException) {
+          Log.e(TAG, "The inference is cancelled.")
           resultListener("", true, null)
+        } else {
+          Log.e(TAG, "onError", throwable)
+          onError("Error: ${throwable.message}")
         }
+      }
+    }
 
-        override fun onError(throwable: Throwable) {
-          if (throwable is CancellationException) {
-            Log.e(TAG, "The inference is cancelled.")
-            resultListener("", true, null)
-          } else {
-            Log.e(TAG, "onError", throwable)
-            onError("Error: ${throwable.message}")
-          }
-        }
-      },
-      extraContext ?: emptyMap(),
-    )
-  }
+    // Image PNG compression is heavy (~200-600ms per 1024² bitmap on mid-range
+    // SoC) and synchronous. Running it on the caller's thread freezes the UI
+    // for seconds when a caller dispatches from Main (e.g. ChatViewModel.send
+    // from a click lambda). Dispatch the whole prep + async handoff onto
+    // `coroutineScope` so the caller's thread stays free. If no scope was
+    // supplied, fall back to synchronous behaviour for API compatibility.
+    val dispatchPrep: () -> Unit = {
+      try {
+        val contents = MultimodalContentsBuilder.build(
+          text = input,
+          images = images,
+          audio = audioClips,
+        )
+        conversation.sendMessageAsync(Contents.of(contents), callback, extraContext ?: emptyMap())
+      } catch (t: Throwable) {
+        Log.e(TAG, "prep failed before sendMessageAsync", t)
+        onError("Error preparing content: ${t.message}")
+      }
+    }
 
-  private fun Bitmap.toPngByteArray(): ByteArray {
-    val stream = ByteArrayOutputStream()
-    this.compress(Bitmap.CompressFormat.PNG, 100, stream)
-    return stream.toByteArray()
+    if (coroutineScope != null) {
+      coroutineScope.launch(Dispatchers.Default) { dispatchPrep() }
+    } else {
+      dispatchPrep()
+    }
   }
 }

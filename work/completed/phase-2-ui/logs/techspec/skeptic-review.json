@@ -1,0 +1,97 @@
+{
+  "status": "issues",
+  "round": 2,
+  "findings": [
+    {
+      "severity": "critical",
+      "claim": "Snippet `val SYSTEM_PROMPT_DEFAULT = ConfigKey(\"systemPromptDefault\")` in Data Models → Config extension (line 322) and D24 step 1 (line 225)",
+      "location": "tech-spec.md Data Models (line 322), D24 step 1 (line 225)",
+      "reality": "`ConfigKey` is declared in `core-runtime/.../data/Config.kt:38` as `data class ConfigKey(val id: String, val label: String)` — TWO required parameters with no defaults. The one-argument form `ConfigKey(\"systemPromptDefault\")` will not compile. Existing keys use pattern `ConfigKey(\"max_tokens\", \"Max tokens\")` (snake_case id + human label). Additionally, `Model.preProcess` stores configValues keyed by `config.key.label` (Model.kt:99), and `Model.getTypedConfigValue` reads by `key.label` (Model.kt:164) — so the label is not cosmetic, it's the actual map key. Tech-spec line 343 references `ConfigKeys.SYSTEM_PROMPT_DEFAULT.label` — that only works if a label was supplied at construction; otherwise compile error blocks everything.",
+      "recommendation": "Fix the snippet to `ConfigKey(\"system_prompt_default\", \"System prompt default\")` (matching existing snake_case-id convention), or at least `ConfigKey(id = \"systemPromptDefault\", label = \"systemPromptDefault\")`. Also drop the 'уже есть в коде согласно code-research; если нет — создать' hedge — Phase-1 Config.kt provably does NOT contain SYSTEM_PROMPT_DEFAULT (grep-verified), so Task 10 unconditionally creates it."
+    },
+    {
+      "severity": "major",
+      "claim": "D24 step 4 and Data Models → engine systemPrompt wiring (lines 228, 341-347): Fix is in `LlmChatModelHelper.initialize` — read `model.configValues[SYSTEM_PROMPT_DEFAULT.label]`, wrap in Contents, pass to `engine.createConversation(systemInstruction = ...)` ('was: systemInstruction = null')",
+      "location": "tech-spec.md D24 step 4 (line 228), Data Models engine wiring (lines 339-347), Task 10 Files to modify (line 662)",
+      "reality": "Location of the bug is misattributed. `LlmChatModelHelper.initialize` ALREADY takes `systemInstruction: Contents?` as a parameter (LlmChatModelHelper.kt:65) and ALREADY passes it through to `ConversationConfig(systemInstruction = systemInstruction, ...)` (line 136) — it is NOT hardcoded to null in the helper. The actual reason the engine gets null systemInstruction is that `DefaultModelRegistry.awaitInitialize` (DefaultModelRegistry.kt:248-261) calls `llmModelHelper.initialize(context, model, supportImage, supportAudio, onDone)` WITHOUT passing `systemInstruction` — the parameter falls back to default null in the `LlmModelHelper` interface (runtime/LlmModelHelper.kt:38 — `systemInstruction: Contents? = null`). So the correct fix is in `DefaultModelRegistry.awaitInitialize` (read configValues, build Contents, pass to helper.initialize) — OR in `LlmChatModelHelper.initialize` BODY (ignoring the incoming param and deriving from model.configValues). Either works, but the tech-spec snippet ('was: systemInstruction = null') is factually wrong — that's not what the current code looks like — and Task 10 `Files to modify` does NOT include `DefaultModelRegistry.kt`, so if the executor follows the literal fix location (helper.initialize) they'll need to ALSO override the argument the caller will eventually start passing.",
+      "recommendation": "Rewrite the snippet to reflect Phase-1 reality: either (a) modify `DefaultModelRegistry.awaitInitialize` to build Contents from `model.configValues[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label]` and pass to `llmModelHelper.initialize(..., systemInstruction = contents)` — then add DefaultModelRegistry.kt to Task 10 Files to modify; or (b) modify `LlmChatModelHelper.initialize` body to OVERRIDE the incoming `systemInstruction` param with a configValues-derived value when non-blank — and state this explicitly. Remove the misleading '// was: systemInstruction = null' comment — the engine line isn't hardcoded, the caller just doesn't pass anything."
+    },
+    {
+      "severity": "major",
+      "claim": "Data Models → Config extension snippet (line 330): `accelerators: String`",
+      "location": "tech-spec.md Data Models (line 330)",
+      "reality": "Actual Phase-1 signature is `fun createLlmChatConfigs(defaultMaxToken: Int = DEFAULT_MAX_TOKEN, defaultMaxContextLength: Int? = null, defaultTopK: Int = DEFAULT_TOPK, defaultTopP: Float = DEFAULT_TOPP, defaultTemperature: Float = DEFAULT_TEMPERATURE, accelerators: List<Accelerator> = DEFAULT_ACCELERATORS, supportThinking: Boolean = false)` (Config.kt:191-199). `accelerators` is `List<Accelerator>`, not `String`. The snippet also drops `defaultMaxContextLength` and the default values. If Task 1 executor uses this snippet verbatim as the target signature, they'll break every caller — `AllowedModel.toModel()` passes `accelerators: List<Accelerator>` (ModelAllowlist.kt:64).",
+      "recommendation": "Correct the snippet to match Phase-1 signature, adding only the new `defaultSystemPrompt: String = \"\"` param at the end: `accelerators: List<Accelerator> = DEFAULT_ACCELERATORS` + keep `defaultMaxContextLength: Int? = null` + restore default values. Or clarify that the snippet is illustrative and show only the diff (`// ... existing params ... + defaultSystemPrompt: String = \"\"`)."
+    },
+    {
+      "severity": "major",
+      "claim": "Task 2 `Files to read` (line 593): `gallery-source/.../gallery/data/SettingsSerializer.kt`",
+      "location": "tech-spec.md Task 2 Files to read (line 593)",
+      "reality": "Actual path is `gallery-source/Android/src/app/src/main/java/com/google/ai/edge/gallery/SettingsSerializer.kt` — directly under `gallery/`, not `gallery/data/`. The `/data/` segment does not exist under `gallery/`. Round-1 minor finding (#7) flagged this; the path still has spurious `/data/`.",
+      "recommendation": "Replace `.../gallery/data/SettingsSerializer.kt` → `.../gallery/SettingsSerializer.kt` in Task 2 Files to read."
+    },
+    {
+      "severity": "minor",
+      "claim": "D24 step 1 hedge 'уже есть в коде согласно code-research; если нет — создать' and Task 10 description 'ConfigKeys.SYSTEM_PROMPT_DEFAULT (verify — если уже есть в Phase 1, noop)'",
+      "location": "tech-spec.md D24 step 1 (line 225), Task 10 description (line 658)",
+      "reality": "Phase-1 `Config.kt` is exhaustively listed and does NOT contain `SYSTEM_PROMPT_DEFAULT` (verified by full Config.kt read — ConfigKeys has MAX_TOKENS, TOPK, TOPP, TEMPERATURE, DEFAULT_*, SUPPORT_IMAGE/AUDIO/THINKING/TINY_GARDEN/MOBILE_ACTIONS, ENABLE_THINKING, ACCELERATOR, VISION_ACCELERATOR, COMPATIBLE_ACCELERATORS, THEME, NAME, MODEL_TYPE, MODEL, and benchmark keys — no SYSTEM_PROMPT*). The hedge creates ambiguity in execution. No naming conflict — safe to create.",
+      "recommendation": "Drop the conditional language. State definitively: 'Phase-1 Config.kt does not have SYSTEM_PROMPT_DEFAULT; Task 10 creates it.'"
+    },
+    {
+      "severity": "minor",
+      "claim": "D21 step 3 'Обновить model.configValues[key] = value' → now reads '`model.configValues = model.configValues + (key to value)` — **reassignment**, не мутация (type `var Map<String, Any>`)' (line 199)",
+      "location": "tech-spec.md D21 step 3 (line 199)",
+      "reality": "Confirmed fix: `Model.configValues` is `var configValues: Map<String, Any> = mapOf()` (Model.kt:88). Reassignment with `+` operator produces a new Map and assigns to the var — compiles. Round-1 major finding (#4) RESOLVED. However, the snippet leaves `key` as a Kotlin variable of unclear type — it should be `ConfigKey.label` (string), because `configValues` is keyed by `key.label` per `Model.preProcess()` (Model.kt:99) and `Model.getTypedConfigValue` (Model.kt:164). A reader might pass a `ConfigKey` object expecting it to work.",
+      "recommendation": "Clarify that `key` in step 3 is `ConfigKey.label` (String), e.g. `model.configValues = model.configValues + (ConfigKeys.ACCELERATOR.label to value)`."
+    },
+    {
+      "severity": "minor",
+      "claim": "D24 step 4 and Data Models wiring use shorthand `engine.createConversation(systemInstruction = ...)`",
+      "location": "tech-spec.md D24 step 4 (line 228), Data Models (line 346)",
+      "reality": "`engine.createConversation` takes a `ConversationConfig` object (LlmChatModelHelper.kt:124-139), not a named `systemInstruction` parameter directly. The real call is `engine.createConversation(ConversationConfig(samplerConfig = ..., systemInstruction = ..., tools = ...))`. The tech-spec shorthand `engine.createConversation(systemInstruction = ...)` won't literally compile — it would be a missing required-arg error. This is already the pattern in the existing Phase-1 code, so anyone reading actual source will use the correct form, but the snippet should match reality.",
+      "recommendation": "Rewrite the snippet: `engine.createConversation(ConversationConfig(samplerConfig = ..., systemInstruction = systemInstruction, tools = ...))` — or explicitly note that the field is inside ConversationConfig."
+    },
+    {
+      "severity": "minor",
+      "claim": "D8, Dependencies → New packages (lines 119, 379): `com.halilibo.compose-richtext:richtext-commonmark:1.0.0-alpha02` + `:richtext-ui-material3:1.0.0-alpha02`; Maven group explicitly called out as `com.halilibo.compose-richtext`, not `com.halilibo.richtext`",
+      "location": "tech-spec.md D8 (line 119), Dependencies (line 379)",
+      "reality": "Confirmed via `gallery-source/Android/src/gradle/libs.versions.toml:70-71`: `group = \"com.halilibo.compose-richtext\"` for both `richtext-commonmark` and `richtext-ui-material3`. Round-1 critical finding (#1) RESOLVED. The package import paths (`com.halilibo.richtext.commonmark.Markdown`, `com.halilibo.richtext.ui.material3.RichText`) are a separate convention — JVM package names, not Maven coordinates — and the distinction is correct in the spec.",
+      "recommendation": "No change needed — this is a resolved issue, flagged minor only to document re-verification."
+    },
+    {
+      "severity": "minor",
+      "claim": "Task 10 `Files to create` includes `MessageBubble.kt`; description states 'Вынос MessageBubble из приватного composable ChatScreen.kt в отдельный файл' (line 658)",
+      "location": "tech-spec.md Task 10 (lines 657-663)",
+      "reality": "Confirmed: `MessageBubble` is defined at `app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatScreen.kt:183` as `private fun MessageBubble(message: Message)`. Round-1 major finding (#2) RESOLVED — Task 10 now explicitly documents the extraction. Task 10 Files to modify correctly includes `ChatScreen.kt` (where the private composable lives today).",
+      "recommendation": "No change needed — resolved."
+    }
+  ],
+  "verified_claims": [
+    "Round-1 critical #1 RESOLVED: richtext Maven group is `com.halilibo.compose-richtext` — tech-spec now uses correct coordinate in D8 and Dependencies.",
+    "Round-1 major #2 RESOLVED: Task 10 description now explicitly states MessageBubble is extracted from ChatScreen.kt (private composable at line 183) into new MessageBubble.kt.",
+    "Round-1 major #3 PARTIALLY RESOLVED: D15/D24/Data Models now introduce `SYSTEM_PROMPT_DEFAULT` ConfigKey + allowlist JSON parsing + engine systemInstruction wiring — but execution details (ConfigKey signature, fix location) have new issues (see findings 1 and 2).",
+    "Round-1 major #4 RESOLVED: D21 step 3 now uses reassignment `model.configValues = model.configValues + (key to value)` — matches actual `var Map<String, Any>` type.",
+    "Round-1 minor #5 RESOLVED: tech-spec no longer references specific line ranges (255-267) for inline Contents build block.",
+    "Round-1 minor #6 PARTIAL: Task 3 now explicitly notes AudioClip is ported as plain `class` (not data class) per gallery convention.",
+    "Round-1 minor #7 NOT RESOLVED: Task 2 Files to read still has spurious `/data/` in SettingsSerializer path.",
+    "`Model.configValues` declared as `var Map<String, Any>` at Model.kt:88 — reassignment works.",
+    "`ConfigKey` is 2-arg data class at Config.kt:38 — `ConfigKey(id, label)`.",
+    "`LlmChatModelHelper.initialize` signature includes `systemInstruction: Contents?` (line 65) and forwards it to `ConversationConfig(systemInstruction = systemInstruction, ...)` (line 136) — NOT hardcoded null.",
+    "`DefaultModelRegistry.awaitInitialize` at DefaultModelRegistry.kt:248-261 calls `llmModelHelper.initialize(context, model, supportImage, supportAudio, onDone)` without passing systemInstruction — the default null from the interface is used. This is where the fix actually belongs.",
+    "`DefaultModelRegistry.resetConversation(modelName: String, systemPrompt: String?)` exists at line 202; builds Contents and delegates to `llmModelHelper.resetConversation(entry.model, systemInstruction = contents)` — matches D15/D23 claims.",
+    "`ErrorLog.e(component: String, description: String, cause: Throwable? = null)` signature confirmed at ErrorLog.kt:52 — matches D27 claim. Also, it's `suspend fun`.",
+    "`MessageBubble` is `private fun MessageBubble(message: Message)` at ChatScreen.kt:183 — confirms Task 10 extraction premise.",
+    "`AllowedModelConfig` (ModelAllowlist.kt:24-32) has NO `systemPromptDefault` field → Task 1 must add it. `AllowedModel.toModel()` (line 45) does NOT propagate llmSupport* — still blocker for Task 1.",
+    "Production JSON `core-runtime/src/main/assets/model_allowlist.json` has `llmSupportImage/Audio/Thinking: true` — Gson silently drops them today (no field in AllowedModel).",
+    "Fixture `model_allowlist_fixture.json` is byte-identical to production allowlist (diff empty).",
+    "`gallery/common/Utils.kt` contains `calculatePeakAmplitude` (line 244), `decodeSampledBitmapFromUri` (260), `rotateBitmap` (287), `calculateInSampleSize` (309) — all four confirmed in gallery source.",
+    "`gallery/common/Types.kt:32` — `class AudioClip(val audioData: ByteArray, val sampleRate: Int)` (plain class, not data class) — matches Task 3 description.",
+    "`SettingsSerializer.kt` is in `gallery-source/Android/src/app/src/main/java/com/google/ai/edge/gallery/` (directly, not in /data/) — Task 2 Files to read still wrong."
+  ],
+  "stats": {
+    "total_claims_checked": 30,
+    "confirmed": 22,
+    "mirages_found": 8
+  },
+  "summary": "Round 2 check of phase-2-ui tech-spec. 4 of 5 round-1 mirages resolved (richtext group fix, MessageBubble extraction, configValues reassignment, line-range cleanup). Round-1 minor #7 (SettingsSerializer path) NOT fixed. Round 1 major #3 (systemPromptDefault plumbing) is now addressed BUT introduces two new issues: (A) CRITICAL — snippet `ConfigKey(\"systemPromptDefault\")` passes only 1 arg to a 2-arg constructor, compile error; (B) MAJOR — fix location for systemInstruction wiring is misattributed (spec points to `LlmChatModelHelper.initialize`, saying engine was hardcoded null — but helper already forwards the param; the real caller that passes null is `DefaultModelRegistry.awaitInitialize`, which is NOT in Task 10 Files to modify). Additional finding: Data Models snippet for `createLlmChatConfigs` shows `accelerators: String` instead of actual `List<Accelerator>`. Minor: `engine.createConversation(systemInstruction = ...)` is shorthand — real API wraps in ConversationConfig. Findings are all addressable with snippet-level edits; the conceptual design is sound."
+}

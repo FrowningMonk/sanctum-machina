@@ -1,0 +1,83 @@
+{
+  "status": "pass",
+  "round": 2,
+  "meta": {
+    "reviewed_at": "2026-04-16",
+    "feature": "phase-2-ui",
+    "tech_spec_status": "draft",
+    "feature_size": "L",
+    "based_on_round_1": "work/phase-2-ui/logs/techspec/completeness-review.json (round 1)"
+  },
+  "round_1_resolution": {
+    "F-01_calculatePeakAmplitude": {
+      "status": "resolved",
+      "evidence": "Architecture 'What we're building' line explicitly lists `calculatePeakAmplitude` in port list. Task 3 description includes it by name. MediaUtilsTest has 3 test cases for it (empty buffer, values, Short.MAX_VALUE). User-Spec Deviations entry 6 documents restoration to full port as non-deviation."
+    },
+    "F-02_convertWavToMonoWithMaxSeconds": {
+      "status": "resolved",
+      "evidence": "Architecture 'What we're building' has explicit inline note: 'Не портируем `convertWavToMonoWithMaxSeconds`' with reason (AudioRecord → raw PCM, no WAV to convert). User-Spec Deviations entry 5 fully documents the deviation with rationale referencing D5 and D7 user-spec."
+    },
+    "F-03_systemPromptDefault_timing": {
+      "status": "resolved",
+      "evidence": "D15 introduces explicit 3-tier classification and defines 'полу-лёгкое' tier with precise semantics: stored immediately, applied via `registry.resetConversation(...)`, UI-chat cleared, snackbar emitted. D23 defines Reset button as step 4: `registry.resetConversation(modelName, systemPrompt = effectiveConfig[SYSTEM_PROMPT_DEFAULT])`. D24 provides full plumbing detail. Architecture 'Settings flow' describes the apply path for systemPromptDefault via `applySystemPromptAndReset()`. User-Spec Deviations entry 8 documents 3-tier classification as following AC-21's own explicit text ('применяется при следующей переинициализации engine через resetConversation')."
+    },
+    "F-04_reset_button_undefined": {
+      "status": "resolved",
+      "evidence": "D23 is a new dedicated decision with 4 precise steps: (1) clear _messages, (2) clear _attachments, (3) clear thinkingSb, (4) registry.resetConversation with effectiveConfig systemPrompt. Architecture 'How it works' has an explicit 'Reset (↻) TopAppBar' subsection. User-Spec Deviations entry 7 documents the semantics as AC-21 clarification."
+    },
+    "F-05_DataStore_IOException": {
+      "status": "resolved",
+      "evidence": "Architecture 'What we're building' for :core-settings: 'DefaultAppSettingsRepository обрабатывает IOException / CorruptionException (R13)'. D27 adds 'settings-io' to ErrorLog whitelist. Architecture 'Error flow (D27)': 'DataStore IO → ErrorLog.e(\"settings-io\", ...) + repository возвращает defaults (non-fatal)'. R13 in Risks table specifies catch strategy: observe uses .catch { emit(null) }, save* swallows+logs. AppSettingsRepositoryTest includes IOException injection test case."
+    }
+  },
+  "new_items_analysis": {
+    "D25_SafeUriHandler": {
+      "verdict": "justified",
+      "reasoning": "LLM-generated content is rendered as markdown with clickable links. `[text](intent://...)` and `[text](sms:...)` are well-known Android intent-injection vectors (OWASP MASVS-PLATFORM). The mitigation is proportionate: a ~10-line class wrapping the existing compose-richtext LocalUriHandler. User-Spec Deviations entry 10 documents the addition with reason. Not scope creep — pure security hardening of an already-in-scope feature (markdown rendering).",
+      "deviation_documented": true,
+      "deviation_has_reason": true
+    },
+    "D26_FLAG_SECURE_allowBackup_dataExtractionRules": {
+      "verdict": "justified",
+      "reasoning": "project.md manifesto states 'no cloud sync'; the app handles private LLM conversations. Android defaults (backup enabled, recents snapshot visible) are antithetical to the stated privacy posture. Three-line implementation. Rationale in D26 correctly notes Phase 3 (Room history) will make this gap costly if deferred. User-Spec Deviations entry 9 documents the addition with reason. The R15 risk entry even provides a DEBUG/RELEASE flag-clear escape hatch for dev ergonomics, showing proportionate treatment. Not scope creep — consistent with stated project goals.",
+      "deviation_documented": true,
+      "deviation_has_reason": true
+    },
+    "D27_ErrorLog_whitelist_extension": {
+      "verdict": "justified",
+      "reasoning": "patterns.md enforces a closed component whitelist for ErrorLog. Phase 2 introduces four new failure modes (camera, audio, attachment-decode, settings-io) that have no home in the existing whitelist. Without this extension, the error handling described in D21 and Architecture 'Error flow' would be incomplete at the call site. Pure infrastructure addition — no new user-visible functionality. User-Spec Deviations entry 11 documents the addition with reason.",
+      "deviation_documented": true,
+      "deviation_has_reason": true
+    },
+    "ChatViewModelTest_11_cases": {
+      "verdict": "not_overengineered",
+      "reasoning": "For an L-size feature, ChatViewModel is the highest-complexity component: attachments state machine (add/remove/limit), three-tier settings application (light/semi-light/heavy), thinking accumulation with three conditional paths (enabled+supported, enabled+unsupported, disabled), heavy reinit sequencing (5 steps with cancellation), error recovery path, system prompt reset, and Reset button. 11 test cases map to 11 distinct behavioral branches with no visible redundancy. Task descriptions contain scope descriptions with expected outcomes — no pseudocode or step-by-step algorithms. Consistent with L-size feature test pyramid guidance."
+    }
+  },
+  "feature_size_integrity": {
+    "verdict": "intact",
+    "components_count": "15 implementation tasks across 5 waves; 7 new :app/ui/chat/ files; 1 new :core-settings module (6 files); :core-runtime additions (MediaUtils, AudioClip, MultimodalContentsBuilder); 5 new test classes; 13 TACs",
+    "each_component_traced": true,
+    "notes": "Every new component traces to at least one user-spec requirement or a documented technical decision. No components added without traceability."
+  },
+  "residual_observations": [
+    {
+      "id": "OBS-1",
+      "severity": "minor",
+      "type": "gap",
+      "location": "User-Spec Deviations — status 'draft', entries 2/3/4/5/9/10/11 are [PENDING USER APPROVAL]",
+      "detail": "6 of 11 deviation entries remain [PENDING USER APPROVAL]. Tech-spec status is 'draft', so this is expected per protocol — pending approvals in draft specs are not a violation. Flagged as observation only: before moving tech-spec to 'approved' status, these 6 entries require explicit user sign-off. Entry 5 (convertWavToMonoWithMaxSeconds) is noted as 'архитектурно оправдано, подтверждено пользователем в Phase 3 clarification' yet still marked PENDING — minor inconsistency, acceptable in draft.",
+      "action_required": "Before approving tech-spec: obtain user approval on entries 2, 3, 4, 5, 9, 10, 11. Entry 5 may already be approved per the Phase 3 clarification note — clarify and update marker."
+    },
+    {
+      "id": "OBS-2",
+      "severity": "minor",
+      "type": "gap",
+      "location": "AC-21 user-spec vs D15 tech-spec — 'лёгкие' list discrepancy",
+      "detail": "User-spec AC-21 lists systemPromptDefault under 'Лёгкие поля' in the first bullet. Tech-spec D15 correctly extracts it to a 'полу-лёгкое' third tier, following AC-21's own subsequent clarifying sentence. This is documented in User-Spec Deviations entry 8. The resolution is technically sound. The minor observation is that the user-spec has an internal inconsistency (systemPromptDefault listed as 'light' in the list but described with resetConversation semantics in the same AC), and the tech-spec resolves it correctly — not a tech-spec gap, but worth noting for user-spec clarity if AC-21 is ever revised.",
+      "action_required": "None for tech-spec. Optional: tidy AC-21 in user-spec to move systemPromptDefault out of the 'лёгкие' bullet and into its own bullet, eliminating the ambiguity at source."
+    }
+  ],
+  "findings": [],
+  "summary": "All 5 round-1 findings are fully resolved. F-01 (calculatePeakAmplitude): added to Architecture port list, Task 3, and MediaUtilsTest. F-02 (convertWavToMonoWithMaxSeconds): explicitly excluded in Architecture with rationale, documented in User-Spec Deviations #5. F-03 (systemPromptDefault timing): resolved by D15 three-tier classification, D23 Reset semantics, D24 plumbing, and Deviations entry #8. F-04 (Reset button undefined): resolved by new D23 with 4-step definition and Architecture subsection. F-05 (DataStore IOException): resolved by :core-settings architecture description, D27 ErrorLog extension, R13 risk with catch strategy, and AppSettingsRepositoryTest IOException case. New items D25/D26/D27 are justified security/infrastructure additions with documented deviations and reasons. ChatViewModelTest 11 cases is proportionate for L-size. No critical or major findings in round 2. 2 minor observations: 6 deviation entries still [PENDING USER APPROVAL] (expected in draft; requires sign-off before approval), and a minor user-spec internal inconsistency in AC-21's 'лёгкие' list that the tech-spec correctly resolves."
+}

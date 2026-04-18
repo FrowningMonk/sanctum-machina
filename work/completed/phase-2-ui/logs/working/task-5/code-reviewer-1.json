@@ -1,0 +1,41 @@
+{
+  "verdict": "approved_with_suggestions",
+  "summary": "Infrastructure-only changes (strings.xml, AndroidManifest, data_extraction_rules.xml, version catalog, build.gradle.kts) are correct and consistent with tech-spec decisions D8, D11, D18, D25, D26. Maven group for compose-richtext is `com.halilibo.compose-richtext` exactly per D8 (confirmed against gallery-source). All 7 settings fields + buttons + permission errors + thinking + attachments + heavy-change dialog + reinit progress + snackbar + about strings are present. Two minor UX-polish suggestions and two minor consistency notes, none blocking.",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "app/src/main/res/values/strings.xml",
+      "line": 74,
+      "issue": "`attachment_audio_disabled` value «Максимум один аудио-клип на сообщение» lacks a trailing period. All sibling user-facing messages in this file end with a period (e.g. `attachment_max_images_reached` line 73, `permission_camera_denied` line 62, `attachment_image_decode_failed` line 75). ux-guidelines.md § Error Messages explicitly mandates «Single sentence … ending with a period.»",
+      "suggestion": "Change to «Максимум один аудио-клип на сообщение.» — or, if this string is intended purely as a `contentDescription` on a disabled IconButton (per D13) and not a snackbar, add an inline XML comment clarifying the non-terminating-period rationale so future readers don't normalize it by mistake."
+    },
+    {
+      "severity": "minor",
+      "file": "app/src/main/res/values/strings.xml",
+      "line": 37,
+      "issue": "`chat_action_settings` = «Настройки модели» duplicates `settings_title` (line 42) with identical Russian text but serves a different UI surface: `chat_action_settings` is the TopAppBar IconButton `contentDescription` (talkback + tooltip), while `settings_title` is the bottom-sheet header. Using the same verbose string for both is fine for correctness, but ux-guidelines.md § Buttons favours concise verbs for icon-only affordances. Phase-1 precedent (`btn_reset` = «Сбросить», `btn_back` = «Назад») uses single-word labels.",
+      "suggestion": "Optional: shorten `chat_action_settings` to «Настройки» (or «Параметры модели») so the TopAppBar tooltip doesn't read identical to the sheet title; keep `settings_title` as-is. Non-blocking — current text is accurate, just slightly verbose."
+    },
+    {
+      "severity": "minor",
+      "file": "app/src/main/res/values/strings.xml",
+      "line": 85,
+      "issue": "`audio_record_timer_format` = «%1$d с» pairs a decimal integer with a minimal Russian abbreviation. For 0/1/few/many seconds this abbreviation reads fine, but the format does not localize the plural form (e.g. «1 с», «2 с», «5 с» all use the same suffix). That matches Russian abbreviation style and avoids `plurals` overhead — just worth confirming this is intentional since other timing strings in this file are unabbreviated.",
+      "suggestion": "No change needed if abbreviation is the intent (consistent with clockmaker/technical displays). If a spelled-out plural is desired, switch to `<plurals name=\"audio_record_timer\">` with «секунда/секунды/секунд» variants — but this is overkill for a bottom-sheet timer."
+    },
+    {
+      "severity": "minor",
+      "file": "app/src/main/res/values/strings.xml",
+      "line": 56,
+      "issue": "`heavy_change_dialog_body` hardcodes the literal range «5–30 секунд» in the user-facing string. The same range is documented in user-spec US-1 step 6 and tech-spec D12, so it's internally consistent, but any future tuning (e.g. device-specific measurement on Honor 200) would require a strings.xml edit to stay in sync. This is a documentation coupling, not a bug.",
+      "suggestion": "Acceptable as-is — the range is a stable user-expectation-setter, not a measurement. If device benchmarks later reveal drift, update the copy and note the new range in decisions.md."
+    },
+    {
+      "severity": "minor",
+      "file": "app/src/main/AndroidManifest.xml",
+      "line": 21,
+      "issue": "`android:fullBackupContent=\"false\"` (inherited from Phase 1, not modified in this commit) is redundant alongside `android:allowBackup=\"false\"` + `android:dataExtractionRules=\"@xml/data_extraction_rules\"`. With `allowBackup=false` the fullBackupContent attribute has no effect on API 23+; setting it to the literal string «false» (rather than an `@xml/...` resource) also triggers an Android Studio lint note on some tooling versions. D26 explicitly names only the allowBackup + dataExtractionRules pair.",
+      "suggestion": "Optional cleanup (out of scope for Task 5 since the attribute pre-exists): either remove `android:fullBackupContent` entirely, or replace its value with `@xml/data_extraction_rules` to keep legacy (pre-API-31) backup behaviour aligned with the new rules. Non-blocking — current state is safe because allowBackup=false short-circuits both backup paths."
+    }
+  ]
+}

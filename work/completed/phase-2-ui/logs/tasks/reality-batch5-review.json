@@ -1,0 +1,247 @@
+{
+  "meta": {
+    "batch": 5,
+    "tasks": [13, 14, 15],
+    "iteration": 1,
+    "reviewer": "reality-checker-agent",
+    "date": "2026-04-16",
+    "codebase_branch": "phase/2-ui"
+  },
+  "summary": {
+    "overall_verdict": "CONDITIONAL_PASS",
+    "critical_issues": 3,
+    "warnings": 5,
+    "notes": 4
+  },
+  "task_13_security_audit": {
+    "verdict": "CONDITIONAL_PASS",
+    "issues": [
+      {
+        "severity": "CRITICAL",
+        "area": "dataExtractionRules file missing",
+        "description": "Task 13 instructs auditor to verify 'dataExtractionRules is active in AndroidManifest', but the file app/src/main/res/xml/data_extraction_rules.xml does NOT exist yet. It is created by Task 5 (Wave 3). The AndroidManifest currently has 'android:fullBackupContent=false' but no 'android:dataExtractionRules' attribute. The audit check is valid for the post-Task-5 state, but if Task 13 runs against a partially-completed tree it will find a false failure.",
+        "file": "app/src/main/AndroidManifest.xml",
+        "recommendation": "Task 13 depends_on: [11], but Task 11 depends on Tasks 5-10 (Wave 4 sequential). The dependency chain is correct — Task 5 runs before Task 11 and will create data_extraction_rules.xml. Auditor must verify the file exists before running the check. Add explicit note in task that data_extraction_rules.xml is created by Task 5."
+      },
+      {
+        "severity": "CRITICAL",
+        "area": "SafeUriHandler does not exist yet",
+        "description": "Task 13 checks SafeUriHandler blocked-scheme enumeration (intent, sms, tel, custom schemes). SafeUriHandler.kt does NOT exist in the codebase — it is created by Task 6. Since Task 13 depends_on: [11], and Task 11 depends on Tasks 5-10 including Task 6, SafeUriHandler will exist when Task 13 runs. No structural problem, but the file path referenced in Details section is approximate: 'SafeUriHandler.kt (или аналог)'. Tech-spec D25 places it at app/src/main/kotlin/app/sanctum/machina/ui/chat/SafeMarkdown.kt (the SafeUriHandler class is embedded in that file, not a standalone file). The task says 'SafeUriHandler.kt (или аналог)' which partially mitigates this.",
+        "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/SafeMarkdown.kt (per tech-spec Task 6)",
+        "recommendation": "Update Details section file path from 'SafeUriHandler.kt (или аналог)' to the exact tech-spec path: app/src/main/kotlin/app/sanctum/machina/ui/chat/SafeMarkdown.kt. SafeUriHandlerTest lives at app/src/test/kotlin/app/sanctum/machina/ui/chat/SafeUriHandlerTest.kt per tech-spec Task 6."
+      },
+      {
+        "severity": "WARNING",
+        "area": "CAMERA and RECORD_AUDIO permissions not in AndroidManifest yet",
+        "description": "Task 13 includes checking permission model (on-demand, not startup). Currently AndroidManifest.xml has no CAMERA or RECORD_AUDIO permissions — they are added by Task 5. Dependency chain ensures they exist at audit time. Structurally safe.",
+        "file": "app/src/main/AndroidManifest.xml",
+        "recommendation": "No action needed — dependency chain is correct. Auditor should confirm both permissions present before reviewing on-demand model."
+      },
+      {
+        "severity": "WARNING",
+        "area": "ErrorLog whitelist not enforced in code — TAC-15 claim may fail",
+        "description": "Task 13 checks that components are whitelisted and no unknown components slip through. Current ErrorLog.kt (line 31-32) explicitly states: 'Whitelist is not enforced in code (the [component] string is written as-is)'. TAC-15 (tech-spec line 582) states ErrorLogTest should cover 'unknown component → IllegalArgumentException'. Task 3 adds the whitelist enforcement. If Task 3 hasn't added the enforcement code, the TAC-15 test will fail. Security auditor should verify that Task 3's ErrorLog changes include code-level whitelist enforcement.",
+        "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt",
+        "recommendation": "Confirm Task 3 implementation added whitelist enforcement (ALLOWED_COMPONENTS set + require/throw on unknown). The current Phase-1 code does NOT have this enforcement. This is a key gap between current state and what the audit assumes."
+      },
+      {
+        "severity": "WARNING",
+        "area": "decodeSampledBitmapFromUri does not exist yet",
+        "description": "Task 13 references checking 'decodeSampledBitmapFromUri — content URI handling, path traversal'. This function does not exist in the current codebase — it will be created by Task 3 (porting from gallery-source). Correct dependency chain ensures it exists at audit time.",
+        "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/common/MediaUtils.kt (created by Task 3)",
+        "recommendation": "Structurally safe. Auditor should locate the function in MediaUtils.kt when auditing."
+      },
+      {
+        "severity": "NOTE",
+        "area": "core-settings DataStore module does not exist yet",
+        "description": "Task 13 checks DataStore private file permissions. The core-settings module does not exist in the current codebase — it is created by Task 2. Correct dependency chain.",
+        "recommendation": "Auditor should check core-settings/src/main/ after Task 2 creates it."
+      }
+    ],
+    "file_existence_check": {
+      "AndroidManifest.xml": "EXISTS — allowBackup=false present, but no dataExtractionRules attribute yet (added by Task 5)",
+      "SafeUriHandler.kt": "DOES NOT EXIST — created by Task 6 as part of SafeMarkdown.kt",
+      "AttachmentViewModel.kt": "DOES NOT EXIST — Task 13 references 'AttachmentViewModel.kt' but tech-spec uses ChatViewModel.kt for attachment state. No AttachmentViewModel in tech-spec.",
+      "decodeSampledBitmapFromUri": "DOES NOT EXIST — created by Task 3 in MediaUtils.kt",
+      "DataStore files": "DOES NOT EXIST — created by Task 2 (core-settings module)",
+      "build.gradle / local.properties": "EXISTS — no secrets found in current codebase"
+    },
+    "pattern_hallucinations": [
+      {
+        "pattern": "AttachmentViewModel.kt",
+        "status": "HALLUCINATION",
+        "description": "Task 13 Details section lists 'AttachmentViewModel.kt / обработчики вложений'. Tech-spec creates no AttachmentViewModel — attachment state lives in ChatViewModel.kt (Task 7, 9, 11). This is a hallucinated file name.",
+        "recommendation": "Replace 'AttachmentViewModel.kt' with 'ChatViewModel.kt' in Task 13 Details."
+      }
+    ]
+  },
+  "task_14_test_audit": {
+    "verdict": "CONDITIONAL_PASS",
+    "issues": [
+      {
+        "severity": "CRITICAL",
+        "area": "All referenced test files are 'to be created' — none exist yet",
+        "description": "Task 14 audits AppSettingsRepositoryTest, MediaUtilsTest, AudioClipTest, MultimodalContentsBuilderTest, SafeUriHandlerTest, EffectiveConfigTest, ChatViewModelTest, ErrorLogTest. NONE of these files exist in the current codebase. The only existing test is AllowlistLoaderTest.kt. All eight test files are created by prior tasks (1-11). The dependency chain (depends_on: [11]) is correct and ensures all tests exist before the audit runs.",
+        "file": "All test files missing from current codebase",
+        "recommendation": "Structurally safe — dependency on Task 11 covers all prior tasks. Auditor must confirm all 8 test files are present before starting audit."
+      },
+      {
+        "severity": "WARNING",
+        "area": "Robolectric not in libs.versions.toml — Task 3 must add it",
+        "description": "Task 14 checks Robolectric hygiene. Robolectric is not currently in libs.versions.toml or any build.gradle.kts. Tech-spec Task 3 adds 'robolectric 4.12' to libs.versions.toml. If Task 3 omits this, MediaUtilsTest will not compile. Auditor should verify robolectric appears in gradle config.",
+        "file": "gradle/libs.versions.toml",
+        "recommendation": "Before auditing, confirm libs.versions.toml contains robolectric = '4.12' and core-runtime/build.gradle.kts has testImplementation(libs.robolectric)."
+      },
+      {
+        "severity": "WARNING",
+        "area": "ErrorLogTest — whitelist-enforcement claim vs actual ErrorLog implementation",
+        "description": "Task 14 should verify ErrorLogTest covers 'unknown component → IllegalArgumentException'. Current ErrorLog.kt does NOT throw on unknown components (whitelist not enforced in code, Phase 1 design). Tech-spec Task 3 D27 mandates adding enforcement. If Task 3 does not add enforcement, the ErrorLogTest for this scenario will fail. This is the same gap identified in Task 13.",
+        "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt",
+        "recommendation": "Auditor must verify Task 3 added whitelist enforcement. If not present, flag as a gap in Task 3 deliverable, not in Task 14 scope."
+      },
+      {
+        "severity": "WARNING",
+        "area": "TAC-15 says cause-chain bounding truncates at 200 chars — ErrorLog uses 500",
+        "description": "TAC-15 (tech-spec line 582) states ErrorLogTest covers 'cause-chain bounding (message обрезается на 200 chars)'. Current ErrorLog.kt has MAX_FIELD_LEN = 500 (line 14). Tech-spec D27 (line 276) says cause.message?.take(200). There is a discrepancy: TAC-15 says 200, but Phase-1 code has 500 for both description and cause. Task 3 must change the cause message truncation to 200 chars specifically. If Task 3 does not adjust this, the ErrorLogTest for 200-char truncation will fail.",
+        "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt",
+        "recommendation": "Task 3 implementation must set cause message truncation to 200 chars (separate from description's 500 chars). Auditor should verify this distinction in the test."
+      },
+      {
+        "severity": "NOTE",
+        "area": "DataStore TemporaryFolder check — requires Task 2 to use JUnit TemporaryFolder Rule",
+        "description": "Task 14 verifies DataStore tests use TemporaryFolder. This is a valid hygiene check. AppSettingsRepositoryTest (created by Task 2) should use @Rule TemporaryFolder. This is not verifiable from current codebase.",
+        "recommendation": "Auditor should grep for TemporaryFolder in AppSettingsRepositoryTest and fail if DataStore path is hardcoded."
+      },
+      {
+        "severity": "NOTE",
+        "area": "fixtureMatchesProductionAsset — test not explicitly named in task files list",
+        "description": "Task 14 Step 9 and tech-spec TAC-6 reference 'fixtureMatchesProductionAsset'. This test is part of AllowlistLoaderTest (Task 1 creates it). The existing AllowlistLoaderTest.kt should already have or will have this test. Not a gap.",
+        "recommendation": "Auditor should confirm AllowlistLoaderTest contains fixtureMatchesProductionAsset test case."
+      }
+    ],
+    "test_file_path_accuracy": {
+      "AppSettingsRepositoryTest": "Created by Task 2 at core-settings/src/test/kotlin/app/sanctum/machina/core/settings/AppSettingsRepositoryTest.kt — path correct",
+      "MediaUtilsTest": "Created by Task 3 at core-runtime/src/test/kotlin/app/sanctum/machina/core/common/MediaUtilsTest.kt — path correct",
+      "AudioClipTest": "Created by Task 3 at core-runtime/src/test/kotlin/app/sanctum/machina/core/common/AudioClipTest.kt — path correct",
+      "MultimodalContentsBuilderTest": "Created by Task 4 at core-runtime/src/test/kotlin/app/sanctum/machina/core/common/MultimodalContentsBuilderTest.kt — path correct",
+      "SafeUriHandlerTest": "Created by Task 6 at app/src/test/kotlin/app/sanctum/machina/ui/chat/SafeUriHandlerTest.kt — path correct",
+      "EffectiveConfigTest": "Created by Task 11 at app/src/test/kotlin/app/sanctum/machina/ui/chat/EffectiveConfigTest.kt — path correct",
+      "ChatViewModelTest": "Created by Task 11 at app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt — path correct",
+      "ErrorLogTest": "Created by Task 3 at core-runtime/src/test/kotlin/app/sanctum/machina/core/log/ErrorLogTest.kt — path correct"
+    }
+  },
+  "task_15_pre_deploy_qa": {
+    "verdict": "CONDITIONAL_PASS",
+    "issues": [
+      {
+        "severity": "CRITICAL",
+        "area": "core-settings module not registered — :core-settings:test command will fail",
+        "description": "Task 15 runs './gradlew :core-settings:test'. Currently settings.gradle.kts only includes ':app' and ':core-runtime' (line 25: include(':app', ':core-runtime')). The ':core-settings' module is created by Task 2 and should be registered in settings.gradle.kts by Task 2. If Task 2 fails to register it, the gradle command will fail with 'project :core-settings not found'. This is a known dependency — not a task 15 design flaw, but auditor must verify.",
+        "file": "settings.gradle.kts",
+        "recommendation": "Before running Task 15, verify settings.gradle.kts includes ':core-settings'. The gradle command ':core-settings:test' is correct once the module is registered."
+      },
+      {
+        "severity": "WARNING",
+        "area": "TAC-10 aapt command references wrong APK filename format",
+        "description": "TAC-10 (tech-spec line 577): 'aapt dump xmltree app-debug.apk AndroidManifest.xml | grep allowBackup'. But Task 15 Verification Steps says APK is at 'app/build/outputs/apk/debug/'. The actual APK filename will be 'app-debug.apk' under that path — so the full command should reference the full path. The short form 'app-debug.apk' implies running from that directory. This is minor but could cause confusion.",
+        "recommendation": "Task 15 should specify full path: 'aapt dump xmltree app/build/outputs/apk/debug/app-debug.apk AndroidManifest.xml | grep allowBackup'."
+      },
+      {
+        "severity": "WARNING",
+        "area": "TAC-14 aapt command for data_extraction_rules.xml uses embedded path",
+        "description": "TAC-14 (tech-spec line 581): 'aapt dump xmltree app-debug.apk res/xml/data_extraction_rules.xml'. This is the correct aapt syntax for inspecting resources inside APK. However, the resource path inside APK may differ from 'res/xml/data_extraction_rules.xml' depending on aapt version. Task 15 verification step should note this.",
+        "recommendation": "Consider using 'aapt2 dump xmltree' or verify aapt v1 compatibility on the build machine. Alternative: check resource presence via 'aapt list app-debug.apk | grep data_extraction'."
+      },
+      {
+        "severity": "WARNING",
+        "area": "app/build.gradle.kts missing testImplementation dependencies for ChatViewModelTest",
+        "description": "Current app/build.gradle.kts has no test dependencies at all (no junit, no mockk, no coroutines-test, no robolectric). ChatViewModelTest (Task 11) and EffectiveConfigTest (Task 11) require test infrastructure. Task 11 or Task 5 must add these to app/build.gradle.kts. If not added, ':app:test' will fail to compile.",
+        "file": "app/build.gradle.kts",
+        "recommendation": "Task 11 tech-spec description should include adding testImplementation for junit, kotlinx-coroutines-test, mockk (or turbine) to app/build.gradle.kts. Task 15 auditor should verify these are present before running ':app:test'."
+      },
+      {
+        "severity": "NOTE",
+        "area": "TAC-7 and TAC-8 rg commands are feasible",
+        "description": "TAC-7: 'rg -l \"androidx.compose|androidx.activity\" core-runtime/src/main' and TAC-8 for core-settings are valid ripgrep commands. core-runtime currently has no Compose imports (confirmed by build.gradle.kts — no Compose dependencies). These checks will pass for current code and should pass after all tasks if module boundaries are maintained.",
+        "recommendation": "No action needed."
+      },
+      {
+        "severity": "NOTE",
+        "area": "TAC-11 string hardcoding check is feasible",
+        "description": "TAC-11: 'rg -n \"Text\\(\\\"[А-Яа-я]\" app/src/main' is a valid regex for Cyrillic characters in Compose Text() calls. The regex is correct. No issues.",
+        "recommendation": "No action needed."
+      },
+      {
+        "severity": "NOTE",
+        "area": "TAC-12 generated proto files path",
+        "description": "TAC-12 checks 'core-settings/build/generated/...' for AppSettings.java and PerModelSettings.java. This path is correct for the protobuf plugin (com.google.protobuf, version 0.9.5). Generated Java files land at 'build/generated/source/proto/main/java/...' as specified.",
+        "recommendation": "No action needed."
+      },
+      {
+        "severity": "NOTE",
+        "area": "AC-22 as final gate requiring user confirmation is correctly designed",
+        "description": "Task 15 marks AC-22 as user-only gate. The task correctly does not auto-close it. This aligns with the QA methodology.",
+        "recommendation": "No action needed."
+      }
+    ],
+    "gradle_command_accuracy": {
+      "./gradlew build": "CORRECT",
+      "./gradlew :core-runtime:test": "CORRECT — module exists",
+      "./gradlew :core-settings:test": "CORRECT SYNTAX — module will exist after Task 2 registers it in settings.gradle.kts",
+      "./gradlew :app:test": "CORRECT — module exists",
+      "./gradlew lintDebug": "CORRECT",
+      "./gradlew :app:assembleDebug": "CORRECT",
+      "APK output path app/build/outputs/apk/debug/": "CORRECT"
+    },
+    "tac_coverage_mapping": {
+      "TAC-1": "covered by './gradlew build'",
+      "TAC-2": "covered by ':core-runtime:test'",
+      "TAC-3": "covered by ':core-settings:test'",
+      "TAC-4": "covered by ':app:test'",
+      "TAC-5": "covered by 'lintDebug'",
+      "TAC-6": "covered by AllowlistLoaderTest.fixtureMatchesProductionAsset (runs in :core-runtime:test)",
+      "TAC-7": "covered by rg command — feasible",
+      "TAC-8": "covered by rg command — feasible",
+      "TAC-9": "covered by assembleDebug + aapt dump permissions",
+      "TAC-10": "covered by aapt dump xmltree — minor path issue noted",
+      "TAC-11": "covered by rg command — feasible",
+      "TAC-12": "covered by ls on generated directory",
+      "TAC-13": "covered by SafeUriHandlerTest in :app:test",
+      "TAC-14": "covered by aapt dump xmltree — minor aapt version note",
+      "TAC-15": "covered by ErrorLogTest in :core-runtime:test — blocked by whitelist enforcement gap"
+    }
+  },
+  "cross_cutting_findings": [
+    {
+      "id": "CCF-1",
+      "severity": "CRITICAL",
+      "title": "ErrorLog whitelist not enforced in current code — TAC-15 and Task 3 gap",
+      "description": "Current Phase-1 ErrorLog.kt explicitly states whitelist is NOT enforced in code. Tech-spec D27 and TAC-15 require whitelist enforcement (unknown component → IllegalArgumentException). Task 3 must add this enforcement. This affects both Task 13 (security audit of component whitelist) and Task 14 (ErrorLogTest assertion). If Task 3 skips this, both audit tasks will report a gap that cannot be resolved at their level.",
+      "affected_tasks": [13, 14, 15],
+      "recommendation": "Verify Task 3 deliverable includes: (1) ALLOWED_COMPONENTS constant set in ErrorLog.kt, (2) require(component in ALLOWED_COMPONENTS) check, (3) cause message truncation changed from 500 to 200 chars specifically for cause field."
+    },
+    {
+      "id": "CCF-2",
+      "severity": "WARNING",
+      "title": "app/build.gradle.kts missing all test dependencies",
+      "description": "Currently app/build.gradle.kts has zero testImplementation entries. Tasks 6 (SafeUriHandlerTest) and 11 (ChatViewModelTest, EffectiveConfigTest) create tests in :app module. Without junit/coroutines-test/robolectric in app/build.gradle.kts, ':app:test' will fail. This must be fixed by Tasks 5/6/11 — Task 15 QA assumes ':app:test' works.",
+      "affected_tasks": [14, 15],
+      "recommendation": "Task 5 or Task 6 should add testImplementation(libs.junit), testImplementation(libs.kotlinx.coroutines.test), testImplementation(libs.robolectric) to app/build.gradle.kts."
+    },
+    {
+      "id": "CCF-3",
+      "severity": "WARNING",
+      "title": "AttachmentViewModel.kt referenced in Task 13 does not exist in tech-spec",
+      "description": "Task 13 Details lists 'AttachmentViewModel.kt / обработчики вложений' as a file to audit. Tech-spec creates no AttachmentViewModel — attachment state is managed entirely by ChatViewModel (Tasks 7, 9, 11). This is a minor naming error in Task 13.",
+      "affected_tasks": [13],
+      "recommendation": "Replace 'AttachmentViewModel.kt' with 'ChatViewModel.kt' in Task 13 Details section."
+    }
+  ],
+  "dependency_chain_verification": {
+    "task_13_depends_on_11": "CORRECT — Task 11 is the final Wave 4 task; by completion all Wave 1-4 files exist",
+    "task_14_depends_on_11": "CORRECT — same as Task 13",
+    "task_15_depends_on_12_13_14": "CORRECT — all audits must complete before pre-deploy QA",
+    "wave_order": "Wave 1 (1,4) → Wave 2 (2,3) → Wave 3 (5) → Wave 4 (6-11) → Audit (12,13,14) → Final (15)",
+    "risk": "If any Wave 1-4 task is skipped or incomplete, audit tasks will encounter missing files but dependency chain is structurally sound"
+  }
+}

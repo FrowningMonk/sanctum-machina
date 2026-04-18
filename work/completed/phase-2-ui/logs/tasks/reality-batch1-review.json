@@ -1,0 +1,125 @@
+{
+  "batch": 1,
+  "iteration": 1,
+  "validator": "reality-checker",
+  "tasks": {
+    "1": {
+      "status": "issues",
+      "findings": [
+        {
+          "severity": "error",
+          "section": "Description / What to do",
+          "description": "Task claims `AllowedModel` does NOT have `llmSupportImage`, `llmSupportAudio`, `llmSupportThinking` fields, but these fields ARE present in `ModelAllowlist.kt`. However, `AllowedModel` data class does NOT declare these fields — they exist only in `Model` and in the raw JSON. The bug is real: `AllowlistLoader` uses Gson to parse the JSON into `AllowedModel`, but `AllowedModel` has no `llmSupportImage/Audio/Thinking` fields, so Gson silently drops them, and `toModel()` hard-codes `false` (via `Model` defaults). The task description is correct in substance but imprecise: the fix requires adding these three fields to `AllowedModel` data class AND wiring them in `toModel()`.",
+          "evidence": "ModelAllowlist.kt: `AllowedModel` has no `llmSupportImage/Audio/Thinking` fields. Model.kt line 75-79: `val llmSupportImage: Boolean = false`, `val llmSupportAudio: Boolean = false`, `val llmSupportThinking: Boolean = false` (defaults). model_allowlist.json: both entries have `llmSupportImage: true, llmSupportAudio: true, llmSupportThinking: true`."
+        },
+        {
+          "severity": "error",
+          "section": "What to do (step 2) / Details",
+          "description": "`defaultConfig.systemPromptDefault` does NOT exist in `AllowedModelConfig` data class. Furthermore, `createLlmChatConfigs()` has NO `defaultSystemPrompt` parameter. Both the data-class field and the function parameter are genuinely absent and need to be added. The task is accurate that both are missing — but the implementer must also add `systemPromptDefault: String? = null` to `AllowedModelConfig`, not just to `createLlmChatConfigs()`.",
+          "evidence": "Config.kt lines 191-198: `createLlmChatConfigs(defaultMaxToken, defaultMaxContextLength, defaultTopK, defaultTopP, defaultTemperature, accelerators, supportThinking)` — no `defaultSystemPrompt` param. ModelAllowlist.kt: `AllowedModelConfig` fields listed — no `systemPromptDefault`. model_allowlist.json: `defaultConfig` objects have no `systemPromptDefault` field either, so adding the field and parsing it is safe (Gson defaults to null)."
+        },
+        {
+          "severity": "warning",
+          "section": "Details / Files to modify",
+          "description": "Task says `AllowedModel.toModel()` calls `createLlmChatConfigs(...)` and needs `defaultSystemPrompt` added. This is correct but `createLlmChatConfigs` is defined in `Config.kt`, NOT in `ModelAllowlist.kt`. The task lists only `ModelAllowlist.kt` as a file to modify for `createLlmChatConfigs`, but `Config.kt` also needs to be modified to add the new parameter.",
+          "evidence": "Config.kt line 191: `fun createLlmChatConfigs(...)` is defined here. ModelAllowlist.kt line 59: `createLlmChatConfigs(...)` is called here. Task 'Files to modify' does not list Config.kt."
+        },
+        {
+          "severity": "warning",
+          "section": "TDD Anchor / fixtureMatchesProductionAsset",
+          "description": "The `fixtureMatchesProductionAsset` test already EXISTS in `AllowlistLoaderTest.kt` (line 57-69). The test passes TODAY because prod and fixture are already in sync (byte-for-byte identical). The task treats this test as something to be written, but it already exists. Adding it a second time will cause a duplicate test name compile error.",
+          "evidence": "AllowlistLoaderTest.kt lines 57-69: `fun fixtureMatchesProductionAsset()` exists. Both files confirmed identical by content comparison."
+        },
+        {
+          "severity": "warning",
+          "section": "Implementation hints",
+          "description": "Task hints to use `optBoolean(\"llmSupportImage\", false)` — an org.json API pattern. The project uses Gson (not org.json) for JSON parsing. Gson handles missing fields via `@SerializedName` or default values in the data class. The implementer should use Gson-idiomatic approach: add fields with `= false` defaults to `AllowedModel`, and Gson will populate them correctly from JSON.",
+          "evidence": "AllowlistLoader.kt line 43: `Gson().fromJson(json, ModelAllowlist::class.java)`. libs.versions.toml: `gson = \"2.12.1\"`. No org.json dependency in build.gradle.kts."
+        },
+        {
+          "severity": "warning",
+          "section": "Context Files",
+          "description": "Task lists `DefaultModelRegistry.kt` as a 'file to read' for understanding how `createLlmChatConfigs` is called. However, `DefaultModelRegistry.kt` does NOT call `createLlmChatConfigs` — it calls `allowlistLoader.load()` and `model.preProcess()`. `createLlmChatConfigs` is called from `AllowedModel.toModel()` in `ModelAllowlist.kt`. The reference is misleading but not blocking.",
+          "evidence": "DefaultModelRegistry.kt line 88-104: calls `allowlistLoader.load()`, no direct call to `createLlmChatConfigs`. ModelAllowlist.kt line 59: `createLlmChatConfigs(...)` called inside `AllowedModel.toModel()`."
+        }
+      ]
+    },
+    "2": {
+      "status": "issues",
+      "findings": [
+        {
+          "severity": "error",
+          "section": "Context Files",
+          "description": "Task lists `gallery-source/Android/src/app/src/main/java/com/google/ai/edge/gallery/data/SettingsSerializer.kt` as a reference file. This path does NOT exist. The actual file is at `gallery-source/Android/src/app/src/main/java/com/google/ai/edge/gallery/SettingsSerializer.kt` (one directory level up — no `data/` subdirectory).",
+          "evidence": "find result: `/c/AI-WORK/PhoneWrap/gallery-source/Android/src/app/src/main/java/com/google/ai/edge/gallery/SettingsSerializer.kt`. No `data/SettingsSerializer.kt` file found."
+        },
+        {
+          "severity": "warning",
+          "section": "Details / Files to modify — app/build.gradle.kts",
+          "description": "Task says to add `implementation(projects.coreSettings)`. The current `app/build.gradle.kts` uses `implementation(project(\":core-runtime\"))` (legacy string DSL), not type-safe project accessors. The project may not have the type-safe accessors feature enabled. The implementer should verify whether `enableFeaturePreview(\"TYPESAFE_PROJECT_ACCESSORS\")` exists in `settings.gradle.kts`. It does NOT — settings.gradle.kts has no `enableFeaturePreview`. Using `implementation(projects.coreSettings)` will fail; the correct form is `implementation(project(\":core-settings\"))`.",
+          "evidence": "settings.gradle.kts content: no `enableFeaturePreview(\"TYPESAFE_PROJECT_ACCESSORS\")`. app/build.gradle.kts: uses `implementation(project(\":core-runtime\"))`. libs.versions.toml: no type-safe accessor plugin."
+        },
+        {
+          "severity": "warning",
+          "section": "Details — Proto schema note",
+          "description": "The gallery reference `settings.proto` does not contain a `PerModelSettings` or `AppSettings` message — it stores global app settings in a `Settings` message with flat fields. The task correctly creates a NEW proto schema (not porting from gallery), so the gallery proto is only a structural reference. This is fine, but the implementer should understand the gallery proto does NOT serve as a template for the schema content.",
+          "evidence": "gallery-source settings.proto: defines `Settings`, `AccessTokenData`, `ImportedModel`, `LlmConfig` — no per-model map. Task's proto schema is a fresh design from tech-spec."
+        },
+        {
+          "severity": "warning",
+          "section": "Acceptance Criteria / TAC-12",
+          "description": "`PerModelSettings` uses `optional` fields in proto3. `optional` in proto3 generates `hasXxx()` methods in Java. This is correct and will work as expected with protobuf-java-lite. The task's claim that `hasMaxTokens()` will exist is valid IF protobuf-javalite 3.x+ is used (which supports proto3 optional). The implementer should ensure the protobuf version used is 3.21+ where `optional` in proto3 is fully supported.",
+          "evidence": "Proto schema in task: `optional float temperature = 1;` etc. This syntax was experimental before protobuf 3.15 and stable after. With `protobuf-javalite` artifact (standard in Android), this is supported."
+        }
+      ]
+    },
+    "3": {
+      "status": "issues",
+      "findings": [
+        {
+          "severity": "error",
+          "section": "Description / What to do (step 4)",
+          "description": "Task says `ErrorLog.kt` has a component whitelist that needs to be extended with 4 new values. However, the actual `ErrorLog.kt` does NOT enforce a whitelist in code — the docstring says 'Whitelist is not enforced in code (the component string is written as-is); deviations are caught by code-reviewer.' The task TDD anchor includes `ErrorLogTest::knownComponents_accepted` and `ErrorLogTest::unknownComponent_throwsIAE` which expect runtime whitelist enforcement (throwing IAE for unknown components). This enforcement does NOT currently exist, so these tests will fail AND implementing them requires adding a runtime check that currently doesn't exist — this is a real new feature, not a modification of existing behavior.",
+          "evidence": "ErrorLog.kt lines 26-30: Phase 1 whitelist documented in KDoc comment. Line 52: `suspend fun e(component: String, ...)` — no validation of `component` parameter. No `require()` or `check()` call on component anywhere in the file."
+        },
+        {
+          "severity": "error",
+          "section": "Description / What to do (step 4) — TAC-15",
+          "description": "Task requires adding 'ограничение длины цепочки причин на 200 символов' (cause chain length limit of 200 chars). Current `ErrorLog.buildLine()` truncates each field to `MAX_FIELD_LEN = 500` characters. The limit of 200 chars for cause chain specifically does NOT exist — current code uses 500 chars uniformly. Implementing TAC-15 requires changing the truncation logic, not just 'checking' it.",
+          "evidence": "ErrorLog.kt line 14: `private const val MAX_FIELD_LEN = 500`. Line 82: `private fun sanitize(raw: String): String = raw.replace(CONTROL_WS, \" \").take(MAX_FIELD_LEN)`. No separate limit for cause chain."
+        },
+        {
+          "severity": "error",
+          "section": "What to do (step 1) — calculatePeakAmplitude signature",
+          "description": "Gallery `calculatePeakAmplitude(buffer: ByteArray, bytesRead: Int): Int` returns `Int`, takes TWO parameters. Task plans to port it as a pure function but the TDD anchor tests expect it to take only `ByteArray` (e.g., `calculatePeakAmplitude(emptyBuffer)` returning `0.0f`). The task also says the return type should be `Float`. The implementer will need to redesign the function signature (drop `bytesRead` param, change return to Float), not just copy-port it.",
+          "evidence": "gallery Utils.kt line 244: `fun calculatePeakAmplitude(buffer: ByteArray, bytesRead: Int): Int`. Task TDD anchor: `calculatePeakAmplitude_emptyBuffer_returnsZero` — empty ByteArray → 0.0f (Float). Task TDD: `calculatePeakAmplitude_boundary_shortMaxValue` — 'correct float-value'. This is a deliberate redesign, but should be flagged so the implementer doesn't blindly copy the gallery signature."
+        },
+        {
+          "severity": "error",
+          "section": "What to do (step 2) — calculateInSampleSize",
+          "description": "Gallery `calculateInSampleSize` is a PRIVATE function taking `BitmapFactory.Options` as a parameter. Task plans to make it a `pure function` with signature `(rawWidth: Int, rawHeight: Int, reqWidth: Int, reqHeight: Int): Int`. The function does NOT currently exist in `core-runtime` in any form — it must be created from scratch (not modified). Additionally, the gallery function uses `roundToInt()` for ratio calculation which may produce unexpected results for exact-power-of-2 inputs (e.g., 2048/1024 = 2.0.roundToInt() = 2, which is correct). Test expects `calculateInSampleSize(2048, 1024, 1024, 1024)` to return 2 — this is consistent with the gallery logic.",
+          "evidence": "gallery Utils.kt line 309: `private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int`. core-runtime/common/Utils.kt: no `calculateInSampleSize` function. core-runtime common dir has only `Utils.kt` with 2 unrelated functions."
+        },
+        {
+          "severity": "warning",
+          "section": "Details / Files to read",
+          "description": "Task lists `gallery-source/Android/src/app/src/main/java/com/google/ai/edge/gallery/common/Types.kt` as a file to read for understanding `AudioClip`. `AudioClip` is defined there as `class AudioClip(val audioData: ByteArray, val sampleRate: Int)` which exactly matches the task spec. The file exists and is readable. No issues.",
+          "evidence": "gallery Types.kt line confirmed: `class AudioClip(val audioData: ByteArray, val sampleRate: Int)` — plain class, not data class, matching task requirement."
+        },
+        {
+          "severity": "warning",
+          "section": "Details / Files to modify — libs.versions.toml conflict with Task 2",
+          "description": "Task 3 and Task 2 both modify `gradle/libs.versions.toml`. Task 3 depends on Task 2 (via `depends_on: [2]`) and is in Wave 2, so sequential execution is correct. However if tasks are ever parallelized there would be a merge conflict. The dependency is properly declared. No action needed, but flag for awareness.",
+          "evidence": "Task 3 frontmatter: `depends_on: [2]`, `wave: 2`. Task 2 frontmatter: `wave: 2`, `depends_on: []`. Sequential order guaranteed by wave dependency."
+        },
+        {
+          "severity": "warning",
+          "section": "Acceptance Criteria — Robolectric version",
+          "description": "Task specifies Robolectric `4.12`. Latest stable is 4.13 as of early 2026. Version 4.12 is valid and available on Maven Central but may lack support for some Android API 35 features. Given `compileSdk = 35` in `core-runtime/build.gradle.kts`, the implementer should use `@Config(sdk = [33])` as specified in implementation hints to stay within Robolectric 4.12 tested range.",
+          "evidence": "core-runtime/build.gradle.kts: `compileSdk = 35`. Task implementation hints: `@Config(sdk = [33])` — correct mitigation."
+        }
+      ]
+    }
+  },
+  "summary": "All three tasks reference files that exist and are structurally sound, but each has actionable issues. Task 1: the core bug (missing llmSupport* and systemPromptDefault) is real and correctly identified, but `Config.kt` is missing from the files-to-modify list (createLlmChatConfigs lives there), and one TDD test (fixtureMatchesProductionAsset) already exists. Task 2: the SettingsSerializer reference path is wrong (missing `data/` subdirectory), and `projects.coreSettings` type-safe accessor will fail since TYPESAFE_PROJECT_ACCESSORS is not enabled in settings.gradle.kts. Task 3: ErrorLog whitelist is not enforced in code at all (needs to be added as new behavior), cause-chain 200-char limit is also new (current limit is 500), and calculatePeakAmplitude signature needs deliberate redesign (not a copy-port). All issues are fixable within the task scope — none require spec changes."
+}

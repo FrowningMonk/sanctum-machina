@@ -1,0 +1,28 @@
+{
+  "summary": "Five focused JUnit tests cover the extracted `buildSystemInstruction` helper and satisfy anchors 1 and 2 with real behavioral assertions (non-null + unwrapped text equality; null for empty/blank/missing/non-string). Litmus test passes — removing `Contents.of(...)` or `takeIf { isNotBlank() }` fails at least one case. The extracted-helper seam is acceptable for a pure Map -> Contents? mapping and avoids standing up Context/Hilt/DownloadRepository, but it does not verify the call-site wiring in `awaitInitialize` (line 271): a regression that bypasses the helper would not be caught. Deferring `ChatViewModel` thinking accumulation to Task 11 is codified in tech-spec Testing Strategy lines 464-471 and is reasonable. `ThinkingBlock` UI test is optional per anchor-3 and tech-spec; acceptable to defer. No blockers.",
+  "findings": [
+    {
+      "severity": "minor",
+      "area": "seam",
+      "issue": "Tests exercise `buildSystemInstruction` directly but never assert that `awaitInitialize` actually calls it and forwards the result to `llmModelHelper.initialize(systemInstruction = ...)`. The anchor wording targets `awaitInitialize`, and a future refactor that hardcodes `systemInstruction = null` at the call-site (DefaultModelRegistry.kt:271) would leave all five tests green while silently breaking AC-4 / D24 end-to-end.",
+      "fix": "Either (a) add one thin integration test in Task 11 that wires a fake `LlmModelHelper` capturing the `systemInstruction` arg, constructs a `DefaultModelRegistry` with a stub `AllowlistLoader`/`DownloadRepository`/`ErrorLog`, calls `initialize(modelName)` on a model with `SYSTEM_PROMPT_DEFAULT` set, and asserts the captured argument is non-null and contains the prompt text; or (b) keep the helper-level tests and add a manual verification note to the task AVP referencing AC-4 end-to-end. Option (a) is preferred because the call-site is one line (`systemInstruction = buildSystemInstruction(model.configValues)`) and breaking it would be silent today."
+    },
+    {
+      "severity": "nit",
+      "area": "coverage",
+      "issue": "Anchor-3 (`ThinkingBlock` expanded when `inProgress=true`, collapsible when `false`) is marked optional by both the task file and tech-spec, and is not covered. `ChatViewModelTest` (thinking accumulation, AC-7/14/18 behavioral coverage) is explicitly deferred to Task 11 per tech-spec Testing Strategy lines 464-471. Both deferrals are reasonable, but AC-14 (collapsible after generation completes) and AC-18 (auto-expand while generating) currently rely solely on manual verification on Honor 200.",
+      "fix": "No action required for Task 10 given the codified deferral. Track a follow-up: either a Compose UI test using `createComposeRule()` that renders `ThinkingBlock(inProgress = true)` and asserts the content node is displayed, then recomposes with `inProgress = false` and asserts toggle is reachable — or accept manual-only coverage and document the decision. Confirm `ChatViewModelTest` in Task 11 includes the three scenarios already specified in tech-spec (llmSupportThinking+enableThinking both true -> accumulates; enableThinking=false -> does not accumulate; llmSupportThinking=false -> does not accumulate)."
+    },
+    {
+      "severity": "nit",
+      "area": "assertion",
+      "issue": "`nonBlankPrompt_returnsContentsWrappingPrompt` asserts `texts == listOf(prompt)` via `filterIsInstance<Content.Text>()`, which silently tolerates additional non-Text `Content` entries being appended by future refactors (e.g., a trailing `Content.Image`). The helper's contract is precisely one `Content.Text`.",
+      "fix": "Add `assertEquals(1, result!!.contents.size)` before the `filterIsInstance` line to lock the contract that exactly one entry of exactly the Text variety is produced. Low value, purely defensive."
+    }
+  ],
+  "anchor_coverage": {
+    "anchor-1": "ok",
+    "anchor-2": "ok",
+    "anchor-3": "missing"
+  }
+}

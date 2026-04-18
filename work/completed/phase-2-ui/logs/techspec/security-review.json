@@ -1,0 +1,84 @@
+{
+  "status": "pass",
+  "round": 2,
+  "summary": {
+    "totalFindings": 4,
+    "critical": 0,
+    "major": 0,
+    "minor": 4,
+    "verdict": "Round 1 major findings fully resolved. D25 (SafeUriHandler http/https whitelist) and D26 (FLAG_SECURE + allowBackup=false + dataExtractionRules) explicitly added with code sketches and implementation notes. D27 consolidates ErrorLog integration with expanded whitelist. D21 reinit exception handler routes through ErrorLog.e('inference-init', ..., cause). D17 locks asset-name as hardcoded constraint with security-auditor attribution. R7 mitigates library-manifest override risk via explicit no-<application>-attributes rule. Permission declarations in Task 5 are minimal and correct (CAMERA, RECORD_AUDIO, <uses-feature camera required='false'>; Photo Picker permissionless; no READ_PHONE_STATE per D14). TAC-13 introduces a SafeUriHandlerTest covering intent://, sms:, tel:. Round 2 additions do not introduce new critical or major vulnerabilities. Remaining items are all hardening/robustness minors that can be handled during implementation or deferred without blocking Phase 2."
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "owasp": "A09 Security Logging and Monitoring",
+      "category": "consistency",
+      "location": "tech-spec.md D25 code sketch (SafeUriHandler) vs. D27 ErrorLog component whitelist",
+      "description": "D25 shows the `SafeUriHandler.openUri` else-branch with an 'optional ErrorLog.e(\"safe-uri\", \"blocked scheme: ${parsed.scheme}\")' comment. D27 defines the closed whitelist extension as `inference-init`, `settings-io`, `camera`, `audio`, `attachment-decode` — `safe-uri` is NOT in that set. If the optional log call is uncommented during implementation without updating the whitelist, it will either (a) violate patterns.md § ErrorLog closed-whitelist rule or (b) silently fail a runtime `require(component in ALLOWED_COMPONENTS)` check if ErrorLog enforces it. Cross-reference gap.",
+      "impact": "Implementation-time inconsistency; low probability of being activated because the comment says 'silently ignore' as primary path. If turned on ad-hoc during debugging, could surface as a patterns.md violation in code-review.",
+      "recommendation": "Either (1) drop the `// optional ErrorLog.e(\"safe-uri\", ...)` comment from D25 since silent-ignore is sufficient for blocked-scheme events (they are user-space events, not incidents — per D27 rationale 'не логируем ожидаемые user flows'), OR (2) add `\"safe-uri\"` to the D27 whitelist if logging is desired for forensic purposes. Recommend option 1: blocked link-taps are expected user behaviour when LLM emits non-http URLs, not an incident worth burning log lines.",
+      "cwe": "CWE-778"
+    },
+    {
+      "severity": "minor",
+      "owasp": "A05 Security Misconfiguration",
+      "category": "completeness",
+      "location": "tech-spec.md D26 bullet 3 + Task 5 'res/xml/data_extraction_rules.xml — пустой allowlist'",
+      "description": "The tech-spec says `data_extraction_rules.xml` is a 'пустой allowlist (блок Google backup / transfer)'. Android's dataExtractionRules XML schema is subtle: a file with a root `<data-extraction-rules>` tag and no child `<cloud-backup>` / `<device-transfer>` elements **permits everything** by default on API 31+ (not blocks). To truly block transfer, the XML must contain `<cloud-backup><exclude domain=\"...\"/></cloud-backup>` plus `<device-transfer><exclude domain=\"...\"/></device-transfer>` for each relevant domain — or rely on the fact that the file simply has no `<include>` entries and the rules only apply when `android:dataExtractionRules` is set together with `android:fullBackupContent` or default backups. Since `allowBackup=false` (D26 bullet 2) already disables cloud backup entirely, dataExtractionRules is primarily defense-in-depth for device-to-device transfer on Android 12+. The XML structure must be explicit, not empty.",
+      "impact": "If the file is authored as literally empty or with only the root element, Android may fall through to default backup behaviour on Android 12+. With `allowBackup=false` this is almost certainly moot (explicit false overrides the XML), but defense-in-depth hardening is weakened and a future developer who flips `allowBackup=true` would silently lose transfer-protection.",
+      "recommendation": "In Task 5 specify the exact XML content: `<?xml version=\"1.0\" encoding=\"utf-8\"?><data-extraction-rules><cloud-backup disableIfNoEncryptionCapabilities=\"true\"><exclude domain=\"root\" path=\".\"/></cloud-backup><device-transfer><exclude domain=\"root\" path=\".\"/></device-transfer></data-extraction-rules>` (or the equivalent narrower form for the `file` / `database` / `sharedpref` domains actually in use). Add a TAC-14 check: `aapt dump xmltree app-debug.apk res/xml/data_extraction_rules.xml` contains both `cloud-backup` and `device-transfer` nodes with `<exclude>` children. Cheap (+2 lines XML, +1 TAC line).",
+      "cwe": "CWE-1188"
+    },
+    {
+      "severity": "minor",
+      "owasp": "A09 Security Logging and Monitoring",
+      "category": "information-disclosure-mitigation",
+      "location": "tech-spec.md D27 ErrorLog integration + R13 DataStore exception handling",
+      "description": "`ErrorLog.e(\"settings-io\", ..., cause)` passes the full IOException / CorruptionException cause-chain to the on-device log at `filesDir/logs/errors.log`. The cause from Android DataStore typically contains the full absolute path to the proto file (e.g. `/data/user/0/app.sanctum.machina/files/datastore/app_settings.pb`) and may include partial file offsets on CorruptionException. The proto file itself carries only inference-settings overrides (no credentials, no PII) so stack-trace exposure is low-impact. However, two minor sharpness points: (a) the tech-spec does not specify whether `cause` is passed as the full `Throwable` or just `cause.message` — full-throwable logging could include deeply nested `OpenFailedException` with embedded SELinux context strings, which are internals not useful to a solo-dev user; (b) `errors.log` lives in `filesDir` which is private to the app, so leak surface is limited to ADB / root / device seizure. Same consideration applies to `ErrorLog.e(\"camera\", ...)` and `ErrorLog.e(\"audio\", ...)` — CameraX / AudioRecord exceptions may include device-specific hardware identifiers.",
+      "impact": "Low. Private sandbox + allowBackup=false + FLAG_SECURE prevent the log from leaving the device through normal channels. Only risk is a user who attaches `errors.log` to a bug report and inadvertently shares absolute paths or hardware IDs. Not a CVE-class issue, but worth a one-line convention.",
+      "recommendation": "Add to patterns.md § ErrorLog convention (or enforce in `ErrorLog.e` signature documentation): when logging a `cause: Throwable`, log `cause.javaClass.simpleName` + `cause.message` rather than the full stack trace when the description is already informative. For DataStore errors specifically, log as `ErrorLog.e(\"settings-io\", \"DataStore ${cause.javaClass.simpleName}: ${cause.message?.take(200)}\")` to bound length and avoid nested-cause recursion. Does not change Phase 2 code volume materially; add the convention to patterns.md in Task 3 (when ErrorLog whitelist is extended).",
+      "cwe": "CWE-532"
+    },
+    {
+      "severity": "minor",
+      "owasp": "A04 Insecure Design",
+      "category": "test-coverage",
+      "location": "tech-spec.md TAC-13 + Task 6 Verify-smoke",
+      "description": "TAC-13 specifies that `SafeUriHandlerTest` covers `intent://test`, `sms:test`, `tel:test` as blocked schemes. This is a good baseline but omits several attacker-relevant schemes that LLM output can plausibly emit: `file://` (local file access, could be used to probe app-private paths via implicit ACTION_VIEW leaking to other apps), `content://` (ContentProvider access — potentially to other apps' providers), `javascript:` (no-op on external intent but defensive), `market://` (Play Store deep-links — not hostile but bypasses the http/https whitelist intent), `geo:`, `mailto:`, `rtsp://`, and empty/null/malformed URIs (e.g. `\"not a uri\"`, `\"\"`, URI parsing exceptions). The current whitelist logic `parsed.scheme in setOf(\"http\", \"https\")` handles all of these correctly by design (default-deny), but test coverage does not prove it.",
+      "impact": "Low — the whitelist is allowlist-by-design, so untested schemes are implicitly blocked. Risk is a future refactor flipping the logic to a denylist (blocklist) without catching regressions. Test-coverage gap is a robustness/maintainability concern rather than a live vulnerability.",
+      "recommendation": "Extend `SafeUriHandlerTest` (TAC-13) to be parameterised over a list of blocked schemes: `intent://`, `sms:`, `tel:`, `file://`, `content://`, `javascript:`, `market://`, `geo:`, `mailto:`, `rtsp://`, `\"\"`, `\"not a uri\"`, `null`-equivalent. Also assert that uppercase/mixed-case http (`HTTPS://example.com`) is accepted (scheme-matching should be case-insensitive in the impl — `Uri.parse` normalises to lowercase, but the test should prove it). Keep the positive cases: `http://example.com`, `https://example.com`. ~15 LOC, closes the regression surface.",
+      "cwe": "CWE-20"
+    }
+  ],
+  "resolved_from_round_1": [
+    {
+      "finding": "Round 1 major #1: Markdown link-handler scheme-whitelist",
+      "resolution": "D25 SafeMarkdown wrapper with SafeUriHandler (http/https whitelist, silent-ignore for other schemes). Code sketch provided. TAC-13 and Task 6 Verify-smoke add unit test. Task 10 (MessageBubble) and Task 6 (AboutScreen) both route markdown through SafeMarkdown per D8. Fully addressed."
+    },
+    {
+      "finding": "Round 1 major #2: FLAG_SECURE + allowBackup=false + dataExtractionRules",
+      "resolution": "D26 explicitly adds all three. Task 5 wires them into MainActivity.onCreate and AndroidManifest.xml, with res/xml/data_extraction_rules.xml as separate file. TAC-10 verifies allowBackup=false via aapt. R15 documents dev-build FLAG_SECURE debate (decision: always set for both debug and release). Note: dataExtractionRules XML content needs explicit exclude-nodes (minor finding #2 above)."
+    },
+    {
+      "finding": "Round 1 minor: D21 reinit exception handler → ErrorLog.e integration",
+      "resolution": "D21 step 'При CancellationException / любого другого throwable → catch в exception-handler → ErrorLog.e(\"inference-init\", \"...\", cause) (D27) → snackbar → dialog dismiss → engine-state в Failed'. D27 formalises the full failure-path mapping. ChatViewModelTest explicitly covers 'applyHeavySetting при crash в initialize → ErrorLog.e вызван'. Fully addressed."
+    },
+    {
+      "finding": "Round 1 minor: :core-settings library manifest hygiene",
+      "resolution": "Architecture § :core-settings bullet 5: 'AndroidManifest.xml — library hygiene (namespace, без permissions; никаких <application>-атрибутов, чтобы не перезаписать :app при manifest-merge)'. Task 2 description repeats 'library hygiene — без <application>-атрибутов'. R7 risk mitigation notes 'manifest не должен override <application>-атрибуты (иначе сбрасывает :app'\\''s allowBackup)'. Fully addressed."
+    },
+    {
+      "finding": "Round 1 minor: Bitmap.recycle / PCM zero-wipe defense-in-depth",
+      "resolution": "Not adopted. Acceptable per round-1 guidance ('defense in depth, acceptable to defer'). Targeting Android 14+ makes Bitmap.recycle largely a no-op; PCM-wipe is forensic-hardening, not CVE-class. Deferral documented; can revisit in Phase 3 when Room persistence lands."
+    },
+    {
+      "finding": "Round 1 minor: AboutScreen asset-name hardcoded constraint",
+      "resolution": "D17 Constraint: 'asset-имя hardcoded \"about.md\" (не из state / user-input) — защита от path traversal (security-auditor minor)'. Explicit attribution to round-1 finding. Fully addressed."
+    }
+  ],
+  "round_2_new_checks": {
+    "permission_declarations": "Task 5 declares only CAMERA, RECORD_AUDIO, and <uses-feature camera required=\"false\">. Photo Picker explicitly permissionless per D7. D14 explicitly avoids READ_PHONE_STATE (LifecycleEventEffect(ON_PAUSE) covers incoming calls). No overreach. Minimal permission surface for the feature set.",
+    "safeurihandler_implementation": "Silent-ignore is acceptable and aligns with defense-in-depth principle (default-deny whitelist). Code sketch in D25 is correct. See minor finding #1 (whitelist-comment consistency) and #4 (test coverage).",
+    "errorlog_cause_chain_leak": "DataStore exception cause chain may include absolute paths and hardware identifiers, but: (a) errors.log lives in private filesDir, (b) FLAG_SECURE + allowBackup=false + dataExtractionRules block all normal egress paths, (c) proto file itself carries no PII/credentials. Low-impact. See minor finding #3 for recommended cause-length bounding convention."
+  }
+}

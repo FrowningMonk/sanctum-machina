@@ -38,6 +38,25 @@ import kotlinx.coroutines.withContext
 
 private const val LOG_TAG_DOWNLOAD = "download"
 private const val LOG_TAG_INIT = "inference-init"
+
+/**
+ * D24: translate the `SYSTEM_PROMPT_DEFAULT` entry from `Model.configValues`
+ * into a `Contents?` suitable for `engine.createConversation`. Blank or
+ * missing values collapse to `null` (not an empty `Contents`) so litertlm
+ * receives the same payload shape Phase-1 produced when no prompt was
+ * configured.
+ *
+ * Extracted as an internal top-level function so Task 10's TDD anchor tests
+ * can drive the mapping without standing up the full registry graph.
+ */
+internal fun buildSystemInstruction(configValues: Map<String, Any>): Contents? {
+  val raw = configValues[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label] as? String
+  // Name clarifies that `takeIf { isNotBlank() }` filters rather than trims —
+  // leading/trailing whitespace is passed through verbatim by design, the
+  // Phase-3 settings UI is responsible for trimming before persisting.
+  val nonBlank = raw?.takeIf { it.isNotBlank() } ?: return null
+  return Contents.of(listOf(Content.Text(nonBlank)))
+}
 // LOG_TAG_CLEANUP ("inference-cleanup") — whitelisted in user-spec D11; not used yet because
 // LlmChatModelHelper.cleanUp swallows its own exceptions internally. Phase 2 debt: surface
 // close-failures via ErrorLog if/when cleanUp grows a throwing error path.
@@ -252,6 +271,7 @@ constructor(
         model = model,
         supportImage = model.llmSupportImage,
         supportAudio = model.llmSupportAudio,
+        systemInstruction = buildSystemInstruction(model.configValues),
         onDone = { err -> if (cont.isActive) cont.resume(err) },
       )
       cont.invokeOnCancellation {

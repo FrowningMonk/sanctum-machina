@@ -1,0 +1,128 @@
+{
+  "verdict": "approved_with_suggestions",
+  "status": "approved_with_suggestions",
+  "summary": "Task 6 is cleanly implemented: scheme-whitelisted SafeUriHandler with defensive runCatching around parse + startActivity, AboutScreen reads hardcoded assets/about.md off the main thread via produceState + Dispatchers.IO with a proper IOException fallback, Navigation destination and ModelManager Info action wire up consistently, and TDD tests cover all 11 anchors. No critical or major issues. Five minor suggestions centered on naming, Compose micro-perf, and a few resilience/readability niceties — none blocking.",
+  "metrics": {
+    "filesReviewed": 8,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 5,
+    "testCoverageAssessment": "adequate"
+  },
+  "criticalIssues": [],
+  "findings": [
+    {
+      "id": "minor-1",
+      "severity": "minor",
+      "category": "readability",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerScreen.kt",
+      "line": 63,
+      "description": "Info-icon contentDescription reuses the string key `chat_action_about` even though the icon now lives on the ModelManager TopAppBar (not a chat surface). The Russian value (`О приложении`) is correct, but the key name misleads future readers and grep. Since the string is referenced from two places, consider renaming it to a neutral key like `action_about` (single source of truth) or adding a second alias resource — this is cheap strings.xml housekeeping.",
+      "impact": "Cosmetic — maintainability drift as About becomes callable from more entry points (per D17 'расположение в коде не прибито').",
+      "suggested_fix": "Rename `<string name=\"chat_action_about\">О приложении</string>` → `<string name=\"action_about\">О приложении</string>` in strings.xml and update the two usages in ModelManagerScreen.kt and (future) ChatScreen.kt. Alternatively keep `chat_action_about` and add `<string name=\"action_about\">@string/chat_action_about</string>` if back-compat for ChatScreen is a concern — but the single-rename path is cleaner.",
+      "optional": true
+    },
+    {
+      "id": "minor-2",
+      "severity": "minor",
+      "category": "performance",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/SafeMarkdown.kt",
+      "line": 56,
+      "description": "Inside SafeMarkdown the `TextStyle` passed to `ProvideTextStyle` and the full `RichTextStyle` (including `CodeBlockStyle` + `RichTextStringStyle` + `TextLinkStyles`) are reallocated on every recomposition. In a streaming chat, `text` changes token-by-token, so these allocations fire dozens of times per second even though none of their inputs change within a stable theme. `MaterialTheme.typography.*` reads are snapshot-stable within a theme scope, so they can be wrapped in `remember(fontSize, textColor, linkColor, smallFontSize)`.",
+      "impact": "Minor allocation churn during streaming — not a blocker for Task 6 (About is a static screen), but SafeMarkdown is tech-spec'd for MessageBubble/ThinkingBlock in subsequent tasks where this matters more.",
+      "suggested_fix": "Wrap the `TextStyle(...)` and `RichTextStyle(...)` values in `remember(smallFontSize, textColor, linkColor, fontSize)` before passing them in. Example: `val textStyle = remember(fontSize, textColor, smallFontSize) { TextStyle(...) }` and similarly for `richTextStyle`.",
+      "optional": true
+    },
+    {
+      "id": "minor-3",
+      "severity": "minor",
+      "category": "maintainability",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/SafeMarkdown.kt",
+      "line": 34,
+      "description": "`Uri.parse(uri)` is invoked twice in `openUri` — once inside `runCatching` to extract the scheme, then again unconditionally to build the ACTION_VIEW intent. For strings that survived the whitelist check parse is idempotent, but the double-parse is redundant; also, the second invocation is NOT inside a runCatching even though `Uri.parse` is documented to never throw but `Intent(action, data)` constructor doesn't either — the only real failure mode is `startActivity`, which IS guarded. Collapsing to a single `val parsed = ...` avoids a future footgun if Uri-parsing semantics become stricter.",
+      "impact": "Readability / micro-robustness; no functional bug.",
+      "suggested_fix": "Refactor to: `val parsed = runCatching { Uri.parse(uri) }.getOrNull() ?: return; val scheme = parsed.scheme ?: return; if (scheme !in ALLOWED_SCHEMES) return; val intent = Intent(Intent.ACTION_VIEW, parsed).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }; runCatching { context.startActivity(intent) }`.",
+      "optional": true
+    },
+    {
+      "id": "minor-4",
+      "severity": "minor",
+      "category": "best-practices",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/about/AboutScreen.kt",
+      "line": 42,
+      "description": "`produceState` uses `key1 = context, key2 = fallback`. Both keys are effectively locale/config-change triggers (context identity can flip on config change, and `fallback` is a `stringResource` that re-resolves on locale change), which is fine. However there is no intermediate 'loading' state: for one or two frames the user sees an empty `SafeMarkdown(text = \"\")` followed by the content snapping in. Given that assets.open on a ~1 KB file is usually sub-millisecond, the flash is imperceptible in practice, but a `String?` nullable + `if (markdown == null) CircularProgressIndicator()` would be more honest about the async read and align with the project's existing loading-state conventions (see `chat_loading_model` pattern in strings.xml / ChatScreen).",
+      "impact": "Cosmetic UX — empty-to-content flash on cold navigation. Low likelihood of user noticing.",
+      "suggested_fix": "Change `initialValue = \"\"` → `initialValue = null` (type becomes `String?`). Render the `SafeMarkdown` branch only when non-null; for the null branch render nothing or a small progress indicator. Alternatively accept current behavior and add a short KDoc comment on ABOUT_ASSET explaining the rationale (empty-string-as-loading is intentional because the read is expected to be sub-millisecond).",
+      "optional": true
+    },
+    {
+      "id": "minor-5",
+      "severity": "minor",
+      "category": "testability",
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/SafeUriHandlerTest.kt",
+      "line": 18,
+      "description": "`@Config(sdk = [33])` is hardcoded at the class level (same pattern Task 3 used in MediaUtilsTest). Task 3's code-reviewer round 1 flagged 'shared TEST_SDK constant' as a follow-up that was explicitly deferred (YAGNI at two call sites). Now there are three Robolectric test classes in the repo using the same `sdk = [33]` literal — the 'two call sites' rationale no longer holds. Extracting a shared `internal const val TEST_SDK = 33` (e.g. in a `testing/RobolectricConfig.kt` shared source) would centralize the SDK pinning decision and make future Android-version bumps a one-line change.",
+      "impact": "Minor maintainability — three occurrences of the literal 33 across test files; changing the target SDK for tests requires grepping.",
+      "suggested_fix": "Add `internal const val TEST_SDK = 33` in a shared test-only helper file (e.g., `app/src/test/kotlin/app/sanctum/machina/testing/RobolectricConfig.kt` and a matching one in `:core-runtime/src/test/`), then replace `@Config(sdk = [33])` with `@Config(sdk = [TEST_SDK])`. If cross-module sharing is not worth the setup, at minimum add an inline comment explaining why SDK 33 (not 31/34/35) was chosen.",
+      "optional": true
+    }
+  ],
+  "suggestions": [
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerScreen.kt",
+      "line": 63,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "Rename `chat_action_about` → `action_about` since the string is now used outside the chat surface (ModelManager TopAppBar, and tech-spec D17 explicitly says About entry is 'не прибита к конкретному месту').",
+      "benefit": "Better naming aligns with D17 decision; avoids misleading string key.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/SafeMarkdown.kt",
+      "line": 56,
+      "severity": "minor",
+      "category": "performance",
+      "suggestion": "Memoize `TextStyle` and `RichTextStyle` via `remember(inputs)` to avoid per-recomposition reallocation during streaming (relevant once SafeMarkdown is consumed by MessageBubble/ThinkingBlock).",
+      "benefit": "Reduced allocation pressure during chat streaming.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/SafeMarkdown.kt",
+      "line": 34,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "Parse the Uri once and reuse the parsed value for scheme-check and Intent construction.",
+      "benefit": "Eliminates double parse; slightly more robust if `Uri.parse` semantics change.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/about/AboutScreen.kt",
+      "line": 42,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "Use a nullable `String?` initial value in `produceState` to distinguish 'loading' from 'empty asset', or document the empty-string-as-loading choice in a KDoc comment.",
+      "benefit": "Removes the brief empty-content flash on cold navigation; aligns with project's explicit loading-state convention.",
+      "optional": true
+    },
+    {
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/SafeUriHandlerTest.kt",
+      "line": 18,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "Extract a shared `TEST_SDK` constant now that the Robolectric-SDK literal is repeated in three test classes (`MediaUtilsTest`, `AudioClipTest`-family, `SafeUriHandlerTest`).",
+      "benefit": "One-line future SDK bumps; revives the Task-3 round-1 suggestion that was deferred when there were only two call sites.",
+      "optional": true
+    }
+  ],
+  "positive_notes": [
+    "D25 scheme-whitelist correctly implemented: both parse and startActivity defensively guarded by runCatching — matches 'silently block, no exception' requirement exactly.",
+    "D17 path-traversal protection honored: `ABOUT_ASSET = \"about.md\"` is a `private const val`, never derived from state/user input. The constant is even documented with an inline KDoc.",
+    "FLAG_ACTIVITY_NEW_TASK is set before startActivity — correct when the UriHandler is invoked with a non-Activity context (tests use Application), avoiding runtime crash.",
+    "AboutScreen reads assets on Dispatchers.IO via produceState + withContext — no main-thread I/O; BuildConfig.VERSION_NAME fallback via takeIf { isNotBlank() } handles the edge case called out in the task.",
+    "11 TDD anchors covered one-to-one (http, https, intent, sms, tel, javascript, file, content, data, market, malformed) using Robolectric's Shadow ActivityManager — clean, no over-specification, each test asserts exactly one scheme outcome.",
+    "Cross-file consistency: SanctumApp passes `onAbout` callback matching the new ModelManagerScreen signature; NavHost destination 'about' matches `navigate(\"about\")` caller.",
+    "app/build.gradle.kts change is minimal and correct: `testOptions.unitTests.isIncludeAndroidResources = true` + `testImplementation(libs.junit / robolectric / androidx.test.core)` match the project's existing Robolectric-in-:core-runtime setup (Task 3/4 established the pattern).",
+    "Documented deviation from task.md (Icons.Outlined.Info instead of Icons.Default.Info) is correct per ux-guidelines.md 'Icons: Material Symbols, outlined style'.",
+    "Fallback string `about_load_failed` is shown on IOException and is correctly modeled as a stringResource (not hardcoded) — matches ux-guidelines 'No inline hardcoded strings in Compose'."
+  ]
+}

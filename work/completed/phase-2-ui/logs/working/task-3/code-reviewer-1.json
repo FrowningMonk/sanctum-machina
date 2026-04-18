@@ -1,0 +1,77 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "Task 3 implementation is solid: MediaUtils.kt ports Gallery helpers cleanly (including a well-justified redesign of calculateInSampleSize into a pure JVM-testable function and defensive improvements to calculatePeakAmplitude over Gallery's unguarded version), AudioClip.kt mirrors Gallery's plain-class contract, and ErrorLog.kt correctly enforces the closed whitelist via require() before any I/O and bounds the cause-chain message to 200 characters per TAC-15. All 10 existing errorLog.e() callsites across :core-runtime, :core-settings, and :app use whitelisted tags, so require() introduces no runtime regressions. All four explicit task deviations (Float return from calculatePeakAmplitude, added exifinterface and androidx.test.core deps, synthesized bitmap instead of checked-in test-image.jpg) are pragmatic and well-documented. Seven minor findings remain — none blocking.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt",
+      "line": 29,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "ALLOWED_COMPONENTS is declared as top-level package-public 'val ALLOWED_COMPONENTS: Set<String>'. Kotlin's default visibility for top-level declarations is public, and the exception message ('Allowed: $ALLOWED_COMPONENTS') leaks its contents via toString() anyway, so leaking is not a concern — but external modules can now accidentally couple to this symbol. Consider marking it 'internal' (scoped to :core-runtime) unless cross-module read-access is deliberately part of the contract. If external reads are intended (e.g. to pre-validate component strings before dispatching a coroutine), leave as-is and add a brief KDoc paragraph stating so.",
+      "benefit": "Tightens module API surface; prevents unintended coupling from :app or :core-settings to an ErrorLog internal.",
+      "optional": true
+    },
+    {
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/common/MediaUtils.kt",
+      "line": 96,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "calculatePeakAmplitude's Float return type diverges from Gallery's Int. The task file (edge-case note, line 121) explicitly sanctions this ('можно оставить Int return type. Если нужен Float — документировать отличие'), and the KDoc at MediaUtils.kt:93-95 documents it. Confirm the divergence is also captured in work/phase-2-ui/decisions.md under Task 3 once the decisions entry lands (current decisions.md does not yet contain a Task 3 entry). Minor because the KDoc self-documents, but the decisions.md record is part of task acceptance.",
+      "benefit": "Traceability: future readers find the rationale where the methodology trains them to look (decisions.md), not only inline.",
+      "optional": false
+    },
+    {
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/common/MediaUtils.kt",
+      "line": 115,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "openStream() silently swallows IOException and SecurityException, returning null. Callers (decodeSampledBitmapFromUri) surface this as 'image unavailable'. For Phase 2 this is correct per the task's edge-case contract, but it bypasses ErrorLog entirely, whereas D27 lists 'attachment-decode' in the whitelist specifically for this failure mode. Consider: either (a) accept an optional ErrorLog injector in a higher-level wrapper used by :app (task 7/8 domain) and log 'attachment-decode' on null-return, or (b) annotate openStream with a TODO-D27 comment so task 7/8 reviewers catch the un-logged failure. Not a MediaUtils.kt defect — it is an integration-point reminder.",
+      "benefit": "Ensures the 'attachment-decode' whitelist component added by this task actually gets used by downstream tasks instead of remaining dead vocabulary.",
+      "optional": true
+    },
+    {
+      "file": "core-runtime/src/test/kotlin/app/sanctum/machina/core/common/MediaUtilsTest.kt",
+      "line": 24,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "@Config(sdk = [33]) is hard-coded. The project compiles against compileSdk = 35 (see core-runtime/build.gradle.kts:10) and minSdk = 31. SDK 33 is an acceptable middle ground, but drift risk: if other Robolectric tests choose different SDK levels, behavior diverges silently. Consider introducing a shared test constant (e.g. 'TEST_SDK = 33' in a test-support file) and referencing it from both MediaUtilsTest and ErrorLogTest — both tests currently repeat @Config(sdk = [33]).",
+      "benefit": "Single point of change when bumping Robolectric's simulated SDK; prevents test-level SDK drift.",
+      "optional": true
+    },
+    {
+      "file": "core-runtime/src/test/kotlin/app/sanctum/machina/core/common/MediaUtilsTest.kt",
+      "line": 42,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "writeJpegTempFile creates ARGB_8888 bitmaps but JPEG is lossy/chroma-subsampled. For Robolectric's shadow-backed BitmapFactory this is fine and the test-intent (2048×2048 → ≤1024 after downscale) is robust to JPEG decoding differences. Still, document briefly why JPEG (over PNG) — the JPEG choice mirrors what the app will actually receive from Android Photo Picker (AC-10). Add a one-line KDoc on writeJpegTempFile stating this, so future readers don't wonder.",
+      "benefit": "Explains why JPEG was picked over PNG for the fixture format; lowers 'why' ambiguity.",
+      "optional": true
+    },
+    {
+      "file": "core-runtime/src/test/kotlin/app/sanctum/machina/core/common/MediaUtilsTest.kt",
+      "line": 63,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The decodeSampledBitmapFromUri_missingFile_returnsNull test has an inline comment (lines 66-67) that describes implementation internals ('FileInputStream throws; openStream returns InputStream that fails on use — returns null. Guard via null-safe branch'). Tests should assert behavior, not explain production code. Move the explanation to a KDoc on decodeSampledBitmapFromUri or openStream, and reduce the test comment to 'missing file → null (no exception propagated)'.",
+      "benefit": "Keeps tests focused on behavior; reduces duplication between test comments and production KDoc.",
+      "optional": true
+    },
+    {
+      "file": "core-runtime/src/test/kotlin/app/sanctum/machina/core/log/ErrorLogTest.kt",
+      "line": 29,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "setUp() uses 'logFile.parentFile?.deleteRecursively()' for cleanup-before-each. Robolectric's ApplicationProvider shares filesDir across tests within a run, so this is correct, but the absence of a @After cleanup means the last test's state persists between test classes. Add '@After fun tearDown() { logFile.parentFile?.deleteRecursively() }' symmetrically so ErrorLogTest cannot pollute other Robolectric-backed tests' filesDir (e.g. if future tests inspect filesDir/logs).",
+      "benefit": "Test isolation hygiene: zero state leaks between test classes.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 8,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 7,
+    "testCoverageAssessment": "excellent"
+  }
+}

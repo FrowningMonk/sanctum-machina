@@ -7,6 +7,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import app.sanctum.machina.ui.about.AboutScreen
 import app.sanctum.machina.ui.chat.ChatScreen
 import app.sanctum.machina.ui.modelmanager.ModelManagerScreen
 
@@ -19,6 +20,7 @@ fun SanctumApp() {
                 onLoad = { modelName ->
                     navController.navigate("chat/${Uri.encode(modelName)}")
                 },
+                onAbout = { navController.navigate("about") },
             )
         }
         composable(
@@ -31,6 +33,9 @@ fun SanctumApp() {
                 modelName = modelName,
                 onBack = { navController.popBackStack() },
             )
+        }
+        composable("about") {
+            AboutScreen(onBack = { navController.popBackStack() })
         }
     }
 }

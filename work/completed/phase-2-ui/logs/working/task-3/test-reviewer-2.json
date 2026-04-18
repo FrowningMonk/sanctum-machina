@@ -1,0 +1,35 @@
+{
+  "status": "passed",
+  "summary": "Round-1 fixes substantially resolve the prior findings. M1 (rotation litmus) is addressed via a documented Robolectric limitation — Robolectric's createBitmap does not rasterise matrix-transformed pixels, so pixel-motion assertions are infeasible in this harness. The switched-to assertNotSame(src, out) still catches the most common regression class (matrix mutation deleted entirely → identity matrix → createBitmap short-circuit returns source), and the limitation plus backstop (device smoke AC-13/AC-18) is documented in the test class KDoc. M2 is fully resolved — FLIP_VERTICAL, TRANSPOSE, TRANSVERSE branches now have explicit tests, and the two new dim-swapping orientations carry a strong litmus (identity matrix cannot swap dimensions). m1 is fully resolved — MediaUtilsPureTest.kt is a separate, Robolectric-free file (0.003s vs MediaUtilsTest's 2.968s demonstrates the D20 seam is now realised at the code level, not just documented). m2 partially resolved (description truncation covered; log rotation deferred with defensible YAGNI given fixture cost and absence from the TDD anchor list). m3 is fully resolved (assertSame replaces assertEquals in AudioClip reference test). All 55 core-runtime unit tests pass at HEAD. The residual litmus gap for dim-preserving rotations (180 / flipH / flipV are mutually indistinguishable in assertions) is a real but narrow limitation of the Robolectric harness; the one minor recommendation below addresses it non-blockingly.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "core-runtime/src/androidTest/ (does not exist) — complementary to core-runtime/src/test/kotlin/app/sanctum/machina/core/common/MediaUtilsTest.kt:107-142 (rotate180 / flipH / flipV)",
+      "issue": "The three dim-preserving orientations (ROTATE_180, FLIP_HORIZONTAL, FLIP_VERTICAL) are tested only by dim equality + assertNotSame(src, out). This correctly catches 'matrix mutation deleted' regressions (createBitmap full-region + identity short-circuit returns source), but cannot distinguish between the three ops: if the FLIP_HORIZONTAL branch were silently copy-pasted to also run for FLIP_VERTICAL, both tests would still pass. Dev's KDoc correctly identifies the Robolectric limitation and points to AC-13 / AC-18 device smoke as the pixel-level backstop. The workaround is acceptable for Phase 2, but the backstop is manual, not automated. There is no androidTest source set in :core-runtime today.",
+      "recommendation": "Non-blocking for Phase 2 — the KDoc-documented workaround + AC-13/AC-18 smoke is an acceptable compromise given Robolectric's rasterisation gap. Consider for a future phase (or tracked as tech-debt): add a minimal `core-runtime/src/androidTest/kotlin/app/sanctum/machina/core/common/MediaUtilsInstrumentationTest.kt` that runs on device/emulator and seeds pixel markers. Shape:\n\n  @RunWith(AndroidJUnit4::class)\n  class MediaUtilsInstrumentationTest {\n    @Test fun rotateBitmap_rotate180_swapsCornerPixels() {\n      val src = Bitmap.createBitmap(4, 8, Bitmap.Config.ARGB_8888).apply {\n        setPixel(0, 0, Color.RED)\n        setPixel(3, 7, Color.BLUE)\n      }\n      val out = rotateBitmap(src, ExifInterface.ORIENTATION_ROTATE_180)\n      assertEquals(Color.BLUE, out.getPixel(0, 0))\n      assertEquals(Color.RED,  out.getPixel(3, 7))\n    }\n    // Analogous tests for FLIP_HORIZONTAL / FLIP_VERTICAL / TRANSPOSE / TRANSVERSE\n  }\n\nTech-spec D20 notes 'instrumentation androidTest rejected — solo dev не гоняет regularly', so this is consistent with the existing trade-off — leave deferred unless Phase 3 introduces automated device runs."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt:80-84 (rotation branch) — untested in ErrorLogTest.kt",
+      "issue": "Log rotation (file > 2 MB → rename to errors.log.1, delete existing .1) still has no test. Dev's justification (2 MB fixture cost, not on TDD anchor list, manual smoke covers) is reasonable for Phase 2, but the branch is not trivial: it mixes a size check, conditional delete of a pre-existing rotated file, and a rename. A silent regression (e.g., rename order reversed, existing .1 not deleted → rename fails silently) would go unnoticed until a user hits 2 MB in production. Round-1 finding m2 explicitly called this out as a gap; dev's response is 'deferred', not 'resolved'.",
+      "recommendation": "Non-blocking. If included, the cost is bounded — write the seed via File.writeBytes, not via repeated errorLog.e() calls. Shape:\n\n  @Test fun rotation_overSizeThreshold_renamesAndClearsLog() = runBlocking {\n    val dir = File(context.filesDir, \"logs\").apply { mkdirs() }\n    File(dir, \"errors.log\").writeBytes(ByteArray(2 * 1024 * 1024 + 1))\n    File(dir, \"errors.log.1\").writeText(\"old rotated content\")  // verify it gets deleted\n    errorLog.e(\"inference\", \"trigger-rotate\")\n    assertTrue(File(dir, \"errors.log.1\").exists())\n    // After rotation, a new errors.log does NOT exist (rename moved it); next e() would recreate it.\n    // Assert old rotated content was overwritten by the rename:\n    assertTrue(File(dir, \"errors.log.1\").readText().contains(\"trigger-rotate\"))\n  }\n\nThe 2 MB write is ~100 ms on modern SSDs — a one-off cost in the suite. Alternative: keep deferred and note in decisions.md so Phase 3 picks it up. Either choice is defensible — flagging so it's not lost."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 6,
+    "litmusTest": {
+      "checked": 31,
+      "passed": 28,
+      "failed": 3
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 31,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}
