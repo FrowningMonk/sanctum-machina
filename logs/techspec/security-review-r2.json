@@ -1,0 +1,41 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 3,
+    "critical": 0,
+    "major": 0,
+    "minor": 3
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring Failures",
+      "title": "Self-failure breadcrumb present but not asserted by test",
+      "description": "Flow A step 4 now reads: 'Any Throwable inside the handler → outer catch emits a single android.util.Log.e(\"CrashHandler\", \"handler failed\", t) breadcrumb (non-suspend, lands in logcat — captured by later About-export) → Process.killProcess without retrying any step.' This correctly addresses the prior major finding: Log.e is non-suspend, safe in uncaught context, and recoverable via About-export's own-pid logcat dump on the next run. However, CrashHandlerTest cases listed in Testing Strategy (handler writes before Killer, pre-existing .dismissed deleted, killer called exactly once, >100 KB truncation, handlerShape_noSuspendCallsNoCoroutineImports) do not include an explicit assertion that the Log.e breadcrumb is emitted on the inner-failure path. Without a test, a future refactor could silently drop it.",
+      "location": "Section: Architecture — Flow A step 4; Section: Testing Strategy — CrashHandlerTest",
+      "impact": "Regression risk only. Current spec text is correct; the concern is that the breadcrumb emission is not defensively locked in by a test.",
+      "recommendation": "Add one `CrashHandlerTest` case: `handlerInternalFailure_logsBreadcrumbBeforeKill` — force the write step to throw (e.g. inject a failing File writer via the existing seam or a read-only logs dir), then use Robolectric's ShadowLog.getLogs() to assert exactly one ERROR-level entry with tag 'CrashHandler' before the Killer is invoked (verify ordering via InOrder).",
+      "cwe": "CWE-778"
+    },
+    {
+      "severity": "minor",
+      "category": "A03: Injection",
+      "title": "Argv-shape assertion added; confirm decimal-digit constraint for --pid",
+      "description": "LogcatReaderTest now lists: 'argv-shape assertion — the runner receives exactly [\"logcat\", \"-d\", \"-v\", \"threadtime\", \"--pid=<int>\", \"*:E\"] with no shell wrapping (guards Decision 8 + security A03).' This addresses the prior minor finding. The assertion shape is correct: list-form ProcessBuilder is not shell-parsed, so even in the theoretical case of Process.myPid() being manipulated (it cannot be — it's kernel-assigned) no meta-character expansion occurs. Prior review recommended asserting that the fifth element 'starts with the literal prefix --pid= followed only by decimal digits'. Current spec says '<int>' — ambiguous whether the test uses `matches(\"^--pid=\\\\d+$\")` or just an equality check against a specific pid.",
+      "location": "Section: Testing Strategy — LogcatReaderTest; Section: Architecture — LogcatReader description",
+      "impact": "None — no tainted input path exists. Purely a test-strength note.",
+      "recommendation": "In LogcatReaderTest, implement the argv check as two assertions: (a) args[0..3] and args[5] equal the exact literals [\"logcat\", \"-d\", \"-v\", \"threadtime\"] and \"*:E\"; (b) args[4].matches(Regex(\"^--pid=\\\\d+$\")) — the regex form hard-codes the 'decimal digits only after the prefix' guarantee and will fail any refactor that accidentally concatenates other state.",
+      "cwe": "CWE-78"
+    },
+    {
+      "severity": "minor",
+      "category": "A05: Security Misconfiguration",
+      "title": "Null-return from openOutputStream handled at the manager, but test coverage not explicitly listed",
+      "description": "Architecture section now documents: 'writeTo(uri: Uri, content: String) — uses ContentResolver.openOutputStream(uri) inside .use; a null return is treated as IOException(\"openOutputStream returned null\") so the caller's catch handles the single error path.' This resolves the prior minor finding — the null-return NPE risk is eliminated and the error path is funneled through the existing IOException handling (Toast/Snackbar 'Не удалось сохранить лог'). LogExportManagerTest lists `writeTo_ioException_surfaces` using ShadowContentResolver, but does not explicitly enumerate a null-return case separately from a throw-IOException case. A ShadowContentResolver configured to return null from openOutputStream is a distinct code path from one that throws.",
+      "location": "Section: Architecture — LogExportManager description; Section: Testing Strategy — LogExportManagerTest",
+      "impact": "Regression risk only. If ShadowContentResolver's IOException stub is the only coverage, a future refactor that swaps '?: throw IOException' for '!!' would pass tests but NPE at runtime.",
+      "recommendation": "Split LogExportManagerTest.writeTo_ioException_surfaces into two cases: `writeTo_openOutputStreamThrows_surfacesIOException` and `writeTo_openOutputStreamReturnsNull_surfacesIOException`. The second case stubs ContentResolver to return null and asserts IOException with the message 'openOutputStream returned null' propagates.",
+      "cwe": "CWE-252"
+    }
+  ]
+}

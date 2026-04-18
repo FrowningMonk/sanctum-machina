@@ -1,0 +1,81 @@
+{
+  "status": "changes_required",
+  "summary": "Checked 38 claims across tech-spec; found 1 critical mirage (Theme.SanctumMachina does not exist — theme is named Theme.Sanctum), plus several minor/major inconsistencies with project-knowledge docs. All other factual claims (file paths, existing APIs, dependency versions, manifest state, minSdk, buildConfig, testOptions flag, BuildConfig.VERSION_NAME, mainActivityFqn companion, ErrorLog whitelist, ChatScreen SnackbarHost, AboutFooter version Text, HeavyChangeDialog, ErrorLogTest Robolectric pattern, code-research §§3/8.1/9.1) confirm against code.",
+  "findings": [
+    {
+      "severity": "critical",
+      "type": "missing_pattern",
+      "claim": "tech-spec §Architecture and §Decision 3 say AndroidManifest.xml should reference `android:theme=\"@style/Theme.SanctumMachina\"` on the new `<activity android:name=\".crash.CrashReportActivity\" android:process=\":crash\" …>` and `AboutFooter`/`CrashReportActivity` rely on the existing `Theme.SanctumMachina` style.",
+      "reality": "The style declared in `app/src/main/res/values/themes.xml` is `Theme.Sanctum`, not `Theme.SanctumMachina`. The current `<application>` tag in `AndroidManifest.xml:29` uses `android:theme=\"@style/Theme.Sanctum\"`. `Theme.SanctumMachina` does not exist anywhere in `app/src/main/res/`.",
+      "source": "tech-spec.md §Architecture (line 37), §Decision 3 (lines 97, 265 in Risks row 1), §Dependencies list refers to existing theme.",
+      "fix": "Rename all tech-spec references from `Theme.SanctumMachina` to `Theme.Sanctum`. Equivalently: have Task 5 use `@style/Theme.Sanctum` in the manifest entry. Update Task 4's 'Files to read' (`Theme.kt`) and Decision 3's 'Anchors' accordingly."
+    },
+    {
+      "severity": "major",
+      "type": "name_mismatch",
+      "claim": "tech-spec §Dependencies lists `junit:junit 4.13.2` and Robolectric 4.12 as 'already on the classpath' — consistent with project-knowledge. §Testing Strategy states new tests 'mirror the Robolectric pattern of core-runtime/.../ErrorLogTest.kt'.",
+      "reality": "`gradle/libs.versions.toml` does have `junit = \"4.13.2\"` and `robolectric = \"4.12\"`, and `app/build.gradle.kts` declares `testImplementation(libs.junit)` + `testImplementation(libs.robolectric)` + `testImplementation(libs.kotlinx.coroutines.test)` + `testImplementation(libs.androidx.test.core)`. So the dependency claim is correct. BUT: `patterns.md §Testing & Verification` (line 90) says 'JUnit 5 + MockK' for `:core-runtime` unit tests, contradicting what actually ships. `ErrorLogTest.kt` uses JUnit 4 (`org.junit.Assert.*`, `org.junit.Test`, `@RunWith(RobolectricTestRunner::class)`). The tech-spec inherits `ErrorLogTest.kt` as canonical, which is JUnit 4. No MockK dependency is declared anywhere. This is an inconsistency between patterns.md and reality, not the tech-spec itself — flagging because tech-spec cites `patterns.md` as authoritative.",
+      "source": "tech-spec.md §Testing Strategy (line 225), §Dependencies (line 217).",
+      "fix": "Either correct `patterns.md §Testing & Verification` (JUnit 4.13.2 + Robolectric, MockK NOT on classpath) before tech-spec relies on it, OR add an explicit note in tech-spec that project-knowledge is stale on this point. The tech-spec itself is internally consistent since it explicitly names ErrorLogTest.kt as the pattern."
+    },
+    {
+      "severity": "major",
+      "type": "missing_pattern",
+      "claim": "tech-spec §Testing Strategy (integration tests paragraph) cites `architecture.md § Testing` as the authoritative source for 'androidTest instrumentation which this project explicitly does not configure'.",
+      "reality": "`architecture.md` has no `## Testing` or `### Testing` heading. It has an inline bolded 'Testing:' paragraph at line 51 that says 'JUnit 4.13.2 + Robolectric 4.12' and 'Compose UI tests explicitly not in scope' — but says nothing about androidTest / instrumentation. It also has a second 'Testing:' paragraph at line 262 in the Room context that actually says the opposite: 'DAO and migration tests run as androidTest (real SQLite) using androidx.room:room-testing'. `patterns.md §Testing & Verification > Test Infrastructure` (line 91) mentions `:app/src/androidTest/` as the target for DAO tests. Neither doc states 'this project does not configure androidTest'; the closest accurate support comes from `code-research §9.1` ('No androidTest / instrumentation suites — explicitly deferred').",
+      "source": "tech-spec.md §Testing Strategy > Integration tests (line 237).",
+      "fix": "Replace `architecture.md § Testing` with `code-research §9.1` (which IS accurate) or add an explicit note that androidTest is not yet configured in practice. Project-knowledge itself (architecture.md line 262, patterns.md line 91) assumes androidTest is available — this is the more general stale-docs issue."
+    },
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "tech-spec §Acceptance Criteria 5th bullet: '`./gradlew :app:assembleDebug` produces `app-debug.apk`; size increase over the current `main` APK ≤ ~200 KB.'",
+      "reality": "No prior APK size baseline is recorded in any tracked file (`NOTES.md` lists Phase 2 completion but no APK size). `./gradlew :app:assembleDebug` produces `app/build/outputs/apk/debug/app-debug.apk` by default, which is correct. The '≤ ~200 KB' figure is an estimate with no anchored baseline — not verifiable by the agent without running two builds. Minor: size-delta AC is procedurally weak but not factually wrong.",
+      "source": "tech-spec.md §Acceptance Criteria (line 290).",
+      "fix": "Either record a baseline APK size in NOTES.md before Task 5 runs, or soften the AC to 'size increase is reviewed by the user' (which is already captured implicitly by pre-deploy-qa handing off to user)."
+    },
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "tech-spec §Architecture (line 34) says `SanctumApplication.kt` has 'the existing `DefaultDownloadRepository.mainActivityFqn = …` assignment'.",
+      "reality": "Confirmed — `SanctumApplication.kt:11` sets `DefaultDownloadRepository.mainActivityFqn = \"app.sanctum.machina.MainActivity\"`, and `DownloadRepository.kt:81` declares the companion field `@Volatile var mainActivityFqn: String? = null`. Note: the tech-spec says the process-guard must be 'before the existing `DefaultDownloadRepository.mainActivityFqn = …` assignment (so a crash in that line is still captured)'. The field assignment is a simple string literal set — it cannot throw. The rationale is weak (a String literal assignment to a Volatile static field cannot fail), but the instruction is harmless.",
+      "source": "tech-spec.md §Architecture (line 34), §Decision 4 rationale (line 103).",
+      "fix": "Optional: weaken the rationale text — the real reason to install the handler first is to catch crashes in the Hilt injector / dependent modules that run between super.onCreate() and any later app init. The 'crash in that line is still captured' framing is technically correct but trivially so."
+    },
+    {
+      "severity": "minor",
+      "type": "missing_pattern",
+      "claim": "tech-spec §Dependencies claims `androidx.compose.material3 (BOM 2026.03.00)` supplies `Card`, `Scaffold`, `AlertDialog`, `TextButton`, `Snackbar`, `SnackbarHost`.",
+      "reality": "Confirmed. All these composables are already imported in the project (e.g. `SnackbarHost` + `SnackbarHostState` in `ChatScreen.kt:30-31`, `AlertDialog` + `TextButton` in `HeavyChangeDialog.kt:3,5`, `Card` + `CardDefaults` in `ModelManagerScreen.kt:14-15`, `Scaffold` used in multiple screens). Versions resolved by BOM 2026.03.00 — correct in libs.versions.toml line 7.",
+      "source": "tech-spec.md §Dependencies (line 213).",
+      "fix": "No fix needed."
+    }
+  ],
+  "stats": {
+    "total_claims_checked": 38,
+    "confirmed": 32,
+    "mirages_found": 1,
+    "verified_claims": [
+      "app/src/main/kotlin/app/sanctum/machina/SanctumApplication.kt exists (13 lines, @HiltAndroidApp)",
+      "app/src/main/kotlin/app/sanctum/machina/ui/about/AboutScreen.kt exists with AboutFooter showing BuildConfig.VERSION_NAME",
+      "app/src/main/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerScreen.kt exists",
+      "app/src/main/AndroidManifest.xml exists, declares .SanctumApplication + .MainActivity + SystemForegroundService",
+      "app/src/main/res/values/strings.xml exists",
+      "core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt exists",
+      "core-runtime/src/test/kotlin/app/sanctum/machina/core/log/ErrorLogTest.kt exists with @RunWith(RobolectricTestRunner::class) @Config(sdk=[33])",
+      "app/src/main/kotlin/app/sanctum/machina/ui/chat/HeavyChangeDialog.kt exists (two-button AlertDialog pattern)",
+      "ChatScreen.kt uses SnackbarHost + SnackbarHostState (lines 30-31, 258)",
+      "DefaultDownloadRepository.mainActivityFqn companion field exists (DownloadRepository.kt:81)",
+      "SanctumApplication.onCreate sets DefaultDownloadRepository.mainActivityFqn (line 11)",
+      "minSdk=31 in app/build.gradle.kts (line 15)",
+      "testOptions.unitTests.isIncludeAndroidResources = true (app/build.gradle.kts line 43)",
+      "buildConfig = true in buildFeatures (app/build.gradle.kts line 29)",
+      "androidx.activity activityCompose = 1.10.1 in libs.versions.toml line 8",
+      "composeBom = 2026.03.00 in libs.versions.toml line 7",
+      "materialIconExtended = 1.7.8 in libs.versions.toml line 10",
+      "hilt = 2.57.1 in libs.versions.toml line 5",
+      "robolectric = 4.12 in libs.versions.toml line 19",
+      "junit = 4.13.2 in libs.versions.toml line 18"
+    ]
+  }
+}

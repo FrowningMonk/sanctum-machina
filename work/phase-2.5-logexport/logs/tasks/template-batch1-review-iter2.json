@@ -1,0 +1,61 @@
+{
+  "validator": "task-validator",
+  "iteration": 2,
+  "batch": [2, 4, 5, 6, 7],
+  "scope": "narrowed — verify round-1 listed fixes + regressions only; same-wave dependency findings (Task 5/6/7 wave=2 mutual deps) explicitly out of iter2 scope per user instructions",
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 7,
+      "section": "Implementation hints / Acceptance Criteria",
+      "issue": "Task 7 still uses `Locale.US` for the suggested-filename `SimpleDateFormat` (AC line 54: 'Locale.US'; hint line 125: `SimpleDateFormat(\"'sanctum-log-'yyyyMMdd-HHmm'.txt'\", Locale.US)`), whereas Task 4 and Task 6 (now aligned to each other in iter2) both use `Locale.ROOT`. All three tasks write the same filename pattern `sanctum-log-YYYYMMDD-HHmm.txt`, so Locale choice should be uniform. Not a regression (this was the Task 7 form on iter1), but worth a single-line sweep while iter2 is open.",
+      "fix": "Change Task 7 Locale references from `Locale.US` to `Locale.ROOT` (AC bullet and Implementation hint code snippet). `yyyyMMdd-HHmm` is ASCII-only under either locale, so the behavioural result is identical; the edit is purely for cross-task consistency. Not blocking."
+    }
+  ],
+  "round1_fix_verification": {
+    "task_2": {
+      "killer_default_companion_consistent": "resolved — lines 26, 33, 129, 156 all use `companion object Default : Killer` inside the `Killer` interface; Task 5 line 53/126/142 imports/uses `Killer.Default` by the same name",
+      "java_reflection_clarified": "resolved — TDD Anchor line 67 now explicitly calls out `::class.java.declaredMethods` (Java reflection) vs `KClass.declaredMemberFunctions` (Kotlin reflection) and notes `kotlin-reflect` is not on test classpath",
+      "lazy_rationale_corrected": "resolved — Details → Files (CrashState) line 128 now explains 'без `lazy`. `filesDir` к моменту инъекции Hilt-синглтона ... уже готов, ленивость ничего не даёт' with the alternative of plain `val` fields",
+      "constructor_seam_hint_rephrased": "resolved — lines 127 (Files), 151 (Edge cases), 158 (Implementation hints) now all say 'форма на усмотрение имплементатора: single-method interface, high-order function, что угодно' — no longer prescribes a specific shape"
+    },
+    "task_4": {
+      "r1_clarification_note_added": "resolved — Verify-user subsection line 124 contains explicit 'R1 (task-decomposition SKILL.md Rules)' paragraph explaining the intentional `verify: [user] → [smoke]` downgrade and the execution-order reason (Task 4 files are backend/plumbing slices not reachable without Task 5/6/7)"
+    },
+    "task_5": {
+      "download_repository_filename_clarified": "resolved — Context Files 'Code files — read for context' section line 82 now says 'файл называется `DownloadRepository.kt`, а не `DefaultDownloadRepository.kt` — класс `DefaultDownloadRepository` объявлен внутри него'",
+      "killer_default_consistent_with_task_2": "resolved — lines 53 (AC), 120 (Implementation hints in Details → Files), 126 (Dependencies), 142 (Implementation hints) all use `Killer.Default` with an explicit 'companion object внутри интерфейса `Killer`' note; matches Task 2 line 129 production declaration"
+    },
+    "task_6": {
+      "depends_on_includes_4": "resolved — frontmatter line 3: `depends_on: [1, 3, 4, 5]` (Task 4 added)",
+      "system_nanotime_as_lambda": "resolved — What-to-do step 3 line 37 uses `nowNanos = { System.nanoTime() }`; Implementation hints line 139 adds explicit warning 'именно лямбда `{ System.nanoTime() }`, не `::System.nanoTime` — bound reference к статическому Java-методу не компилируется в Kotlin'",
+      "simpledateformat_matches_task_4": "resolved — What-to-do line 35 uses `SimpleDateFormat(\"yyyyMMdd-HHmm\", Locale.ROOT).format(Date())` with the explicit note 'тот же формат и тот же API, что использует Task 4 — `java.time` в проекте не применяется'",
+      "pk_paths_use_references": "resolved — Context Files lines 71–74 use `../../../.claude/skills/project-knowledge/references/{project,architecture,patterns,ux-guidelines}.md`"
+    },
+    "task_7": {
+      "pk_paths_include_references": "resolved — Context Files lines 72–75 use `../../../.claude/skills/project-knowledge/references/{project,architecture,patterns,ux-guidelines}.md`",
+      "chatscreen_snackbarhost_pattern_accurate": "resolved — Description line 24 clarifies `ChatScreen` is split across two composables ('состояние создаётся в внешнем композабле (`ChatScreen.kt:68`) и потребляется во внутреннем private композабле, владеющем `Scaffold` (`ChatScreen.kt:258`)') and that `ModelManagerScreen` is single-composable so state is inline; Context Files line 82 confirms reference lines 68–74 and 258; verified against actual `ChatScreen.kt` (grep: line 68 `val snackbarHostState = remember { SnackbarHostState() }`, line 171 parameter pass, line 258 `snackbarHost = { SnackbarHost(hostState = snackbarHostState) }`)",
+      "contentpadding_call_site_edit_explicit": "resolved — What-to-do step 9 line 43 now contains the call-site instruction verbatim: 'также заменить существующий аргумент `contentPadding = innerPadding` на вызове `ModelList` в `ModelManagerScreen.kt:72` на `contentPadding = PaddingValues(0.dp)` — без этой правки отступ удвоится'; confirmed against actual `ModelManagerScreen.kt:72` which indeed reads `contentPadding = innerPadding,`"
+    }
+  },
+  "regressions": [],
+  "out_of_scope_preexisting_findings": {
+    "note": "Round 1 critical findings about same-wave depends_on (Task 5 wave=2 depends_on=[2,4] with Task 4 at wave=2; Task 6 wave=2 depends_on=[1,3,4,5] with Task 4/5 at wave=2; Task 7 wave=2 depends_on=[1,2,3,4,5,6] with Tasks 4/5/6 at wave=2) remain unchanged in iter2 task files. Per user iter2 scope instructions, these are explicitly excluded from iter2 re-check and are not counted in status. If the decision is that Wave 2 is a phase label rather than strict parallelism (as stated in Task 5 Details → Dependencies line 129: 'Wave 2 — это фазовая метка, а не строгий параллелизм ... порядок внутри самой Wave 2 задаёт `depends_on`'), these are documented-intentional and should be closed with a project-level note rather than a task-file wave bump. Not blocking iter2 approval.",
+    "task_5_wave": "wave=2 depends_on=[2,4] — unchanged from iter1",
+    "task_6_wave": "wave=2 depends_on=[1,3,4,5] — unchanged from iter1",
+    "task_7_wave": "wave=2 depends_on=[1,2,3,4,5,6] — unchanged from iter1",
+    "task_2_minor_todo_marker": "Task 2 What-to-do step 3 still contains the `TODO(Task 4): switch to CrashReportActivity::class.java once the class lands` marker and Class.forName-fallback. This was a round-1 minor finding not included in iter2 narrowed scope. Not a regression."
+  },
+  "stats": {
+    "tasks_checked": 5,
+    "round1_items_verified": 15,
+    "round1_items_resolved": 15,
+    "new_regressions": 0,
+    "new_issues_found": 1,
+    "critical": 0,
+    "major": 0,
+    "minor": 1
+  }
+}

@@ -1,0 +1,105 @@
+{
+  "status": "needs_improvement",
+  "summary": "Test strategy is well-structured for a size-M feature bounded by the project's explicit no-instrumentation constraint, and the six planned test classes cover most user-spec AC behaviourally. The Killer/CommandRunner seams are appropriate and testable. However, three meaningful gaps exist: (1) the full CrashHandler -> CrashState -> banner-visibility state-transition across filesystem boundaries has no planned orchestrator test, leaving the US-B 'new crash resets dismiss-flag' chain uncovered by any one test; (2) a handful of AC bullets are covered only weakly or not at all (overwrite semantics on repeated crashes, SanctumApplication process-name guard selection logic, SAF in-flight guard flag, filesystem-driven state when logs dir does not exist at CrashState construction); (3) head-vs-tail truncation is listed but the assertion shape isn't specified strongly enough to prevent a symmetric mistake. None of the listed tests appear meaningless or mock-only, and no tests overlap — the strategy is just under-specified in a couple of seams.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy / Unit tests",
+      "issue": "No planned test exercises the full banner-visibility state transition driven by CrashHandler <-> CrashState across the filesystem. user-spec US-B has a behavioural rule that is a genuine cross-component contract: 'new crash resets the dismiss-flag so the banner reappears on next cold start'. CrashHandlerTest covers 'pre-existing .dismissed deleted during write' and CrashStateTest covers markDismissed/clear/refresh in isolation, but nothing covers the end-to-end sequence: (a) CrashState.markDismissed() -> flow=false; (b) simulate CrashHandler writing crash.log + deleting .dismissed on disk; (c) CrashState.refresh() -> flow flips back to true. If step (b) contract drifts (e.g. handler forgets to delete .dismissed), both isolated tests still pass but the product regresses silently.",
+      "recommendation": "Add a CrashFilesystemContractTest (or extend CrashStateTest with a 'crashHandler_and_crashState_share_file_contract' case): in a single Robolectric test, instantiate both CrashHandler (with stubbed Killer and a no-op startActivity) and CrashState against the same filesDir/logs/ directory. Sequence: markDismissed -> assertFalse(hasUnresolvedCrash.value); invoke CrashHandler.uncaughtException(thread, RuntimeException()) with the Killer seam to avoid JVM kill; refresh(); assertTrue(hasUnresolvedCrash.value); assertFalse(File(logs, 'crash.log.dismissed').exists()); assertTrue(File(logs, 'crash.log').exists()). This is the one test that justifies the filesystem-only Decision 6."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy / Unit tests (CrashStateTest)",
+      "issue": "Fresh-install invariant (user-spec 'Инвариант на установке и в пустом состоянии') is explicitly tested for LogExportManager ('fresh-install path ... no logs/ folder yet'), but the equivalent for CrashState is not listed. If CrashState is constructed before filesDir/logs/ exists (first cold start, no prior ErrorLog writes), hasUnresolvedCrash.value must equal false without throwing. This is a common first-launch NPE/IOException source.",
+      "recommendation": "Add to CrashStateTest: 'constructed_before_logs_dir_exists_returns_false'. Setup: context.filesDir/logs does not exist (deleteRecursively on parent). Instantiate CrashState. Assert hasUnresolvedCrash.value == false. Assert no exception during refresh(). Assert logs dir is still not created as a side-effect of a read (reads must not create the dir; only the writer CrashHandler does)."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy / Unit tests (CrashHandlerTest)",
+      "issue": "Overwrite semantics on repeated crashes — 'Запись о краше хранит только последнее происшествие (overwrite). Цепочка подряд идущих крашей в одной сессии сведётся к самому свежему' from user-spec 'Технические решения' — is not an explicit test case. CrashHandlerTest lists 'uncaught exception writes crash.log' but does not verify that a second uncaught call with a different exception type/message fully overwrites (not appends) the prior content, including stripping any previous [truncated at 100 KB] marker.",
+      "recommendation": "Add CrashHandlerTest case 'second_crash_overwrites_first': invoke handler with RuntimeException('first') -> read crash.log. Invoke again with IllegalStateException('second') -> read crash.log. Assert content contains 'IllegalStateException' and 'second', does NOT contain 'RuntimeException' or 'first'. This also validates that a truncation marker from the first crash is not carried over into a second, shorter crash."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy / Integration tests",
+      "issue": "The justification 'Size M + no instrumentation -> no integration tests' is correct for androidTest-flavoured integration, but it conflates 'integration test' with 'instrumentation'. Several integration-flavoured scenarios are tractable in Robolectric on the existing unit-test classpath and are currently not planned: (a) SanctumApplication.onCreate process-name guard — inject a fake processName and assert handler install happens only when it equals packageName; (b) LogExportManager.buildExport(About) with a real LogcatReader wired to a stub CommandRunner plus real errors.log / crash.log on Robolectric filesystem — end-to-end composition of the five sections; (c) LogExportManager.writeTo(uri, content) via Robolectric's ShadowContentResolver with a test Uri backed by ByteArrayOutputStream, asserting IOException path surfaces to the caller and crash.log is NOT deleted. These cover behaviour that the listed unit tests split across files and never re-compose.",
+      "recommendation": "Keep 'No androidTest integration' as stated but add a short sub-section under Testing Strategy: 'Composition tests (Robolectric, in app/src/test/)'. List three: (1) SanctumApplicationProcessGuardTest — injects processName via testable seam, asserts Thread.getDefaultUncaughtExceptionHandler is/isn't our CrashHandler; (2) LogExportManagerCompositionTest — wires DeviceInfoCollector + LogcatReader + file readers with real Robolectric filesDir + stubbed CommandRunner, asserts full .txt shape for About source; (3) LogExportManagerWriteToTest — uses Robolectric ShadowContentResolver or a fake ContentResolver returning a ByteArrayOutputStream, asserts happy path writes exact bytes and IOException surfaces to caller. None require androidTest — all run with the existing Robolectric 4.12 + kotlinx-coroutines-test stack."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy (no test class covers SAF in-flight guard flag)",
+      "issue": "user-spec AC 'Повторное нажатие «Сохранить лог» до открытия системного диалога не запускает второй диалог' is a testable piece of logic (a boolean in-flight flag with a reset on launcher callback). tech-spec Risks row 6 mentions 'In-flight guard flag in both CrashReportActivity and RestartCrashBanner'. This logic lives inside CrashReportActivity + banner-hosting Compose code, so a pure unit test is impractical — BUT the decision to skip it is not stated. It either needs extraction (a small InFlightGate class) with a unit test, or an explicit line 'covered by manual verification' tied to a user-spec AC.",
+      "recommendation": "Either (preferred) extract the in-flight gate as a pure-JVM class (similar to TapCounter) with states Idle/InFlight and transitions onTap / onResult, and add InFlightGateTest covering: tap twice while Idle -> onResult callback fires only once; onResult resets to Idle; new tap then works. Or update Testing Strategy to explicitly list the in-flight guard AC as 'manual verification, user-spec Negative path'. As written it falls through the cracks."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "Section: Testing Strategy / Unit tests (LogExportManagerTest, LogcatReaderTest)",
+      "issue": "The tech-spec lists 'logcat tail-truncated at 100 KB' and 'crash.log head-truncated at 100 KB with marker' as separate bullets but does not pin the discriminating assertion. A test that only checks 'content.length == 100 * 1024' and 'content.contains(\"[truncated at ...]\")' passes for both head- and tail-truncation — a symmetric bug (collector cuts the wrong end) would not be caught. Given Decision 7 explicitly differentiates the two directions on rationale grounds (head for crash.log preserves top frames; tail for logcat preserves most-recent lines), the asymmetry must be pinned in assertions.",
+      "recommendation": "Strengthen the two test bullets. For LogExportManagerTest crash.log truncation: seed a crash.log whose first 100 bytes are the literal 'HEAD_MARKER\\n' followed by 150 KB of filler and then 'TAIL_MARKER' at the end; assert result contains 'HEAD_MARKER' AND does NOT contain 'TAIL_MARKER' AND ends with '[truncated at 100 KB]'. For LogcatReaderTest truncation: drive the CommandRunner with 150 KB where first line is 'FIRST_LINE' and last line is 'LAST_LINE'; assert result contains 'LAST_LINE' AND does NOT contain 'FIRST_LINE'. Without this directional anchor, the test is weak."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy / Unit tests (LogExportManagerTest)",
+      "issue": "user-spec AC '`errors.log.1` — включается только если файл есть' is partially covered ('errors.log.1 absent -> section omitted'), but the positive case 'errors.log.1 exists -> section appears with header === errors.log.1 === in position #3 of the sequence' is not explicitly listed. Also absent: ordering assertion when all four sections exist. Section order is load-bearing per Decision 1 / user-spec AC '...в порядке: crash.log, errors.log, errors.log.1, logcat'.",
+      "recommendation": "Add LogExportManagerTest case 'all_sections_present_correct_order': seed all four source files with distinguishable content. Assert indexOf('=== crash.log ===') < indexOf('=== errors.log ===') < indexOf('=== errors.log.1 ===') < indexOf('=== logcat ==='). Also assert each section header appears exactly once."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy / Unit tests (LogExportManagerTest)",
+      "issue": "ExportSource.About -> logcat populated vs ExportSource.CrashReport -> '[logcat available only via About export]' placeholder (Decision 8) is listed for CrashReport only. The symmetric About-path assertion — that the placeholder is NOT present and the live logcat output is used — is not. Without it, a refactor that flips the enum check inside buildExport (accidentally using the placeholder for both sources) would still pass the listed tests.",
+      "recommendation": "Add to LogExportManagerTest: 'about_source_uses_live_logcat_output'. Given a CommandRunner that emits 'FRESH_LOGCAT_MARKER', call buildExport(About). Assert result contains 'FRESH_LOGCAT_MARKER'. Assert result does NOT contain 'logcat available only via About export'."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "Section: Testing Strategy / Unit tests (CrashHandlerTest — 'hard time budget' bullet)",
+      "issue": "'handler body executes under hard time budget (smoke assertion on elapsed nanos)' is flaky on shared CI/dev machines and does not actually defend the invariant it claims (ANR cascade during uncaught). Timing assertions are high-jitter in Robolectric and a false alarm here would train the team to ignore it.",
+      "recommendation": "Either drop the time-budget test or replace it with a structural test that defends the real invariant: 'handler does not spawn a coroutine scope / does not call a suspend function'. Concretely: assert CrashHandler.uncaughtException is a plain non-suspend function; assert the class has no kotlinx.coroutines import (via reflection or a compile-time constraint test). If the intent is to catch regressions where someone adds errorLog.e(...) (suspend) back into the handler, a static check against the crash/ package (tech-spec AC already has 'grep -rEn \"ErrorLog|errorLog\" app/src/main/kotlin/.../crash/ -> zero hits') covers it more reliably than a timing test."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy / Unit tests (TapCounterTest)",
+      "issue": "TapCounterTest bullets cover 7 taps, reset on >2s gap, <7 no-trigger, and 'trigger fires once not repeatedly'. Missing edge: exactly-at-2-s gap (boundary condition). Whether '>2 s' is strict or non-strict (>= vs >) matters for the dev-gesture UX — a user with a slow thumb at 2.0s exactly should NOT reset (user-spec says 'не более 2 секунд' i.e. <= 2 s keeps the streak).",
+      "recommendation": "Add TapCounterTest case 'gap_exactly_2s_does_not_reset': simulate taps at t = 0, 2_000_000_000 ns (exactly 2 s). Assert counter is 2, not 1. And symmetrically 'gap_just_over_2s_resets' at 2_000_000_001 ns. This pins the inequality direction."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy (no explicit Compose UI tests — correctly justified, but one AC slips through)",
+      "issue": "user-spec AC 'Баннер появляется тогда и только тогда, когда ... crash.log есть ∧ ¬.dismissed есть' — the 'тогда и только тогда' is a true iff that maps exactly onto CrashState.hasUnresolvedCrash (covered in CrashStateTest). Good. But the wiring assertion 'ModelManagerScreen observes that StateFlow and renders/hides RestartCrashBanner accordingly' is not covered by any listed test and is explicitly deferred to manual verification (Task 7 Verify-user). Given the project has no Compose UI tests, this is the right call — but Testing Strategy should say so explicitly.",
+      "recommendation": "Add one sentence to Testing Strategy / Integration tests section: 'ModelManagerScreen <-> CrashState wiring (LaunchedEffect refresh, banner show/hide) and CrashReportActivity SAF interaction are covered by user-spec Как проверить / Пользователь проверяет (US-B, US-A). Rationale: project has no Compose UI test infra (architecture.md § Testing, code-research §9.1).' This closes the paper trail."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy / Unit tests (DeviceInfoCollectorTest)",
+      "issue": "Listed: 'active model id / none'. The 'none' path is one AC. The empty-downloaded-models case ('downloaded models:\\n' with nothing under it, or a '[none]' sentinel — tech-spec sample shows indented list but does not specify the empty-list rendering) is a separate rendering branch. A fresh install produces zero downloaded models and this is the first header the user ever sees in the exported .txt.",
+      "recommendation": "Add DeviceInfoCollectorTest case 'empty_downloaded_models_rendered_distinctly'. Provide stub returning empty list. Assert the rendered header has a clear sentinel (e.g. '  - [none]' or 'downloaded models: [none]') rather than a trailing-colon-with-blank-line that looks like a formatting bug to the reviewing developer. Also pin the chosen convention in tech-spec Data Models."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 3,
+    "litmusTest": {
+      "checked": 0,
+      "passed": 0,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 6,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

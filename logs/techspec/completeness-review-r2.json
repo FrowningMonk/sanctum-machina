@@ -1,0 +1,69 @@
+{
+  "status": "pass",
+  "round": 2,
+  "sources": {
+    "user_spec": true,
+    "tech_spec": true,
+    "tasks": false
+  },
+  "requirements_total": 28,
+  "requirements_covered": 27,
+  "requirements_partial": 1,
+  "requirements_missing": 0,
+  "round1_findings_resolved": {
+    "F-01": {
+      "original": "In-flight guard on SAF cancel not explicitly specified",
+      "resolution": "Flow A step 7 now says 'the guard flag is cleared in a finally in the result callback regardless of branch' — covers null URI (cancel) path explicitly.",
+      "status": "resolved"
+    },
+    "F-02": {
+      "original": "Banner SAF IOException path had no error-handling spec",
+      "resolution": "Flow B step 4 now has three explicit outcome branches: success → crashState.clear() + Snackbar; IOException → Snackbar 'Не удалось сохранить лог', clear NOT called, crash.log stays; null URI cancel → silent, guard clears.",
+      "status": "resolved"
+    },
+    "F-05": {
+      "original": "CrashReportActivity own crash not addressed in Risks",
+      "resolution": "Risks table now has a dedicated row documenting that CrashReportActivity crashes cannot be caught by CrashHandler (different process), lists specific mitigations (no Hilt, only strings from Task 1, existing Theme.Sanctum, no DataStore), names the residual fallback (system 'app stopped' dialog + restart-banner via intact crash.log on disk), and explicitly labels this a documented residual limitation.",
+      "status": "resolved"
+    },
+    "F-06": {
+      "original": "ProcessBuilder pipe-buffer deadlock unaddressed in LogcatReader",
+      "resolution": "LogcatReader description now explicitly requires concurrent stdout consumption while waiting for process exit, redirectErrorStream(true) to collapse stderr into the readable stream, and destroy() on timeout. This matches the standard ProcessBuilder hazard mitigation.",
+      "status": "resolved"
+    },
+    "F-08": {
+      "original": "Killer interface seam YAGNI — Robolectric stubs Process.killProcess already",
+      "resolution": "Judgment call: keep. Test-reviewer confirmed the seam is standard and correct. The tech-spec's stated reason ('to allow unit-testing without actually killing the JVM') is technically imprecise — Robolectric does stub killProcess as a no-op. However, the seam adds negligible complexity (~5 lines), follows the explicit-dependency pattern used in LogcatReader's CommandRunner, and the test-reviewer's sign-off constitutes a domain judgment that overrides the pure YAGNI argument. Rebuttal is acceptable.",
+      "status": "accepted_rebuttal",
+      "note": "The justification in tech-spec is technically imprecise for the Robolectric environment. The seam is harmless. No further action required."
+    },
+    "F-12": {
+      "original": "Banner double-tap guard mentioned in Risks but absent from Architecture and Flow B",
+      "resolution": "Architecture entry for RestartCrashBanner now explicitly states 'The hosting screen owns an in-flight guard flag (remember { mutableStateOf(false) }) passed to the banner so repeated Сохранить лог taps before the SAF dialog returns are ignored.' Flow B step 4 confirms the flag flips to true before the SAF launcher fires.",
+      "status": "resolved"
+    },
+    "F-13": {
+      "original": "Privacy trade-off (unfiltered export) not documented in Decisions",
+      "resolution": "Decision 11 added: explicitly states LogExportManager does not redact/sanitize/hash any content, names the specific data that may appear verbatim (stacktraces, SELinux contexts, hardware identifiers, third-party error messages), justifies with diagnosis-completeness rationale and user-controlled SAF destination, and anchors to the user-spec Ограничения bullet.",
+      "status": "resolved"
+    },
+    "F-15": {
+      "original": "No unit test for writeTo() IOException path",
+      "resolution": "LogExportManagerTest now lists writeTo_ioException_surfaces using ShadowContentResolver to force IOException, asserting the caller distinguishes it from success.",
+      "status": "resolved"
+    }
+  },
+  "findings": [
+    {
+      "id": "R2-F-01",
+      "type": "partial",
+      "source": "tech-spec",
+      "requirement": "US-C / AC 'Содержимое экспортированного .txt — секция logcat'",
+      "detail": "LogcatReader description now correctly requires concurrent stdout consumption and destroy-on-timeout. However, the unit test coverage (LogcatReaderTest via CommandRunner stub) still cannot exercise real pipe-buffer behavior. This is a known and accepted limitation of the unit-only testing strategy for size M — the gap is smaller now that the spec explicitly mandates the concurrent-read pattern, since a code-reviewer can verify implementation against the spec. Severity downgraded to minor: the spec is now correct; the residual risk is implementation-level, not spec-level.",
+      "severity": "minor"
+    }
+  ],
+  "new_gaps_from_edits": [],
+  "new_scope_creep": [],
+  "summary": "All 8 round-1 findings are resolved. F-01 (guard reset on cancel): Flow A step 7 now has explicit finally-clear. F-02 (banner IOException): Flow B step 4 now has three explicit branches. F-05 (CrashReportActivity own crash): Risks table has a dedicated row with mitigations and documented residual. F-06 (pipe deadlock): LogcatReader now mandates concurrent stdout consumption, redirectErrorStream, and destroy-on-timeout. F-08 (Killer YAGNI): rebuttal accepted — test-reviewer sign-off is a valid domain judgment; seam is harmless. F-12 (banner double-tap): Architecture section and Flow B step 4 now both specify the in-flight guard. F-13 (privacy): Decision 11 added with full rationale and alternatives. F-15 (writeTo IOException test): writeTo_ioException_surfaces added to LogExportManagerTest using ShadowContentResolver. No new gaps or scope creep introduced by the edits. One residual minor finding (R2-F-01): LogcatReader pipe-buffer behavior remains untestable via the CommandRunner stub, but the spec now correctly mandates the mitigation pattern — residual risk is implementation-level. Status: pass (zero critical findings)."
+}

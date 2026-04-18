@@ -1,0 +1,52 @@
+{
+  "validator": "reality-checker",
+  "batch": [6, 7, 11],
+  "iteration": 2,
+  "status": "approved",
+  "scope": "Narrowed re-check of specific points after round-1 fixes. Only targeted claims re-verified; clean areas not re-audited.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 6,
+      "issue": "Task 6 uses `Locale.ROOT` for `SimpleDateFormat(\"yyyyMMdd-HHmm\", Locale.ROOT)` while Task 7 uses `Locale.US` for the identical format string and purpose. Both locales produce ASCII-only digits and are safe. However, the inconsistency means a developer following Task 6 and a developer following Task 7 will write slightly different code for the same filename pattern. Round-1 fix correctly aligned the API (SimpleDateFormat vs java.time) but left the Locale divergence.",
+      "fix": "Pick one locale and apply it to both tasks. `Locale.US` is slightly more explicit for ASCII-digit filenames and is what Task 7 already specifies. Change Task 6 line 35 and the imports hint (line 43, already has `java.util.Locale`) to use `Locale.US` to match Task 7."
+    }
+  ],
+  "verified": {
+    "task_6": {
+      "nanoTime_lambda_syntax": "PASS — Task 6 line 139 now correctly reads `nowNanos = { System.nanoTime() }` with explicit note that `::System.nanoTime` bound reference does not compile in Kotlin. Round-1 fix applied correctly.",
+      "SimpleDateFormat_format_matches_task4": "PASS — Task 6 line 35 uses `SimpleDateFormat(\"yyyyMMdd-HHmm\", Locale.ROOT).format(Date())`. Format string `yyyyMMdd-HHmm` matches Task 4 pattern. API is consistent (java.text.SimpleDateFormat, not java.time). Minor Locale divergence from Task 7 noted as finding above.",
+      "depends_on_no_hallucinated_deps": "PASS — `depends_on: [1, 3, 4, 5]`. Task 1=strings, Task 3=LogExportManager+TapCounter, Task 4=CrashReportActivity UI (needed for end-to-end dev-gesture user-verify), Task 5=CrashHandler installed + manifest entry. All four dependencies are substantively justified in the task description (lines 26, 119-131). No hallucinated deps detected.",
+      "pk_project_md": "PASS — `.claude/skills/project-knowledge/references/project.md` exists. Relative path `../../../.claude/skills/project-knowledge/references/project.md` from `work/phase-2.5-logexport/tasks/` resolves correctly.",
+      "pk_architecture_md": "PASS — `.claude/skills/project-knowledge/references/architecture.md` exists.",
+      "pk_patterns_md": "PASS — `.claude/skills/project-knowledge/references/patterns.md` exists.",
+      "pk_ux_guidelines_md": "PASS — `.claude/skills/project-knowledge/references/ux-guidelines.md` exists."
+    },
+    "task_7": {
+      "pk_project_md": "PASS — same resolution as Task 6; file confirmed present.",
+      "pk_architecture_md": "PASS — confirmed present.",
+      "pk_patterns_md": "PASS — confirmed present.",
+      "pk_ux_guidelines_md": "PASS — confirmed present.",
+      "ChatScreen_snackbarHostState_line_68": "PASS — `ChatScreen.kt` line 68: `val snackbarHostState = remember { SnackbarHostState() }`. Matches task description exactly.",
+      "ChatScreen_SnackbarHost_line_258": "PASS — `ChatScreen.kt` line 258: `snackbarHost = { SnackbarHost(hostState = snackbarHostState) },`. Matches task description exactly.",
+      "ModelManagerScreen_contentPadding_line_72": "PASS — `ModelManagerScreen.kt` line 72: `contentPadding = innerPadding,` inside `ModelList(...)` call. Task 7 step 9 correctly identifies this line and instructs replacing it with `contentPadding = PaddingValues(0.dp)`. Edit instruction is accurate.",
+      "skill_path_style": "NOTE — Task 7 Required Skills block uses `~/.claude/skills/code-writing/SKILL.md` while Tasks 6 and 9 use `../../../.claude/skills/...`. Both conventions resolve to the same skill file. Not a functional issue — no finding raised."
+    },
+    "task_11": {
+      "upstream_code_audit_report_path": "PASS — Task 11 references `work/phase-2.5-logexport/logs/working/task-8/code-audit-report.md`. Task 8 declares its output at `work/phase-2.5-logexport/logs/working/task-8/code-audit-report.md` (Task 8 lines 44, 88, 100, 165). Paths match exactly.",
+      "upstream_security_audit_report_path": "PASS — Task 11 references `work/phase-2.5-logexport/logs/working/task-9/security-audit-report.md`. Task 9 declares its output at that path (Task 9 lines 32, 37). Paths match exactly.",
+      "upstream_test_audit_report_path": "PASS — Task 11 references `work/phase-2.5-logexport/logs/working/task-10/test-audit-report.md`. Task 10 declares its output at that path (Task 10 lines 51, 90). Paths match exactly.",
+      "pre_deploy_qa_skill_path": "PASS — `.claude/skills/pre-deploy-qa/SKILL.md` exists. Relative path `../../../.claude/skills/pre-deploy-qa/SKILL.md` from task location resolves correctly.",
+      "pk_project_md": "PASS — confirmed present.",
+      "pk_architecture_md": "PASS — confirmed present.",
+      "pk_patterns_md": "PASS — confirmed present.",
+      "pk_deployment_md": "PASS — `.claude/skills/project-knowledge/references/deployment.md` exists. Task 11 references it correctly."
+    }
+  },
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 18,
+    "issues_found": 1
+  }
+}

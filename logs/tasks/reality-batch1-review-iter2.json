@@ -1,0 +1,47 @@
+{
+  "validator": "reality-checker",
+  "batch": [2, 4, 5],
+  "iteration": 2,
+  "status": "approved",
+  "scope": "Re-check of R1 findings only: Killer.Default companion shape (Tasks 2+5), handlerShape Java-reflection note (Task 2), Task 4 R1 clarification accuracy, DownloadRepository.kt file and class/companion location (Task 5).",
+  "findings": [],
+  "verification": {
+    "task_2_killer_default_companion_object": {
+      "result": "PASS",
+      "detail": "Task 2 Description (line 26), What-to-do step 2, Details/Files-to-create (line 129), and Implementation-hints (line 156) all consistently describe Killer.Default as `companion object Default : Killer` inside the interface — callable as `Killer.Default`. Task 5 Details/Dependencies (line 126) and Implementation-hints (line 142) both reference `Killer.Default` by the same name with no ambiguity. The shape `interface Killer { fun kill(pid: Int); companion object Default : Killer { ... } }` is consistent across both tasks. No hallucination — this is valid Kotlin syntax and the two tasks agree on the call site name."
+    },
+    "task_2_handler_shape_reflection_note": {
+      "result": "PASS",
+      "detail": "Task 2 TDD Anchor (line 67) now explicitly states: 'Используй именно Java-рефлексию (`::class.java.declaredMethods`), НЕ Kotlin-рефлексию (`KClass.declaredMemberFunctions`): `kotlin-reflect` не в test classpath проекта.' This directly addresses the R1 major finding. The distinction is clearly documented with the correct API (CrashHandler::class.java.declaredMethods) and explicit warning against the wrong API. The note about Continuation parameter check (`m.parameterTypes.any { it.name == \"kotlin.coroutines.Continuation\" }`) is also present in the anchor and is correct Java-reflection usage — no kotlin-reflect import required. R1 finding resolved."
+    },
+    "task_2_constructor_seam_hint_rephrased": {
+      "result": "PASS",
+      "detail": "Task 2 Details/Files-to-create for CrashHandler.kt (line 127) now reads: 'Нужен дополнительный внутренний seam для test double — чтобы `handlerInternalFailure_killsOnce` мог детерминированно уронить путь записи файла и проверить outer-catch. Форма seam'а — выбор имплементатора (single-method interface, high-order function, что угодно); важно только, чтобы `RecordingKiller` в тесте мог наблюдать байты `crash.log` до того, как отработает `kill()`.' The Implementation-hints section (line 158) also uses soft language: 'Форма — выбор имплементатора (single-method interface, high-order function `(File, String) -> Unit`, и т.д.)'. The exact `crashWriter: (File, String) -> Unit` verbatim signature from R1 no longer appears as a prescriptive single option — it is listed as one example among alternatives. R1 finding resolved."
+    },
+    "task_4_r1_clarification_section": {
+      "result": "PASS — with note",
+      "detail": "Task 4 contains an R1 section (lines 124-125): 'R1 (task-decomposition SKILL.md Rules): верификация пользователем отложена до Task 6 ... Это намеренный R1-даунгрейд `verify: [user] → [smoke]`.' The referenced 'task-decomposition SKILL.md Rules' could not be located on disk (no SKILL.md found outside plugin directories), so the specific rule text cannot be cross-checked. However: (1) the substantive claim — that verify:user is downgraded to verify:smoke because UI is unreachable without Task 5 — is architecturally sound and consistent with tech-spec Task 4 description ('Критично: этот таск ничего не wire-ит'); (2) the task header already shows `verify: [smoke]` matching the stated R1 decision; (3) the note is an internal justification, not a code claim, so its truth value rests on the skill's general policy rather than a specific verifiable line. No new mirages introduced — all APIs, file paths, and class names mentioned in Task 4 were already verified as PASS in batch2-review.json. Minor note only: the SKILL.md reference cannot be validated offline, but this is not a hallucination risk because no code or API is invented."
+    },
+    "task_5_downloadrepository_file_exists": {
+      "result": "PASS",
+      "detail": "File `core-runtime/src/main/kotlin/app/sanctum/machina/core/data/DownloadRepository.kt` confirmed to exist (268 lines). No file named `DefaultDownloadRepository.kt` exists anywhere in the repo (Glob returned no results). R1 major finding from batch2-review was that Task 5 referenced the wrong filename in 'Files to read'; the fix was to use `DownloadRepository.kt`."
+    },
+    "task_5_file_reference_corrected": {
+      "result": "PASS",
+      "detail": "Task 5 'Code files — read for context' section (line 82) now correctly reads: '`core-runtime/src/main/kotlin/app/sanctum/machina/core/data/DownloadRepository.kt` — файл содержит `class DefaultDownloadRepository` (строка 73) и `companion object { @Volatile var mainActivityFqn: String? = null }` (строка 81)'. Verified against actual file: `class DefaultDownloadRepository` appears at line 73, `companion object` block starts at line 78, `@Volatile var mainActivityFqn: String? = null` is at line 81. Line numbers in the task match the actual file exactly. R1 major finding resolved."
+    },
+    "task_5_mainactivityfqn_companion_location": {
+      "result": "PASS",
+      "detail": "Actual file confirms: `class DefaultDownloadRepository` at line 73, `companion object { ... @Volatile var mainActivityFqn: String? = null }` at lines 78-82. Task 5's claim of 'строка 73' for the class and 'строка 81' for the companion field is correct within ±1 line of actual (line 81 is the field, companion object opens at line 78). No discrepancy that would mislead an implementer."
+    },
+    "regression_check": {
+      "result": "PASS",
+      "detail": "No new file references, API calls, or dependency claims introduced in the R1 edits to tasks 2, 4, or 5 that were not already verified in batch1-review.json or batch2-review.json. The edits are confined to (a) adding a reflection-mode warning in Task 2 TDD anchor, (b) softening the seam hint in Task 2, (c) adding an R1 justification note in Task 4, and (d) correcting the DownloadRepository.kt filename reference in Task 5. All other content in these tasks remains unchanged from the previously-approved state."
+    }
+  },
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 12,
+    "issues_found": 0
+  }
+}

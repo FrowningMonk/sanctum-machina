@@ -1,0 +1,84 @@
+{
+  "status": "needs_improvement",
+  "summary": "Round-2 review of the updated tech-spec. Five of the seven round-1 major findings were addressed: (a) CrashState fresh-install case is now listed explicitly; (b) SanctumApplication process-name guard has its own Robolectric test class; (c) directional truncation is pinned with 'final characters match tail' / 'initial characters match head' wording; (d) the flaky time-budget assertion is replaced by handlerShape_noSuspendCallsNoCoroutineImports (adequate in intent but source-file-text based, with a minor brittleness caveat); (e) the three Robolectric composition checks are folded into existing classes with adequate justification. Two round-1 majors remain unaddressed and are reopened: the CrashHandler <-> CrashState cross-component contract test, and the SAF in-flight guard flag. A new CRITICAL surfaces: CrashHandlerTest says 'assert call order via InOrder', but the project has neither Mockito nor MockK on the classpath (libs.versions.toml confirms; code-research §9.3 notes 'Mocks via hand-rolled fakes'). InOrder is a Mockito API — this is a hidden dependency gap that will either fail compilation or silently push the team to add a dependency mid-implementation. The overwrite-semantics finding from round 1 is also still missing (CrashHandlerTest bullets do not verify 'second crash fully replaces first'). Several round-1 minors (TapCounter boundary, all-sections ordering, about-source-uses-live-logcat, empty-downloaded-models rendering) were not folded in.",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "anti_pattern",
+      "location": "Section: Testing Strategy / Unit tests (CrashHandlerTest — 'assert call order via InOrder')",
+      "issue": "The spec says: 'uncaught exception writes crash.log before the injected Killer is invoked (assert call order via InOrder)'. InOrder is a Mockito API (org.mockito.InOrder). The project has NO Mockito and NO MockK on the classpath — verified in gradle/libs.versions.toml (no mockito-core, no mockito-kotlin, no mockk entries) and in app/build.gradle.kts testImplementation block (only junit, robolectric, androidx-test-core, kotlinx-coroutines-test, litertlm). code-research §9.3 states explicitly: 'Mocks via hand-rolled fakes (no MockK dependency in libs.versions.toml)'. Using InOrder as written will either (a) not compile, or (b) push the implementer to add mockito-core as a new dependency mid-task — which contradicts tech-spec AC 'No new external dependencies in gradle/libs.versions.toml or app/build.gradle.kts'. This is a silent dependency gap the spec introduces while explicitly forbidding new deps.",
+      "recommendation": "Replace the InOrder clause with a hand-rolled recording Killer, consistent with the project's fake-based style. Concretely: define the Killer seam as `interface Killer { fun kill() }`; in the test use `class RecordingKiller : Killer { val events = mutableListOf<String>(); override fun kill() { events += \"kill\" } }`. Before invoking the handler, wrap the file write so it also records: e.g., a RecordingFile wrapper or a `val events = mutableListOf<String>()` shared list where both 'wrote crash.log' (observed post-hoc by reading the file content + a pre-kill assertion) and 'killer called' are tracked. Simplest form: 'assertTrue(File(logs, \"crash.log\").exists()) BEFORE killer.events contains \"kill\"' via an ordering seam: inject a Killer whose kill() reads the file first and asserts its presence inside the fake, then appends 'kill' to a shared log. Alternatively rephrase the assertion: 'after handler returns, crash.log exists AND killer was invoked exactly once'. The invariant that matters is disk-before-kill, which is verifiable without InOrder by: (1) constructing a Killer that reads crash.log in its kill() body and records what it saw; (2) asserting the recorded content equals the expected stacktrace. If the handler killed first, the file would not yet be written, and the recorded content would be empty/absent. Drop the 'InOrder' wording entirely from the tech-spec to avoid implying Mockito."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy / Unit tests — no CrashHandler <-> CrashState cross-component contract test",
+      "issue": "Round-1 major 'CrashHandler <-> CrashState cross-component contract' is NOT addressed in the updated spec. CrashHandlerTest now lists 'pre-existing .dismissed deleted as part of the new crash write (US-B \"новый краш сбрасывает скрытость\" cross-component contract)' — but that still only exercises CrashHandler in isolation. It asserts the file-level side-effect on disk; it does not verify the other end of the contract, i.e. that CrashState.refresh() re-emits hasUnresolvedCrash=true after the handler's write. If the handler accidentally writes crash.log but CrashState's state formula drifts (e.g., refactor changes '.dismissed absent' to '.dismissed nonexistent OR empty'), both sides still pass their own tests while the banner silently stops reappearing. This is the cardinal reason for a composition test under Decision 6.",
+      "recommendation": "Add a dedicated test class CrashFilesystemContractTest (or a case inside CrashStateTest titled 'handler_write_flips_state_back_to_unresolved'). Using Robolectric + the real filesDir: (1) instantiate both CrashState and CrashHandler against the same context; (2) call crashState.markDismissed() -> assertFalse(crashState.hasUnresolvedCrash.value); (3) call crashHandler.uncaughtException(Thread.currentThread(), RuntimeException(\"boom\")) with a no-op Killer and a stubbed startActivity (inject via a seam or use a real Intent whose target class does not need to resolve — see mitigation: wrap startActivity behind an interface ActivityStarter); (4) crashState.refresh(); (5) assertTrue(crashState.hasUnresolvedCrash.value); assertTrue(File(logs, \"crash.log\").exists()); assertFalse(File(logs, \"crash.log.dismissed\").exists()). This is the single test that defends Decision 6 end-to-end."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy — no test (unit or composition) covers the SAF in-flight guard",
+      "issue": "Round-1 major 'no test for SAF in-flight guard flag' is NOT addressed. The updated spec adds wording in Architecture ('in-flight guard flag', 'launching: Boolean') and Risks row 6 ('In-flight guard flag in both CrashReportActivity and RestartCrashBanner rejects the second tap'), but the Testing Strategy section does not list any test for this logic, nor does it explicitly state that the AC 'Повторное нажатие Сохранить лог до открытия системного диалога не запускает второй диалог' is deferred to manual verification. The AC therefore falls through a crack: no unit test and no explicit manual-verification row either (user-spec 'Как проверить / Пользователь проверяет' does not list a double-tap scenario).",
+      "recommendation": "Pick one of two options and write it into the spec: (A) Extract a pure-JVM InFlightGate class (similar to TapCounter) with states Idle/InFlight and transitions onTap/onResult, wire CrashReportActivity and RestartCrashBanner through it. Add InFlightGateTest covering: 'second tap while InFlight is rejected', 'onResult transitions back to Idle', 'onResult fires the cleanup lambda in a finally branch even when the result URI is null (cancel path)'. OR (B) Explicitly list this AC under 'user-spec Negative path / manual verification' and add a bullet to user-spec 'Как проверить / Пользователь проверяет' for the double-tap test. Option A is preferred because the logic is pure and the extraction is cheap; option B is acceptable only if the Testing Strategy makes the deferral explicit."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy / Unit tests (CrashHandlerTest) — overwrite semantics on repeated crashes",
+      "issue": "Round-1 major 'overwrite semantics on repeated crashes' is NOT addressed. CrashHandlerTest bullets now read: 'uncaught exception writes crash.log before Killer; pre-existing .dismissed deleted; internal failure -> killer called exactly once; stacktrace >100 KB -> truncation marker present; handlerShape_noSuspendCallsNoCoroutineImports'. None of these exercise a second invocation. user-spec 'Технические решения' explicitly says 'Запись о краше хранит только последнее происшествие (overwrite)'; if the implementation accidentally uses append-mode File I/O (File.appendText / FileOutputStream(file, true)), every listed test still passes on a fresh filesystem.",
+      "recommendation": "Add CrashHandlerTest case 'second_crash_overwrites_first'. Sequence: invoke handler with RuntimeException(\"FIRST_UNIQUE_MARKER\"); read crash.log, confirm it contains FIRST_UNIQUE_MARKER. Invoke handler again with IllegalStateException(\"SECOND_UNIQUE_MARKER\"). Read crash.log. Assert content contains \"IllegalStateException\" AND \"SECOND_UNIQUE_MARKER\"; assert content does NOT contain \"RuntimeException\" AND does NOT contain \"FIRST_UNIQUE_MARKER\". This also confirms that a truncation marker from the first crash is not carried over if the second is shorter."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "Section: Testing Strategy / Unit tests (CrashHandlerTest — handlerShape_noSuspendCallsNoCoroutineImports)",
+      "issue": "The replacement for the flaky time-budget test is well-intentioned but has two brittleness concerns. (1) 'Structural assertion that the handler source file contains neither a suspend call into ErrorLog nor a coroutines import' implies reading the .kt source file as text from the test — this requires a hardcoded path, is sensitive to comments (a KDoc mentioning 'suspend' or 'kotlinx.coroutines' would trip it), and couples the test to the repo layout. (2) The project already has a stronger equivalent in tech-spec Acceptance Criteria: `grep -rEn \"ErrorLog|errorLog\" app/src/main/kotlin/app/sanctum/machina/crash/` returning zero hits. A runtime test duplicates this grep gate less reliably.",
+      "recommendation": "Replace the source-file-text assertion with one of: (a) a bytecode-level check using reflection — `CrashHandler::class.java.declaredMethods.none { it.name == \"uncaughtException\" && it.parameterTypes.contains(kotlin.coroutines.Continuation::class.java) }` (a suspend function compiles with an extra Continuation parameter, so this check reliably fails on any accidental `suspend` in uncaughtException); (b) drop the runtime test entirely and rely on the existing AC grep gate, which is run as part of pre-deploy-qa. Either way, remove the 'coroutines import' check — imports are not observable at runtime, and a grep on the source file is strictly weaker than the existing AC grep on the whole crash/ package."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy / Unit tests (LogExportManagerTest) — all-sections ordering + About logcat positive case",
+      "issue": "Round-1 minors 'all_sections_present_correct_order' and 'about_source_uses_live_logcat_output' are NOT addressed in the updated spec. LogExportManagerTest still lists section-order assertions only as a general phrase 'section order crash -> errors -> errors.1 -> logcat' without a specific case that seeds all four source files with distinguishable content and asserts the full ordering; and the symmetric About-source positive case (logcat section contains real logcat output AND does NOT contain the CrashReport placeholder) is still missing.",
+      "recommendation": "Add two LogExportManagerTest cases. (1) 'all_sections_present_correct_order': seed crash.log='CRASH_MARK', errors.log='ERRORS_MARK', errors.log.1='ROTATED_MARK', stub CommandRunner output='LOGCAT_MARK'; call buildExport(About); assert result.indexOf(\"=== crash.log ===\") < result.indexOf(\"=== errors.log ===\") < result.indexOf(\"=== errors.log.1 ===\") < result.indexOf(\"=== logcat ===\"); assert each header appears exactly once (count == 1). (2) 'about_source_uses_live_logcat_output': CommandRunner emits 'FRESH_LOGCAT_MARKER'. Call buildExport(About). Assert result contains 'FRESH_LOGCAT_MARKER'. Assert result does NOT contain 'logcat available only via About export'."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy / Unit tests (TapCounterTest) — boundary at exactly 2 s",
+      "issue": "Round-1 minor 'exactly-at-2-s gap boundary' is NOT addressed. TapCounterTest still reads: '7 taps <=2 s apart -> triggers on 7th; gap >2 s -> resets to 1; <7 -> does not trigger; trigger fires once'. The boundary at precisely 2_000_000_000 ns is not pinned. user-spec wording 'не более 2 секунд' means <= 2 s keeps the streak, so the inequality direction matters.",
+      "recommendation": "Add TapCounterTest case 'gap_exactly_2s_does_not_reset': simulate two taps at t=0 and t=2_000_000_000 (exactly 2 s). Assert counter == 2. Add paired case 'gap_just_over_2s_resets': taps at t=0 and t=2_000_000_001. Assert counter == 1. This pins <= vs < once and forever."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy / Unit tests (DeviceInfoCollectorTest) — empty downloaded-models rendering",
+      "issue": "Round-1 minor 'empty_downloaded_models_rendered_distinctly' is NOT addressed. DeviceInfoCollectorTest still lists only 'active model id / none' for the empty-state coverage, not the downloaded-list empty state. The Data Models section shows a sample with one downloaded model ('  - litert-community/gemma-4-E2B-it-litert-lm (3.1 GB)') but does not specify what the header looks like when the list is empty — 'downloaded models:' followed by a blank line could look like a bug to a reviewing developer.",
+      "recommendation": "Pin the empty-list rendering in tech-spec Data Models (e.g., 'downloaded models: [none]' on a single line, OR 'downloaded models:\\n  - [none]'). Then add DeviceInfoCollectorTest case 'empty_downloaded_models_rendered_with_sentinel': provide stub returning an empty downloaded-models list, call buildHeader(), assert the rendered string contains the chosen sentinel and does NOT contain a trailing-colon-with-blank-line."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy / Unit tests (LogcatReaderTest) — argv-shape assertion wording",
+      "issue": "The new bullet 'argv-shape assertion — the runner receives exactly [\"logcat\", \"-d\", \"-v\", \"threadtime\", \"--pid=<int>\", \"*:E\"] with no shell wrapping (guards Decision 8 + security A03)' is a good addition. One small gap: the `--pid=<int>` token is written as a string in the argv, so the assertion must verify that the integer from Process.myPid() is substituted as a numeric string with no quoting, no whitespace, and no prefix/suffix. A regex assertion like `Regex(\"^--pid=\\\\d+$\")` would defend both against shell-metachar injection (A03) and against a refactor that accidentally does `\"--pid=\\\"$pid\\\"\"` (which would ship in an arg that breaks logcat silently).",
+      "recommendation": "Tighten the argv-shape bullet: 'the runner receives exactly 6 arguments; arg[0]=\"logcat\"; arg[1]=\"-d\"; arg[2]=\"-v\"; arg[3]=\"threadtime\"; arg[4] matches Regex(\"^--pid=\\\\d+$\") and the captured integer equals Process.myPid(); arg[5]=\"*:E\"'. This pins the exact argv shape and catches a much wider class of injection-flavoured regressions."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "litmusTest": {
+      "checked": 0,
+      "passed": 0,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 7,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}
