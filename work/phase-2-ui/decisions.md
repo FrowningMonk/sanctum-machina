@@ -384,6 +384,30 @@ Round-1 fixes applied (commit 68859da): three nits addressed — rename `trimmed
 
 ---
 
+## Task 15: Pre-deploy QA
+
+**Status:** Done
+**Commit:** f8e1e52 (lint fix + manual-smoke + qa-report)
+**Agent:** qa-runner (main agent)
+**Summary:** Pre-deploy QA passed. Full `./gradlew build` SUCCESSFUL, 134 tests (66 `:app` + 62 `:core-runtime` + 6 `:core-settings`) green, lintDebug clean after fixing one pre-existing Error, debug APK built. TAC-1..TAC-15 all auto-verified — evidence in qa-report.json. Generated `manual-smoke.md` (US-1..US-7 checklist + edge cases + AC→automation mapping). AC-22 explicitly confirmed by user on Honor 200.
+**Deviations:** Fixed pre-existing lint Error `LocalContextGetResourceValueCall` at `ChatScreen.kt:71` (flagged and deferred by Task 11 decisions.md as Phase-2 closing infra-task). Replaced `LocalContext.current.getString(stringRes)` in the snackbar `LaunchedEffect` with `LocalResources.current.getString(stringRes)` — `LocalResources` is available in Compose BOM 2026.03.00 and invalidates properly on configuration change. No behaviour change; only removes the stale-resource lint violation.
+
+**Deferred to user-verify (Honor 200):** 15 criteria require device — AC-2 (launcher label), AC-4/AC-21 (settings sheet light/semi-light/heavy), AC-7/AC-14 (markdown + ThinkingBlock rendering), AC-8 (autoscroll), AC-9..AC-12 (input bar + Photo Picker + CameraX + AudioRecord), AC-13 (multimodal inference), AC-15 (runtime permissions), AC-16 (Phase-1 regression), AC-18 (conditional icons), AC-19 (audio interruption), AC-20 (mic disabled), AC-22 (final gate). All walked through on device; user approved.
+
+**Reviews:** none (QA is own verification, no reviewer wave per task file).
+
+**Verification:**
+- `./gradlew build` → BUILD SUCCESSFUL in 40s (TAC-1)
+- Aggregate tests: 134 / 0 failures / 0 errors / 0 skipped (TAC-2/3/4)
+- `./gradlew lintDebug` → BUILD SUCCESSFUL after fix (TAC-5)
+- `./gradlew :app:assembleDebug` → `app/build/outputs/apk/debug/app-debug.apk` present (TAC-9)
+- `aapt dump permissions` → CAMERA + RECORD_AUDIO + INTERNET; `aapt dump xmltree` → `allowBackup=0x0`, `data_extraction_rules.xml` has cloud-backup + device-transfer excludes (TAC-9/10/14)
+- `SafeUriHandlerTest` 14 cases (TAC-13); `ErrorLogTest` 8 cases (TAC-15); PerModelSettings.java 15 has*/get* hits (TAC-12)
+- Full report: [logs/working/task-15/qa-report.json](logs/working/task-15/qa-report.json)
+- Manual smoke: [manual-smoke.md](manual-smoke.md) — пройден на Honor 200, AC-22 подтверждён пользователем
+
+---
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.

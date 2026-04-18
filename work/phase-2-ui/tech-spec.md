@@ -572,17 +572,17 @@ Per-task smoke — в `Verify-smoke` каждого Task. **Post-deploy verifica
 
 Технические критерии приёмки (дополняют AC-1..AC-25 user-spec):
 
-- [ ] **TAC-1.** `./gradlew build` — `BUILD SUCCESSFUL`.
-- [ ] **TAC-2.** `./gradlew :core-runtime:test` — все тесты зелёные (прежние + новые AC-17).
+- [x] **TAC-1.** `./gradlew build` — `BUILD SUCCESSFUL`.
+- [x] **TAC-2.** `./gradlew :core-runtime:test` — все тесты зелёные (прежние + новые AC-17).
 - [x] **TAC-3.** `./gradlew :core-settings:test` — `AppSettingsRepositoryTest` зелёный.
-- [ ] **TAC-4.** `./gradlew :app:test` — `EffectiveConfigTest` + `ChatViewModelTest` зелёные.
-- [ ] **TAC-5.** `./gradlew lintDebug` — нет Error-level issues.
-- [ ] **TAC-6.** `fixtureMatchesProductionAsset` зелёный после Task 1.
-- [ ] **TAC-7.** `rg -l "androidx.compose|androidx.activity" core-runtime/src/main` → пусто.
+- [x] **TAC-4.** `./gradlew :app:test` — `EffectiveConfigTest` + `ChatViewModelTest` зелёные.
+- [x] **TAC-5.** `./gradlew lintDebug` — нет Error-level issues.
+- [x] **TAC-6.** `fixtureMatchesProductionAsset` зелёный после Task 1.
+- [x] **TAC-7.** `rg -l "androidx.compose|androidx.activity" core-runtime/src/main` → пусто.
 - [x] **TAC-8.** `rg -l "androidx.compose|androidx.activity" core-settings/src/main` → пусто.
 - [x] **TAC-9.** APK собран, `aapt dump permissions` содержит CAMERA + RECORD_AUDIO.
 - [x] **TAC-10.** `aapt dump xmltree app-debug.apk AndroidManifest.xml | grep allowBackup` → `allowBackup=false`.
-- [ ] **TAC-11.** `rg -n "Text\(\"[А-Яа-я]" app/src/main` → пусто (все строки через `stringResource`).
+- [x] **TAC-11.** `rg -n "Text\(\"[А-Яа-я]" app/src/main` → пусто (все строки через `stringResource`).
 - [x] **TAC-12.** Generated `AppSettings`, `PerModelSettings` в `:core-settings/build/generated/...`, `hasMaxTokens()`/`getMaxTokens()` методы присутствуют.
 - [x] **TAC-13.** `SafeUriHandlerTest` покрывает allowed (http/https) + 9 blocked cases (intent, sms, tel, javascript, file, content, data, market, malformed).
 - [x] **TAC-14.** `aapt dump xmltree app-debug.apk res/xml/data_extraction_rules.xml` показывает `<cloud-backup>` и `<device-transfer>` с `<exclude domain="root" path="."/>` (backup/transfer блокированы полностью).
