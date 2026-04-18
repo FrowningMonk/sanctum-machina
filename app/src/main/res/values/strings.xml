@@ -98,4 +98,16 @@
   <string name="about_version_unknown">неизвестна</string>
   <string name="about_attribution">Построено на Google AI Edge Gallery · Gemma · LiteRT-LM</string>
   <string name="about_load_failed">Не удалось загрузить содержимое.</string>
+
+  <!-- Crash report / diagnostics (Phase 2.5) -->
+  <string name="crash_report_title">Приложение аварийно закрылось</string>
+  <string name="crash_report_body">Можно сохранить технический лог, чтобы помочь разработчику разобраться.</string>
+  <string name="log_export_save_button">Сохранить лог</string>
+  <string name="log_export_success_toast">Лог сохранён</string>
+  <string name="log_export_error_toast">Не удалось сохранить лог</string>
+  <string name="crash_banner_body">Прошлый запуск завершился аварийно.</string>
+  <string name="crash_banner_dismiss_description">Скрыть баннер</string>
+  <string name="about_diagnostics_title">Диагностика</string>
+  <string name="dev_crash_dialog_title">Спровоцировать тест-краш?</string>
+  <string name="dev_crash_dialog_confirm">Да</string>
 </resources>
