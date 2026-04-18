@@ -1,0 +1,62 @@
+{
+  "validator": "reality-checker",
+  "batch": "cross-task",
+  "iteration": "cross-2",
+  "scope": "Narrow re-check of 5 findings from cross-1 applied to Tasks 3, 4, 6",
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "info",
+      "category": "cross-task-integration",
+      "task": 6,
+      "finding_ref": "cross-1 critical: TapCounter onTrigger API",
+      "resolution": "resolved",
+      "evidence": "Task 6 now uses tap(): Boolean correctly throughout. Line 38 (What to do §2): `if (tapCounter.tap()) showDialog = true` inside Modifier.clickable. Line 39 (§3): constructor `remember { TapCounter(nowNanos = { System.nanoTime() }) }` — no onTrigger arg. Line 145 (Implementation hints): explicit note 'У TapCounter нет параметра onTrigger / коллбэка'. Line 41 introduces `onTriggered: () -> Unit` as a _composable_ parameter to AboutFooter (Variant B pattern), not a TapCounter constructor arg — the text parenthetical '(именно отдельный compose-коллбэк, не параметр конструктора TapCounter — у него такого параметра нет)' makes the distinction explicit. This is not a residual bug."
+    },
+    {
+      "severity": "info",
+      "category": "cross-task-integration",
+      "task": 3,
+      "finding_ref": "cross-1 major: non-Hilt constructor AC missing",
+      "resolution": "resolved",
+      "evidence": "AC line 95 commits explicitly to secondary constructor shape `LogExportManager(context: Context)` with full description of what it constructs internally (DeviceInfoCollector(AndroidDeviceInfoProvider(context)) + LogcatReader(DefaultCommandRunner())). Line 79 of TDD Anchor adds `nonHiltConstruction_instantiatesWithoutInjection` test as a compile+runtime guardrail. Details section line 142 echoes the secondary constructor form. The non-Hilt path is now a first-class contract."
+    },
+    {
+      "severity": "info",
+      "category": "cross-task-integration",
+      "task": 3,
+      "finding_ref": "cross-1 major: LogExportModule scope discipline / duplicate-binding guard",
+      "resolution": "resolved",
+      "evidence": "AC line 97 adds an explicit anti-duplicate-binding criterion with a grep command: 'LogExportModule предоставляет ТОЛЬКО @Binds/@Provides для CommandRunner → DefaultCommandRunner (и опционально DeviceInfoProvider → AndroidDeviceInfoProvider). LogExportManager, DeviceInfoCollector, LogcatReader, CrashState НЕ объявлены в @Provides'. Verified via grep sentinel. Implementation hints line 174 and Details line 146 both echo this rule."
+    },
+    {
+      "severity": "info",
+      "category": "cross-task-integration",
+      "task": 4,
+      "finding_ref": "cross-1 major: PackageInfo/ActivityManager construction-args mirage",
+      "resolution": "resolved",
+      "evidence": "What to do §1 line 34 now opens with 'НЕ передавать PackageInfo / ActivityManager / Build напрямую в LogExportManager'. Both accepted forms (Context-only preferred, Collectors-explicit fallback) are spelled out without any flat platform-arg alternative. AC line 65 makes it a checklist item: 'в аргументах ctor LogExportManager не фигурируют PackageInfo / ActivityManager / Build.*'. Implementation hints line 158 reinforces: 'PackageInfo / ActivityManager / Build в CrashReportActivity НЕ трогаются'. No residual mirage."
+    },
+    {
+      "severity": "info",
+      "category": "cross-task-integration",
+      "task": 6,
+      "finding_ref": "cross-1 major: hilt-navigation-compose conditional add instruction",
+      "resolution": "resolved",
+      "evidence": "Dependencies section line 129 now reads: 'зависимость уже на classpath (app/build.gradle.kts строка 66, implementation(libs.hilt.navigation.compose)). Новых зависимостей задача не добавляет.' No conditional 'если нет — добавить' language remains. Line 66 reference independently verified: app/build.gradle.kts line 66 is `implementation(libs.hilt.navigation.compose)` — exact match."
+    }
+  ],
+  "new_regressions": [],
+  "stats": {
+    "tasks_checked": 3,
+    "prior_findings_rechecked": 5,
+    "prior_findings_resolved": 5,
+    "prior_findings_unresolved": 0,
+    "new_regressions_found": 0
+  },
+  "notes": {
+    "onTriggered_variant_b": "The name `onTriggered` in Task 6 §3 Variant B is a composable lambda parameter to AboutFooter — not a TapCounter constructor arg. The parenthetical explicitly disambiguates. Not a regression of the original onTrigger finding.",
+    "hilt_navigation_compose_line": "app/build.gradle.kts line 66 verified as `implementation(libs.hilt.navigation.compose)` — Task 6's reference is accurate.",
+    "secondary_ctor_test": "nonHiltConstruction_instantiatesWithoutInjection in Task 3 TDD Anchor covers both compile-time (public visibility) and runtime (buildExport succeeds on empty filesDir) guarantees for the Task 4 integration contract."
+  }
+}
