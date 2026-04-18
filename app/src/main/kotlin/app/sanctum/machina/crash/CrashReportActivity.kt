@@ -2,6 +2,7 @@ package app.sanctum.machina.crash
 
 import android.net.Uri
 import android.os.Bundle
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -55,6 +56,15 @@ class CrashReportActivity : ComponentActivity() {
 
     private lateinit var logExportManager: LogExportManager
 
+    /**
+     * In-flight guard against a second SAF launch while the first dialog is
+     * still open. Backed by `mutableStateOf` (rather than the plain `var`
+     * named in the task hints) so Compose can recompose the save button's
+     * `enabled` state atomically when the guard flips. Activity-owned, not
+     * `rememberSaveable`: the SAF launcher survives rotation via
+     * [ActivityResultRegistry], so resetting the guard across configuration
+     * changes is acceptable.
+     */
     private var launching by mutableStateOf(false)
 
     private val saveLogLauncher = registerForActivityResult(
@@ -71,6 +81,8 @@ class CrashReportActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Keep the crash screen out of Recents thumbnails and OEM screen-capture collectors.
+        window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         logExportManager = LogExportManager(applicationContext)
 
         setContent {
@@ -96,10 +108,10 @@ class CrashReportActivity : ComponentActivity() {
             val content = logExportManager.buildExport(ExportSource.CrashReport)
             logExportManager.writeTo(uri, content)
             File(filesDir, "$LOGS_DIR/$CRASH_LOG").delete()
-            Toast.makeText(this, R.string.log_export_success_toast, Toast.LENGTH_SHORT).show()
+            Toast.makeText(applicationContext, R.string.log_export_success_toast, Toast.LENGTH_SHORT).show()
             finish()
         } catch (_: IOException) {
-            Toast.makeText(this, R.string.log_export_error_toast, Toast.LENGTH_SHORT).show()
+            Toast.makeText(applicationContext, R.string.log_export_error_toast, Toast.LENGTH_SHORT).show()
         }
     }
 
