@@ -26,15 +26,15 @@ File-state semantics are filesystem-driven (no DataStore), because the `:crash` 
 - **NEW `app/.../crash/CrashHandler.kt`** — installs `Thread.setDefaultUncaughtExceptionHandler`; synchronously writes `crash.log`, deletes `.dismissed`, spawns `CrashReportActivity` with `FLAG_ACTIVITY_NEW_TASK`, then `Process.killProcess(Process.myPid())`. Takes a `Killer` interface seam to allow unit-testing without actually killing the JVM.
 - **NEW `app/.../crash/CrashReportActivity.kt`** — `ComponentActivity` (NOT `@AndroidEntryPoint`); `setContent { … }` two-button Compose screen; SAF launcher with in-flight guard flag.
 - **NEW `app/.../crash/CrashState.kt`** — `@Singleton`, Hilt-injected. Exposes `val hasUnresolvedCrash: StateFlow<Boolean>`, `fun refresh()`, `fun markDismissed()`, `fun clear()`. State = `crash.log` exists ∧ `¬crash.log.dismissed` exists.
-- **NEW `app/.../crash/RestartCrashBanner.kt`** — Compose composable. `Card { Row { Icon, Text, TextButton, IconButton } }`. Wired by `ModelManagerScreen`.
-- **NEW `app/.../logexport/LogExportManager.kt`** — `@Singleton`. `suspend fun buildExport(source: ExportSource): String` (enum `About` / `CrashReport`); `suspend fun writeTo(uri: Uri, content: String)`. Section-aware truncation per Decision 7.
+- **NEW `app/.../crash/RestartCrashBanner.kt`** — Compose composable. `Card { Row { Icon, Text, TextButton, IconButton } }`. Exposes `onSaveClick` / `onDismissClick` callbacks. The hosting screen owns an in-flight guard flag (`remember { mutableStateOf(false) }`) passed to the banner so repeated "Сохранить лог" taps before the SAF dialog returns are ignored.
+- **NEW `app/.../logexport/LogExportManager.kt`** — `@Singleton`. `suspend fun buildExport(source: ExportSource): String` (enum `About` / `CrashReport`); `suspend fun writeTo(uri: Uri, content: String)` — uses `ContentResolver.openOutputStream(uri)` inside `.use`; a null return is treated as `IOException("openOutputStream returned null")` so the caller's catch handles the single error path. Section-aware truncation per Decision 7.
 - **NEW `app/.../logexport/DeviceInfoCollector.kt`** — produces the `.txt` header. Takes `PackageInfo`, `ActivityManager`, `Build` constants via an interface so tests can stub.
-- **NEW `app/.../logexport/LogcatReader.kt`** — spawns `ProcessBuilder("logcat", "-d", "-v", "threadtime", "--pid=${Process.myPid()}", "*:E")` with a 2-s timeout. Returns the captured string or a `[logcat unavailable: <reason>]` placeholder.
+- **NEW `app/.../logexport/LogcatReader.kt`** — spawns `ProcessBuilder("logcat", "-d", "-v", "threadtime", "--pid=${Process.myPid()}", "*:E").redirectErrorStream(true)` and reads stdout to completion on a worker thread concurrently with `waitFor(2, SECONDS)` — required to avoid pipe-buffer deadlock when the child produces more than the OS pipe buffer (typically 64 KB) before the timeout fires. On timeout the subprocess is `destroy()`-ed. Returns the captured bytes (tail-truncated by caller) or a `[logcat unavailable: <reason>]` placeholder. A `CommandRunner` interface seam makes the test double deterministic.
 - **NEW `app/.../logexport/TapCounter.kt`** — pure 7-tap detector, no Android deps. Takes a `nowNanos: () -> Long` for testability.
 - **MODIFY `app/.../SanctumApplication.kt`** — process-name guard; install `CrashHandler` before the existing `DefaultDownloadRepository.mainActivityFqn = …` assignment (so a crash in that line is still captured).
 - **MODIFY `app/.../ui/about/AboutScreen.kt`** — append "Диагностика" section; wrap version text with `TapCounter` gesture + confirm dialog.
 - **MODIFY `app/.../ui/modelmanager/ModelManagerScreen.kt`** — insert `RestartCrashBanner` above the model list; wire SAF launcher, `CrashState.clear()`, `CrashState.markDismissed()`, `SnackbarHost`.
-- **MODIFY `app/src/main/AndroidManifest.xml`** — add `<activity android:name=".crash.CrashReportActivity" android:process=":crash" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="" android:theme="@style/Theme.SanctumMachina" />`.
+- **MODIFY `app/src/main/AndroidManifest.xml`** — add `<activity android:name=".crash.CrashReportActivity" android:process=":crash" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="" android:theme="@style/Theme.Sanctum" />`.
 - **MODIFY `app/src/main/res/values/strings.xml`** — ~12 new Russian keys.
 
 ### How it works
@@ -42,20 +42,22 @@ File-state semantics are filesystem-driven (no DataStore), because the `:crash` 
 **Flow A — Crash → CrashReportActivity → SAF (US-A):**
 1. A thread in the main process throws an uncaught exception.
 2. JVM invokes `CrashHandler.uncaughtException(t, e)`.
-3. Handler, wrapped in outer `try`: (a) deletes `crash.log.dismissed`; (b) writes stacktrace (head-truncated to 100 KB) to `filesDir/logs/crash.log`; (c) `startActivity(Intent(ctx, CrashReportActivity::class.java).addFlags(NEW_TASK))`; (d) `Process.killProcess(Process.myPid())`.
-4. Any `Throwable` inside the handler → outer `catch` → `Process.killProcess` without retrying any step.
+3. Handler, wrapped in outer `try`: (a) deletes `crash.log.dismissed`; (b) writes stacktrace (head-truncated to 100 KB) to `filesDir/logs/crash.log`; (c) `startActivity(Intent(ctx, CrashReportActivity::class.java).addFlags(FLAG_ACTIVITY_NEW_TASK or FLAG_ACTIVITY_CLEAR_TASK))`; (d) `Process.killProcess(Process.myPid())` via the injected `Killer` seam.
+4. Any `Throwable` inside the handler → outer `catch` emits a single `android.util.Log.e("CrashHandler", "handler failed", t)` breadcrumb (non-suspend, lands in logcat — captured by later About-export) → `Process.killProcess` without retrying any step.
 5. OS spawns `:crash` process → `SanctumApplication.onCreate` runs again but the process-name guard skips handler installation → `CrashReportActivity` launches.
-6. User taps "Сохранить лог": SAF `CreateDocument` launcher with suggested name `sanctum-log-YYYYMMDD-HHmm.txt`. In-flight guard flag rejects re-taps until the system dialog returns.
-7. On URI result:
-   - `uri != null` → `LogExportManager.buildExport(CrashReport)` → `writeTo(uri, content)`. On success: delete `crash.log`, Toast "Лог сохранён", `finish()`. On `IOException`: Toast "Не удалось сохранить лог", keep `crash.log`, re-enable buttons.
-   - `uri == null` (cancel) → re-enable buttons, no Toast.
+6. User taps "Сохранить лог": an in-flight guard flag (`var launching: Boolean`) flips to `true` and the SAF `CreateDocument` launcher fires with suggested name `sanctum-log-YYYYMMDD-HHmm.txt`. Further taps are ignored while `launching == true`.
+7. On URI result (the guard flag is cleared in a `finally` in the result callback regardless of branch):
+   - `uri != null` → `LogExportManager.buildExport(CrashReport)` → `writeTo(uri, content)`. On success: delete `crash.log`, Toast "Лог сохранён", `finish()`. On `IOException` or null-returning `openOutputStream`: Toast "Не удалось сохранить лог", keep `crash.log`, buttons re-enabled via guard clear.
+   - `uri == null` (user cancelled) → guard clears, buttons re-enabled, no Toast.
 8. "Закрыть" → `finish()`. `crash.log` stays → next cold-start shows banner.
 
 **Flow B — Restart banner (US-B):**
 1. Cold-start: `ModelManagerScreen` `LaunchedEffect(Unit)` calls `crashState.refresh()`.
 2. `refresh()` emits `true` iff `crash.log` exists ∧ `crash.log.dismissed` does not.
 3. Banner renders above model list.
-4. "Сохранить лог" → shared SAF launcher → `LogExportManager.buildExport(About)` → `writeTo(uri)` → on success `crashState.clear()` (deletes both files, emits `false`) + Snackbar "Лог сохранён".
+4. "Сохранить лог": in-flight guard flag on the banner flips to `true` → shared SAF launcher → `LogExportManager.buildExport(About)` → `writeTo(uri)`. On URI result, guard is cleared in `finally`; outcomes:
+   - Success → `crashState.clear()` (deletes both files, emits `false`, banner disappears) + Snackbar "Лог сохранён".
+   - `IOException` / null URI cancel → Snackbar "Не удалось сохранить лог" on IOException (silent on cancel); `crashState.clear()` NOT called; `crash.log` and banner stay so the user can retry.
 5. ✕ → `crashState.markDismissed()` (touches `.dismissed`, emits `false`).
 6. A later crash → handler deletes `.dismissed` in step 3a → banner reappears on the next cold-start.
 
@@ -94,7 +96,7 @@ File-state semantics are filesystem-driven (no DataStore), because the `:crash` 
 **Anchors:** user-spec AC "Экран отчёта (CrashReportActivity)", "Технические решения" bullet 2.
 
 ### Decision 3: `CrashReportActivity` in `android:process=":crash"`
-**Decision:** Declare the activity with `android:process=":crash"`, `exported="false"`, `excludeFromRecents="true"`, `taskAffinity=""`, use the existing `Theme.SanctumMachina`.
+**Decision:** Declare the activity with `android:process=":crash"`, `exported="false"`, `excludeFromRecents="true"`, `taskAffinity=""`, use the existing `Theme.Sanctum` style from `app/src/main/res/values/themes.xml`.
 **Rationale:** Survives `Process.killProcess(myPid)` on the main process — the well-known ACRA pattern. Without it we would have to either leave a corrupted JVM running or require the user to relaunch manually.
 **Alternatives considered:** (a) don't kill main, show a Dialog — rejected, post-crash JVM state is undefined; (b) port ACRA as a library — rejected, external-dep overhead for ~200 lines of code we control.
 **Anchors:** user-spec US-A step 2, Risks row 2.
@@ -141,7 +143,13 @@ File-state semantics are filesystem-driven (no DataStore), because the `:crash` 
 **Alternatives considered:** Extend `ALLOWED_COMPONENTS` and call `errorLog.e("crash", …)` — rejected (dispatcher not guaranteed live during uncaught, format mismatch, violates user-spec "Whitelist не расширяется").
 **Anchors:** user-spec "Ограничения" "Whitelist `ErrorLog.ALLOWED_COMPONENTS` не расширяется", "Технические решения" last bullet.
 
-### Decision 11: Dev-gesture NOT wrapped in `BuildConfig.DEBUG` for Phase 2.5
+### Decision 11: Exported `.txt` is unfiltered on Phase 2.5
+**Decision:** `LogExportManager` does not redact, sanitize, or hash content from `crash.log`, `errors.log`, `errors.log.1`, or `logcat`. Stacktraces, SELinux contexts, hardware identifiers (manufacturer/model), and third-party library error messages may all appear verbatim in the exported `.txt`.
+**Rationale:** Diagnosis completeness outranks privacy on the closed-alpha tester-to-developer channel. User controls the destination via SAF — file never leaves the device without an explicit user action. User-spec "Ограничения" explicitly accepts this trade-off for Phase 2.5.
+**Alternatives considered:** Redaction pipeline for hardware ids / SELinux — rejected (adds regex surface that can mis-redact, and tester-to-dev channel does not need it); sanitization mirroring `ErrorLog`'s 200-char cause truncation — rejected (defeats the purpose of a full stacktrace for diagnosis).
+**Anchors:** user-spec "Ограничения" "Приватность: на фазе закрытого тестирования фильтрация содержимого не применяется".
+
+### Decision 12: Dev-gesture NOT wrapped in `BuildConfig.DEBUG` for Phase 2.5
 **Decision:** The 7-tap gesture is active in both debug and release builds in Phase 2.5.
 **Rationale:** User-spec "Ограничения" explicitly opts for this so the developer's own test APK and the tester's identical APK share behaviour. Phase 5 wraps it in `BuildConfig.DEBUG` before first public release — tracked in NOTES.md backlog.
 **Alternatives considered:** Wrap now — rejected (user-spec decision).
@@ -224,17 +232,20 @@ None.
 
 All new test classes under `app/src/test/kotlin/…`, mirroring the Robolectric pattern of `core-runtime/.../ErrorLogTest.kt`.
 
-- **`LogExportManagerTest`** — header contains all required fields; section order `crash → errors → errors.1 → logcat`; missing `errors.log` → `[empty]`; missing `crash.log` → `[empty]`; `ExportSource.CrashReport` → logcat placeholder; logcat tail-truncated at 100 KB; crash.log head-truncated at 100 KB with marker; `errors.log.1` absent → section omitted; fresh-install path (no `logs/` folder yet) → returns header + all-`[empty]` sections without IOException.
+- **`LogExportManagerTest`** — header contains all required fields; section order `crash → errors → errors.1 → logcat`; missing `errors.log` → `[empty]`; missing `crash.log` → `[empty]`; `ExportSource.CrashReport` → logcat placeholder `[logcat available only via About export]`; **logcat tail-truncation** — huge input, assert the final characters match the input's tail AND a `[truncated: head ... bytes]`-style marker is prepended (directional anchor, not just length); **crash.log head-truncation** — huge input, assert the initial characters match the input's head AND a `[truncated at 100 KB]` marker appended; `errors.log.1` absent → section omitted entirely (no empty divider); `freshInstall_noLogsDir_succeeds` — no `logs/` folder yet, `buildExport(About)` returns header + all-`[empty]` sections without throwing; `writeTo_ioException_surfaces` — `ShadowContentResolver` forces IOException, caller distinguishes from success.
 - **`DeviceInfoCollectorTest`** — deterministic formatting from stubbed provider (manufacturer, model, Android version, RAM numbers, active model id / `none`, downloaded-model list ordering).
-- **`CrashHandlerTest`** — uncaught exception writes `crash.log` before the injected `Killer` is invoked; pre-existing `.dismissed` deleted during write; internal failure → killer called exactly once, no re-entry; stacktrace >100 KB → truncation marker present; handler body executes under hard time budget (smoke assertion on elapsed nanos).
-- **`CrashStateTest`** — `crash.log` exists + no `.dismissed` → `hasUnresolvedCrash = true`; both exist → `false`; neither → `false`; `markDismissed()` flips flow to `false` and creates flag; `clear()` deletes both files; `refresh()` re-reads after external change.
+- **`CrashHandlerTest`** — uncaught exception writes `crash.log` before the injected `Killer` is invoked (assert call order via `InOrder`); pre-existing `.dismissed` deleted as part of the new crash write (US-B "новый краш сбрасывает скрытость" cross-component contract); internal failure → killer called exactly once, no re-entry; stacktrace >100 KB → truncation marker present at end; `handlerShape_noSuspendCallsNoCoroutineImports` — structural assertion that the handler source file contains neither a `suspend` call into `ErrorLog` nor a coroutines import (replaces brittle elapsed-nanos budget; enforces Decision 10).
+- **`CrashStateTest`** — `crash.log` exists + no `.dismissed` → `hasUnresolvedCrash = true`; both exist → `false`; neither → `false`; `markDismissed()` flips flow to `false` and creates flag; `clear()` deletes both files; `refresh()` re-reads after external change (simulates the `ModelManagerScreen` lifecycle refresh); fresh-install (no `logs/` folder) → `false`, no exception.
 - **`TapCounterTest`** — pure JVM, no Robolectric. 7 taps ≤2 s apart → triggers on 7th; gap >2 s → counter resets to 1; <7 → does not trigger; trigger fires once, not repeatedly.
-- **`LogcatReaderTest`** — stubs `ProcessBuilder` via a `CommandRunner` interface seam: empty output → `[logcat unavailable: empty]`; non-zero exit → `[logcat unavailable: exit=N]`; 2-s timeout → `[logcat unavailable: timeout]`; happy path → raw output tail-truncated.
+- **`LogcatReaderTest`** — stubs `ProcessBuilder` via a `CommandRunner` interface seam: empty output → `[logcat unavailable: empty]`; non-zero exit → `[logcat unavailable: exit=N]`; 2-s timeout → `[logcat unavailable: timeout]`; happy path → raw output returned verbatim (tail truncation is the caller's responsibility, covered in `LogExportManagerTest`); argv-shape assertion — the runner receives exactly `["logcat", "-d", "-v", "threadtime", "--pid=<int>", "*:E"]` with no shell wrapping (guards Decision 8 + security A03).
+- **`SanctumApplicationTest`** (Robolectric) — `getProcessName() == packageName` path installs the handler; a stubbed process name `"${packageName}:crash"` skips installation. Keeps Decision 4 from regressing silently.
 
 `core-runtime/.../ErrorLogTest.kt` is NOT modified — whitelist unchanged per Decision 10.
 
 ### Integration tests
-None. SAF system dialog, `:crash` process boundary, and `Thread.setDefaultUncaughtExceptionHandler` require `androidTest` instrumentation which this project explicitly does not configure (`architecture.md § Testing`, code-research §9.1). These paths are covered by manual user verification.
+None as `androidTest`-flavoured instrumentation (not configured in the project — see code-research §9.1). The SAF system dialog, the `:crash` process boundary, and the platform `Thread.setDefaultUncaughtExceptionHandler` dispatch all require instrumentation. These paths are covered by manual user verification per user-spec "Как проверить / Пользователь проверяет".
+
+Three Robolectric-level composition checks are in scope on the existing unit classpath and are folded into the classes listed above (rather than a separate integration tier): (a) `CrashHandlerTest` exercises the handler → filesystem → Killer sequence end-to-end; (b) `LogExportManagerTest.freshInstall_noLogsDir_succeeds` exercises `buildExport(About)` against a real Robolectric-seeded filesystem from a clean state; (c) `LogExportManagerTest.writeTo_ioException_surfaces` stubs `ContentResolver` via Robolectric's `ShadowContentResolver` to force an `IOException` on the write path and asserts the caller can distinguish it.
 
 ### E2E tests
 None. Size M + no instrumentation.
@@ -262,7 +273,9 @@ Structural invariants the agent checks post-implementation:
 
 | Risk | Mitigation |
 |------|------------|
-| Bootstrap loop if `CrashReportActivity` itself crashes during start (theme resolution, missing string, manifest mismatch) | Outer `try { … } catch (Throwable) { Process.killProcess(myPid) }` in `CrashHandler`; `CrashReportActivity` opts out of Hilt (Decision 5); uses only strings added in Task 1 and the existing `Theme.SanctumMachina`; unit test covers the handler-inner-failure path. |
+| Bootstrap loop: `CrashHandler` itself throws during the recovery sequence | Outer `try { … } catch (Throwable) { Log.e(…); Process.killProcess(myPid) }` in `CrashHandler`. Unit test (`CrashHandlerTest.handlerInternalFailure_killsOnce`) covers this explicitly. |
+| `CrashReportActivity` itself crashes during `onCreate` (theme resolution, missing string, manifest issue) | Cannot be caught by `CrashHandler` — it runs in a different process. Mitigations: activity opts out of Hilt (Decision 5), uses only strings added in Task 1 and the existing `Theme.Sanctum` (confirmed to exist in `themes.xml`), depends on no `DataStore` or coroutine scope, no dynamic resource lookups. If it still crashes, the user sees the Android "app stopped" dialog twice (once for the original crash, once for the activity). This failure mode is a documented residual limitation, not an eliminated one — the filesystem `crash.log` is still intact, so a relaunch shows the restart banner (Flow B). |
+| `startActivity(CrashReportActivity)` silently fails (process limit, manifest merge issue at runtime) | Main process still dies via `Process.killProcess` — state on disk is consistent. Same residual banner-fallback as the row above. |
 | Recursive handler installation in `:crash` process | Process-name guard in `SanctumApplication.onCreate` before any handler code (Decision 4). |
 | Native SIGSEGV from litertlm bypasses Kotlin handler entirely | Documented limitation (user-spec Risks row 3). User falls back to the system "app stopped" dialog and to a proactive About-export on the next launch (logcat will retain ART/native death lines). |
 | Logcat empty on OEM paranoid-mode (Honor/MIUI) | `LogcatReader` emits `[logcat unavailable: <reason>]`; the rest of the `.txt` saves regardless. Covered by `LogcatReaderTest`. |
@@ -311,7 +324,7 @@ Technical criteria complementing user-spec "Критерии приёмки":
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Verify-smoke:** `./gradlew :app:test --tests "*CrashHandlerTest*" --tests "*CrashStateTest*"` → all green.
-- **Files to modify:** `app/src/main/kotlin/app/sanctum/machina/crash/CrashHandler.kt`, `app/src/main/kotlin/app/sanctum/machina/crash/CrashState.kt`, `app/src/test/kotlin/app/sanctum/machina/crash/CrashHandlerTest.kt`, `app/src/test/kotlin/app/sanctum/machina/crash/CrashStateTest.kt`
+- **Files to modify:** `app/src/main/kotlin/app/sanctum/machina/crash/CrashHandler.kt`, `app/src/main/kotlin/app/sanctum/machina/crash/CrashState.kt`, `app/src/main/kotlin/app/sanctum/machina/crash/Killer.kt`, `app/src/test/kotlin/app/sanctum/machina/crash/CrashHandlerTest.kt`, `app/src/test/kotlin/app/sanctum/machina/crash/CrashStateTest.kt`
 - **Files to read:** `core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt`, `core-runtime/src/test/kotlin/app/sanctum/machina/core/log/ErrorLogTest.kt`, `work/phase-2.5-logexport/user-spec.md`, `work/phase-2.5-logexport/code-research.md`
 
 #### Task 3: LogExportManager + DeviceInfoCollector + LogcatReader + TapCounter
@@ -333,11 +346,11 @@ Technical criteria complementing user-spec "Критерии приёмки":
 - **Files to read:** created files from Task 2 and Task 3; `app/src/main/kotlin/app/sanctum/machina/ui/theme/Theme.kt`; `app/src/main/kotlin/app/sanctum/machina/ui/chat/HeavyChangeDialog.kt` (two-button pattern); `app/src/main/res/values/strings.xml` (Task 1)
 
 #### Task 5: SanctumApplication handler install + AndroidManifest activity
-- **Description:** (a) Add `<activity android:name=".crash.CrashReportActivity" android:process=":crash" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="" android:theme="@style/Theme.SanctumMachina" />` inside `<application>` in `AndroidManifest.xml`. (b) In `SanctumApplication.onCreate`, install `CrashHandler` inside a `getProcessName() == packageName` guard (Decision 4), before the existing `DefaultDownloadRepository.mainActivityFqn` assignment so a crash in that line is also caught.
+- **Description:** (a) Add `<activity android:name=".crash.CrashReportActivity" android:process=":crash" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="" android:theme="@style/Theme.Sanctum" />` inside `<application>` in `AndroidManifest.xml`. (b) In `SanctumApplication.onCreate`, install `CrashHandler` inside a `getProcessName() == packageName` guard (Decision 4), before the existing `DefaultDownloadRepository.mainActivityFqn` assignment so the handler is live as early as possible. Add `SanctumApplicationTest` (Robolectric) covering both guard branches.
 - **Skill:** code-writing
-- **Reviewers:** code-reviewer, security-auditor
-- **Verify-smoke:** `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL; `grep -n "android:process=\":crash\"" app/src/main/AndroidManifest.xml` → 1 match; `grep -n "getProcessName" app/src/main/kotlin/app/sanctum/machina/SanctumApplication.kt` → ≥1 match.
-- **Files to modify:** `app/src/main/AndroidManifest.xml`, `app/src/main/kotlin/app/sanctum/machina/SanctumApplication.kt`
+- **Reviewers:** code-reviewer, security-auditor, test-reviewer
+- **Verify-smoke:** `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL; `./gradlew :app:test --tests "*SanctumApplicationTest*"` → green; `grep -n "android:process=\":crash\"" app/src/main/AndroidManifest.xml` → 1 match; `grep -n "getProcessName" app/src/main/kotlin/app/sanctum/machina/SanctumApplication.kt` → ≥1 match.
+- **Files to modify:** `app/src/main/AndroidManifest.xml`, `app/src/main/kotlin/app/sanctum/machina/SanctumApplication.kt`, `app/src/test/kotlin/app/sanctum/machina/SanctumApplicationTest.kt`
 - **Files to read:** created files from Task 2 and Task 4; `core-runtime/src/main/kotlin/app/sanctum/machina/core/data/DefaultDownloadRepository.kt`
 
 #### Task 6: AboutScreen — Diagnostics section + 7-tap dev-gesture
