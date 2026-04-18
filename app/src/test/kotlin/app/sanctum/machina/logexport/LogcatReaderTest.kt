@@ -43,6 +43,19 @@ class LogcatReaderTest {
     }
 
     @Test
+    fun nullExitNoTimeout_returnsUnavailableUnknown() {
+        // Branch reached when DefaultCommandRunner catches IOException/SecurityException
+        // from ProcessBuilder.start (OEM paranoid mode without a logcat binary on PATH)
+        // and returns exitCode=null, timedOut=false. Locks the placeholder string.
+        val runner = StubCommandRunner(
+            result = LogcatResult(stdout = ByteArray(0), exitCode = null, timedOut = false)
+        )
+        val reader = LogcatReader(runner)
+
+        assertEquals("[logcat unavailable: unknown]", reader.read())
+    }
+
+    @Test
     fun timeout_returnsUnavailableTimeout() {
         val runner = StubCommandRunner(
             result = LogcatResult(stdout = "partial".toByteArray(), exitCode = null, timedOut = true)

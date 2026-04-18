@@ -181,8 +181,11 @@ class LogExportManagerTest {
             ?: fail("crash section missing: $out").let { "" as String }
         assertTrue("head marker must be preserved, got first 200 chars:\n${crashSection.take(200)}",
             crashSection.contains(headMarker))
-        assertTrue("truncation marker must be at the end of the section, got last 200 chars:\n${crashSection.takeLast(200)}",
-            crashSection.contains("[truncated at 100 KB]"))
+        val crashContent = crashSection.removePrefix("=== crash.log ===").trim()
+        assertTrue(
+            "truncation marker must be anchored at the END of the crash section, got tail:\n${crashContent.takeLast(64)}",
+            crashContent.endsWith("[truncated at 100 KB]")
+        )
         val contentOnly = crashSection.removePrefix("=== crash.log ===").trim()
         val contentBytes = contentOnly.toByteArray(Charsets.UTF_8).size
         assertTrue("crash section content ${contentBytes} must be within 100KB + marker overhead",

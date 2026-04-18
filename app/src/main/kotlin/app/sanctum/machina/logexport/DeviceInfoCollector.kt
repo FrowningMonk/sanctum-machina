@@ -8,6 +8,7 @@ import app.sanctum.machina.BuildConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import javax.inject.Inject
 
 /**
@@ -60,7 +61,7 @@ class DeviceInfoCollector @Inject constructor(
 
     private fun formatGb(bytes: Long): String {
         val gb = bytes.toDouble() / (1024.0 * 1024.0 * 1024.0)
-        return String.format(java.util.Locale.ROOT, "%.1f GB", gb)
+        return String.format(Locale.ROOT, "%.1f GB", gb)
     }
 }
 
