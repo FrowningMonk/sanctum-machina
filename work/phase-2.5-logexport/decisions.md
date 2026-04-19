@@ -213,7 +213,7 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 ## Task 9: Security Audit
 
 **Status:** Done
-**Commit:** 271e9ae
+**Commit:** 6b3e6c5
 **Agent:** main agent
 **Summary:** Проведён full-feature security audit Phase 2.5 против OWASP Top 10 (2021). Вердикт — **PASS**: Critical/High/Medium/Low findings отсутствуют. Все 10 осей явно оценены (A02/A06/A07/A10 — N/A с обоснованием; A01/A03/A04/A05/A08/A09 — PASS с доказательствами по файлам и строкам). Два residual-риска — Decision 11 (нефильтрованный экспорт) и native-SIGSEGV fallback — явно приняты как осознанные trade-off'ы со ссылкой на user-spec "Ограничения"/"Риски". Одно информационное наблюдение — per-process permissions не фильтруются Android'ом (`:crash` наследует INTERNET/CAMERA/RECORD_AUDIO, но код в `:crash` их не использует). Task 11 не блокируется; новая fix-задача не требуется. Полный отчёт: [logs/working/task-9/security-audit-report.md](logs/working/task-9/security-audit-report.md).
 **Deviations:** None.
