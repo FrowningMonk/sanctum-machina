@@ -37,7 +37,8 @@ constructor(
      * Flow-backed view of `crash.log` existence (Flow B / US-B, Decision 6).
      * Composable collects this and renders [app.sanctum.machina.crash.RestartCrashBanner]
      * iff `true`. Actions mutate it indirectly through [refreshCrashState],
-     * [dismissCrashBanner], and [clearCrashState], all of which end up calling
+     * [dismissCrashBanner], and [saveLogAndClearCrash] (which calls
+     * `CrashState.clear()` on success), all of which end up calling
      * `CrashState.refresh()` under the hood.
      */
     val hasUnresolvedCrash: StateFlow<Boolean> = crashState.hasUnresolvedCrash
