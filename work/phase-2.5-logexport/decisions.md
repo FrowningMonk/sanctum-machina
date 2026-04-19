@@ -165,7 +165,29 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 
 ---
 
-<!-- Entries are added by agents as tasks are completed.
+## Task 7: ModelManagerScreen — restart banner wiring
+
+**Status:** Done
+**Commit:** 511b0b9 (impl) + 13b9b97 (review fix)
+**Agent:** main agent
+**Summary:** Вшит `RestartCrashBanner` (Task 4) в `ModelManagerScreen` над списком моделей с рендером iff `CrashState.hasUnresolvedCrash == true`. Добавлен `SnackbarHost` (отсутствовал до этого — code-research §3), SAF-лончер `CreateDocument("text/plain")` с suggested filename `sanctum-log-YYYYMMDD-HHmm.txt` (`Locale.ROOT`, паритет с Task 4/6), `LaunchedEffect(Unit) { viewModel.refreshCrashState() }` для Decision 6 (фс — источник правды), и in-flight guard со сбросом в `finally` во всех ветках (success / IOException / Cancel). Для инъекции `CrashState` и `LogExportManager` расширен `ModelManagerViewModel` (точка инъекции — лёгкий путь из Implementation hints); добавлен прокси `saveLogAndClearCrash(uri): Result<Unit>`, повторяющий форму `AboutViewModel.buildAndWrite` из Task 6 с дополнительным `crashState.clear()` на успехе (обязательно по Flow B).
+**Deviations:** None. Точка инъекции — расширение `ModelManagerViewModel`, как рекомендует Implementation hints (а не wrapper-VM). Поведенческих отклонений от tech-spec Flow B и 10 AC task 7 нет.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: 1 nit (битая KDoc-ссылка `[clearCrashState]`) → [logs/working/task-7/code-reviewer-1.json](logs/working/task-7/code-reviewer-1.json)
+- security-auditor: 1 info (A09 — узкий `catch (IOException)`; `SecurityException`/`IllegalArgumentException` от `openOutputStream` могли бы обойти Snackbar) → [logs/working/task-7/security-auditor-1.json](logs/working/task-7/security-auditor-1.json). Принято: деферим на Phase 5 ради паритета с `AboutViewModel.buildAndWrite`; расширение ловли здесь без параллельной правки About привело бы к расхождению паттерна.
+- test-reviewer: 2 nits на AC→user-verify mapping (AC 4 блокирующий таб и AC 6 IOException структурно, но не наблюдаемы в 3 сценариях) + та же KDoc-ссылка → [logs/working/task-7/test-reviewer-1.json](logs/working/task-7/test-reviewer-1.json). TDD-Anchor (unit-тесты на UI пропускаем) подтверждён как консистентный с tech-spec Testing Strategy.
+
+*Round 2 (after fixes):*
+- Применена единственная актуальная правка — KDoc на `hasUnresolvedCrash` переформулирован (`[saveLogAndClearCrash] which calls CrashState.clear() on success`). Повторный прогон ревьюеров не требовался: остальные ниты либо info-уровня с явным решением оставить, либо документационные предложения к тексту task.md.
+
+**Verification:**
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL (34 s, 93 tasks).
+- `./gradlew :app:test` → BUILD SUCCESSFUL (34 s, 166 tasks); тесты волны 1 (`CrashHandlerTest`, `CrashStateTest`, `LogExportManagerTest`, `DeviceInfoCollectorTest`, `LogcatReaderTest`, `TapCounterTest`, `SanctumApplicationTest`) остались зелёными.
+- `./gradlew :app:lintDebug` → BUILD SUCCESSFUL; новых `HardcodedText` ошибок нет, все строки идут из `R.string.*` Task 1.
+- User-verification on Honor 200 (все три сценария из task 7 "Verification Steps → User" — Save path, Dismiss path, Cancel path): прошли.
 
 Format is strict — use only these sections, do not add others.
 Do not include: file lists, findings tables, JSON reports, step-by-step logs.
