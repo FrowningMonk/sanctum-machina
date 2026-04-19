@@ -1,5 +1,7 @@
 package app.sanctum.machina.ui.modelmanager
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -19,11 +21,17 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -34,6 +42,15 @@ import app.sanctum.machina.R
 import app.sanctum.machina.core.data.ModelDownloadStatus
 import app.sanctum.machina.core.data.ModelDownloadStatusType
 import app.sanctum.machina.core.registry.ModelEntry
+import app.sanctum.machina.crash.RestartCrashBanner
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlinx.coroutines.launch
+
+// Suggested filename pattern for SAF export — mirrors AboutScreen (Task 6)
+// and CrashReportActivity (Task 4); Locale.ROOT keeps digits ASCII.
+private const val TIMESTAMP_PATTERN = "yyyyMMdd-HHmm"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -43,11 +60,42 @@ fun ModelManagerScreen(
     viewModel: ModelManagerViewModel = hiltViewModel(),
 ) {
     val models by viewModel.models.collectAsStateWithLifecycle()
+    val hasUnresolvedCrash by viewModel.hasUnresolvedCrash.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
         viewModel.navEvents.collect { event ->
             when (event) {
                 is NavEvent.OpenChat -> onLoad(event.modelName)
+            }
+        }
+    }
+
+    // Decision 6: filesystem is the source of truth. Re-read on entry so an
+    // external change (a crash between sessions, manual file deletion) is
+    // picked up even though CrashState is a long-lived @Singleton.
+    LaunchedEffect(Unit) { viewModel.refreshCrashState() }
+
+    val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
+    val successMessage = stringResource(R.string.log_export_success_toast)
+    val errorMessage = stringResource(R.string.log_export_error_toast)
+
+    // In-flight guard for repeated save-log taps before the SAF dialog returns.
+    // Reset in `finally` below regardless of the result branch.
+    var launching by remember { mutableStateOf(false) }
+
+    val saveLogLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain"),
+    ) { uri ->
+        coroutineScope.launch {
+            try {
+                if (uri != null) {
+                    viewModel.saveLogAndClearCrash(uri)
+                        .onSuccess { snackbarHostState.showSnackbar(successMessage) }
+                        .onFailure { snackbarHostState.showSnackbar(errorMessage) }
+                }
+            } finally {
+                launching = false
             }
         }
     }
@@ -66,14 +114,28 @@ fun ModelManagerScreen(
                 },
             )
         },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
-        ModelList(
-            models = models,
-            contentPadding = innerPadding,
-            onDownload = viewModel::onDownload,
-            onCancel = viewModel::onCancel,
-            onLoad = viewModel::onLoad,
-        )
+        Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+            if (hasUnresolvedCrash) {
+                RestartCrashBanner(
+                    launching = launching,
+                    onSaveClick = {
+                        launching = true
+                        val timestamp = SimpleDateFormat(TIMESTAMP_PATTERN, Locale.ROOT).format(Date())
+                        saveLogLauncher.launch("sanctum-log-$timestamp.txt")
+                    },
+                    onDismissClick = viewModel::dismissCrashBanner,
+                )
+            }
+            ModelList(
+                models = models,
+                contentPadding = PaddingValues(0.dp),
+                onDownload = viewModel::onDownload,
+                onCancel = viewModel::onCancel,
+                onLoad = viewModel::onLoad,
+            )
+        }
     }
 }
 
