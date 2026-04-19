@@ -246,6 +246,29 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 - `grep "org.mockito\|io.mockk"` по аудируемым файлам → 0 реальных импортов (единственное вхождение строки «no Mockito/MockK» — в KDoc-комментарии `LogcatReaderTest.kt:12`).
 - `grep assertNotNull` → 2 попадания в аудируемых файлах, оба — легитимный pre-check перед substantive assertion.
 
+---
+
+## Task 11: Pre-deploy QA
+
+**Status:** Done
+**Commit:** _filled on commit_
+**Agent:** main agent
+**Summary:** Финальная приёмка Phase 2.5 перед hand-off. Все автоматические гейты зелёные (`:app:test` 113/113, `:core-runtime:test` 62/62 с `ErrorLogTest` 8/8, `:core-settings:test` 6/6, `:app:lintDebug` 0 errors, `:app:assembleDebug` BUILD SUCCESSFUL). APK-дельта над `main@4c0b8b5` (baseline измерен в `git worktree add /tmp/pw-main main`) — **+148.6 КБ** (122 605 261 − 122 453 051 байт), укладывается в бюджет ≤ ~200 КБ. 7 структурных грепов — все PASS (нет Compose/Activity в `:core-*`, нет `ErrorLog` в `crash/`, ровно один `:crash` в манифесте, ровно один `setDefaultUncaughtExceptionHandler` внутри process-guard, diff `ErrorLog.kt` пуст, `libs.versions.toml`/`app/build.gradle.kts` без новых зависимостей, `CrashReportActivity` без Hilt-аннотаций — единственное вхождение `@AndroidEntryPoint` только в KDoc с пометкой "NOT"). 25 AC user-spec + 11 AC tech-spec — все PASS; 14 user-spec AC помечены `PASS*` (file/test-level подтверждение + визуальная проверка на устройстве вынесена в hand-off чеклист). Блокеров 0, FAIL 0, findings upstream-аудитов (Task 8/9/10) уже разрешены. Вердикт: **READY**. Отчёт: [logs/working/task-11/pre-deploy-qa-report.md](logs/working/task-11/pre-deploy-qa-report.md). Hand-off чеклист из 4 сценариев (US-C pipeline, US-A crash path, US-B restart-banner, Negative path) передаётся пользователю в чате для on-device прогона на Honor 200.
+**Deviations:** None.
+
+**Reviews:** Нет (QA сам является верификацией — upstream-аудиты Task 8/9/10 уже выступили в роли ревью; JSON-ревьюеры для Task 11 не назначаются).
+
+**Verification:**
+- `./gradlew :app:test` → BUILD SUCCESSFUL, 113 tests, 0 failures (47 Phase 2.5 + 66 pre-existing).
+- `./gradlew :core-runtime:test` → BUILD SUCCESSFUL, 62 tests, 0 failures; `ErrorLogTest` 8/8.
+- `./gradlew :core-settings:test` → BUILD SUCCESSFUL, 6 tests, 0 failures.
+- `./gradlew :app:lintDebug` → BUILD SUCCESSFUL, 0 errors, 46 warnings (все pre-existing или intentional, 0 `UnusedResources` атрибутировано Phase 2.5 строкам).
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL; APK 122 605 261 B (delta над main: +148 610 B ≈ +148.6 КБ, 74% бюджета).
+- Structural greps (7): все PASS (детали — §4 отчёта).
+- AC coverage: 36/36 PASS (25 user-spec + 11 tech-spec); 14 user-spec AC содержат on-device observation (hand-off §6 отчёта).
+
+---
+
 <!-- Template remnants below were pre-existing artifact from earlier entries; preserved for transparency.
 Format is strict — use only these sections, do not add others.
 Do not include: file lists, findings tables, JSON reports, step-by-step logs.
