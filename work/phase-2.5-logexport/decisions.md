@@ -251,7 +251,7 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 ## Task 11: Pre-deploy QA
 
 **Status:** Done
-**Commit:** _filled on commit_
+**Commit:** 1deac53
 **Agent:** main agent
 **Summary:** Финальная приёмка Phase 2.5 перед hand-off. Все автоматические гейты зелёные (`:app:test` 113/113, `:core-runtime:test` 62/62 с `ErrorLogTest` 8/8, `:core-settings:test` 6/6, `:app:lintDebug` 0 errors, `:app:assembleDebug` BUILD SUCCESSFUL). APK-дельта над `main@4c0b8b5` (baseline измерен в `git worktree add /tmp/pw-main main`) — **+148.6 КБ** (122 605 261 − 122 453 051 байт), укладывается в бюджет ≤ ~200 КБ. 7 структурных грепов — все PASS (нет Compose/Activity в `:core-*`, нет `ErrorLog` в `crash/`, ровно один `:crash` в манифесте, ровно один `setDefaultUncaughtExceptionHandler` внутри process-guard, diff `ErrorLog.kt` пуст, `libs.versions.toml`/`app/build.gradle.kts` без новых зависимостей, `CrashReportActivity` без Hilt-аннотаций — единственное вхождение `@AndroidEntryPoint` только в KDoc с пометкой "NOT"). 25 AC user-spec + 11 AC tech-spec — все PASS; 14 user-spec AC помечены `PASS*` (file/test-level подтверждение + визуальная проверка на устройстве вынесена в hand-off чеклист). Блокеров 0, FAIL 0, findings upstream-аудитов (Task 8/9/10) уже разрешены. Вердикт: **READY**. Отчёт: [logs/working/task-11/pre-deploy-qa-report.md](logs/working/task-11/pre-deploy-qa-report.md). Hand-off чеклист из 4 сценариев (US-C pipeline, US-A crash path, US-B restart-banner, Negative path) передаётся пользователю в чате для on-device прогона на Honor 200.
 **Deviations:** None.
