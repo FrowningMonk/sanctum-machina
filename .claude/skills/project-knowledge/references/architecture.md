@@ -84,21 +84,34 @@ PhoneWrap/                                  # Repository root, working dir
 ├── app/                                    # :app gradle module — the Android application
 │   ├── build.gradle.kts                    # namespace = "app.sanctum.machina"
 │   ├── src/main/AndroidManifest.xml        # permissions (CAMERA, RECORD_AUDIO, INTERNET), SystemForegroundService,
+│   │                                       # CrashReportActivity (process=":crash", exported=false, excludeFromRecents=true),
 │   │                                       # allowBackup=false + dataExtractionRules (see patterns.md § Privacy hardening)
 │   ├── src/main/assets/about.md            # Sanctum Machina manifesto (editable markdown, rendered by AboutScreen)
 │   ├── src/main/res/xml/data_extraction_rules.xml  # cloud-backup + device-transfer excluded at root
 │   └── src/main/kotlin/app/sanctum/machina/
+│       ├── crash/                          # Phase 2.5 — crash capture & recovery (runs in both main + :crash processes)
+│       │   ├── CrashHandler.kt             # Thread.UncaughtExceptionHandler: writes crash.log, starts CrashReportActivity, kills main process
+│       │   ├── CrashReportActivity.kt      # Plain ComponentActivity (no Hilt) in android:process=":crash"; SAF export + two-button UI
+│       │   ├── CrashState.kt              # @Singleton; StateFlow<Boolean> backed by crash.log + crash.log.dismissed filesystem state
+│       │   ├── RestartCrashBanner.kt       # Stateless Compose composable; hosted by ModelManagerScreen
+│       │   └── Killer.kt                   # Test seam over Process.killProcess
+│       ├── logexport/                      # Phase 2.5 — diagnostic log assembly & export
+│       │   ├── LogExportManager.kt         # @Singleton; buildExport(ExportSource) + writeTo(uri); secondary non-Hilt ctor for :crash process
+│       │   ├── DeviceInfoCollector.kt      # Builds the .txt header; DeviceInfoProvider interface for test stubs
+│       │   ├── LogcatReader.kt             # Spawns logcat -d --pid=<own> *:E with 2-s timeout; CommandRunner seam
+│       │   ├── TapCounter.kt              # Pure-JVM 7-tap detector (no Android deps); nowNanos seam
+│       │   └── LogExportModule.kt          # Hilt @Binds: CommandRunner → DefaultCommandRunner, DeviceInfoProvider → AndroidDeviceInfoProvider
 │       ├── ui/
-│       │   ├── about/AboutScreen.kt        # SafeMarkdown-wrapped assets/about.md
+│       │   ├── about/AboutScreen.kt        # SafeMarkdown-wrapped assets/about.md; «Диагностика» section (SAF export); 7-tap dev-gesture on version line
 │       │   ├── chat/                       # ChatScreen + ChatViewModel; Attachment sealed class;
 │       │   │                               # MultimodalInputBar + ThumbnailStrip; CameraBottomSheet (CameraX);
 │       │   │                               # AudioRecorderBottomSheet (AudioRecord); MessageBubble + ThinkingBlock;
 │       │   │                               # InferenceSettingsBottomSheet + HeavyChangeDialog + ReinitProgressDialog;
 │       │   │                               # EffectiveConfig; SafeMarkdown + SafeUriHandler
-│       │   ├── modelmanager/, theme/
-│       │   └── SanctumApp.kt               # NavHost: modelmanager / chat / about
+│       │   ├── modelmanager/               # ModelManagerScreen: RestartCrashBanner above model list (Phase 2.5); SnackbarHost
+│       │   └── theme/, SanctumApp.kt       # NavHost: modelmanager / chat / about
 │       ├── MainActivity.kt
-│       └── SanctumApplication.kt           # @HiltAndroidApp; wires DefaultDownloadRepository.mainActivityFqn
+│       └── SanctumApplication.kt           # @HiltAndroidApp; process-guard installs CrashHandler before mainActivityFqn assignment (Phase 2.5)
 │                                           # Phase 3+: data/ (Room repos), di/ (app-level Hilt modules)
 │
 ├── core-runtime/                           # :core-runtime gradle module — extracted Gallery core
@@ -260,6 +273,19 @@ This is the Incognito-mode equivalent: the only way to have a conversation that 
 **Process:** Every schema change requires (a) bumping `@Database(version = N+1)`, (b) writing a `Migration(N, N+1)` that mutates the schema, (c) exporting the new schema JSON (Room generates these into `app/schemas/` — committed to git). Never editing past migrations.
 
 **Testing:** DAO and migration tests run as androidTest (real SQLite) using `androidx.room:room-testing`.
+
+### On-disk log layout (Phase 2.5+)
+
+`context.filesDir/logs/` contains up to four files — all written and read exclusively by the app's own code, never backed up (see `data_extraction_rules.xml`):
+
+| File | Writer | Purpose |
+|---|---|---|
+| `errors.log` | `ErrorLog` (`:core-runtime`) | Bounded on-device error log; rotated at 2 MB → `errors.log.1` |
+| `errors.log.1` | `ErrorLog` rotation | Previous `errors.log` copy; may not exist |
+| `crash.log` | `CrashHandler` (`:app/crash/`) | Latest uncaught exception record; overwritten on each new crash; head-truncated to 100 KB |
+| `crash.log.dismissed` | `CrashState.markDismissed` | Zero-byte presence flag: banner is hidden. Deleted by `CrashHandler` on every new crash write so the banner resurfaces. |
+
+`crash.log` and `crash.log.dismissed` are the sole cross-process state channel between the `:crash` OS process and the main process — DataStore is not used here (see patterns.md § Crash reporting and cross-process state).
 
 ### Sensitive Data
 

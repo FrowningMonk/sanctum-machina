@@ -1,0 +1,17 @@
+{
+  "round": 1,
+  "task": "7",
+  "reviewer": "security-auditor",
+  "verdict": "pass_with_nits",
+  "summary": "No OWASP Top 10 concerns introduced by the Task 7 wiring: SAF URI is user-chosen and never handed cross-process, the suggested filename is built from SimpleDateFormat(Locale.ROOT) with no user input, Snackbar messages are string-resource constants (no PII / no exception-message leakage), the caught IOException is not re-logged via ErrorLog (Decision 10 respected), and crash.log is preserved on failure (crashState.clear() runs only after successful write). One info-level nit: saveLogAndClearCrash catches IOException only — a SecurityException or IllegalArgumentException from openOutputStream on a stale/revoked SAF URI would propagate out of Result and crash the coroutine; widening the catch is defensive-robustness, not a vulnerability.",
+  "findings": [
+    {
+      "severity": "info",
+      "owasp": "A09",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerViewModel.kt",
+      "line": 81,
+      "issue": "saveLogAndClearCrash catches IOException only. ContentResolver.openOutputStream on a SAF URI can also throw SecurityException (stale/revoked URI grant after system state change) or IllegalArgumentException (malformed URI). On those, the exception escapes Result, bubbles up through coroutineScope.launch, and ends up on the Compose coroutine's default handler — the `finally { launching = false }` still runs, but the error Snackbar does not, and the user perceives the click as a silent no-op (or, depending on exception handler config, a silent process kill). Not a direct security vulnerability — the SAF URI is still user-controlled — but A09 (logging/monitoring) prefers that all failure modes route through the same Snackbar path so the user sees a consistent error signal.",
+      "fix": "Either broaden the catch to `catch (e: Exception)` (pragmatic for a user-initiated export), or explicitly enumerate `catch (e: IOException) ... catch (e: SecurityException) ... catch (e: IllegalArgumentException)`, each returning Result.failure(e). Current behaviour is acceptable for Phase 2.5 closed-alpha (Decision 11 context) — flagging as info so it is on the radar for Phase 5 hardening. Example:\n\nsuspend fun saveLogAndClearCrash(uri: Uri): Result<Unit> = try {\n    val content = logExportManager.buildExport(ExportSource.About)\n    logExportManager.writeTo(uri, content)\n    crashState.clear()\n    Result.success(Unit)\n} catch (e: IOException) {\n    Result.failure(e)\n} catch (e: SecurityException) {\n    Result.failure(e)\n} catch (e: IllegalArgumentException) {\n    Result.failure(e)\n}"
+    }
+  ]
+}

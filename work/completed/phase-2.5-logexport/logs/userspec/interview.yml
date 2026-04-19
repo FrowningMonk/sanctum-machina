@@ -1,0 +1,639 @@
+# Interview Plan for Feature Planning
+
+# ============================================================================
+# Interview Metadata
+# ============================================================================
+interview_metadata:
+  started: "2026-04-18 12:00:00"
+  last_updated: "2026-04-18 14:00:00"
+  status: "completed"
+  can_resume: false
+  current_question_num: 6
+  feature_size: "M"
+
+# ============================================================================
+# Conversation History
+# ============================================================================
+conversation_history:
+  - question_num: 1
+    timestamp: "2026-04-18 12:00:00"
+    topic: "initial_description"
+    agent_question: |
+      Опиши, что хочешь сделать в phase-2.5-logexport.
+    user_answer: |
+      есть конкретный кейс - скинул товарищу приложение после Phase-2.
+      он скачивает модель, нажимает "Загрузить", инициализация не проходит
+      и у него все вылетает. почему - непонятно. нужно чтобы он это
+      воспроизвел и показал мне лог
+    summary: |
+      Trigger: crash at model initialize on friend's device.
+      Need mechanism to collect diagnostic info and forward to developer.
+
+  - question_num: 2
+    timestamp: "2026-04-18 12:15:00"
+    topic: "batch_1_nature_scope_criteria_size"
+    agent_question: |
+      (1) как выглядит "вылет" у товарища; (2) что экспортируем (errors.log, device info, logcat);
+      (3) критерии успеха; (4) масштаб и testing strategy.
+    user_answer: |
+      1. все варианты обрабатываем — снекбар/Android-диалог/тихий вылет.
+      2. чем подробнее лог тем лучше. но только ERROR, никаких INFO/DEBUG.
+         Модель телефона, память, версия Android, модель с ошибкой — нужны.
+      3. других кейсов пока нет. хотфиксом закрываем только этот вылет.
+      Дополнительно: никаких встроенных экспортов в Telegram/Gmail/Bluetooth.
+      Просто "сохранить" + "открыть расположение". Товарищ сам разберётся.
+    summary: |
+      All 3 crash types in scope. Device info + active model + own ERROR log required.
+      Logcat — maybe, if filterable. NO share sheet — SAF save-to-file only.
+      Scope limited to this single crash-reporting path.
+
+  - question_num: 3
+    timestamp: "2026-04-18 12:25:00"
+    topic: "batch_2_ui_entrypoints_artifacts_edges_privacy"
+    agent_question: |
+      (5) где UI-точка (overflow / отдельный экран / About);
+      (6) один .txt или zip; (7) edge cases; (8) privacy для logcat.
+    user_answer: |
+      5. ни один вариант не зашёл. хочется "сразу при краше" если возможно.
+         About отдельно, не в "три точки".
+      6. zip не надо, один .txt.
+      7. согласовано, но опасение по logcat — не будет ли там мусора.
+      8. пока никакой приватности, сейчас тест, надо знать всё.
+    summary: |
+      User wants instant crash UX (not on restart). About stays as standalone item,
+      NOT in overflow. One .txt. Logcat filter needs clarification.
+      Privacy: accept all content for now (test phase).
+
+  - question_num: 4
+    timestamp: "2026-04-18 12:35:00"
+    topic: "batch_3_crash_activity_retention_testing"
+    agent_question: |
+      (9) crash-activity в отдельном процессе — одобряешь;
+      (10) retention crash.log; (11) как тестировать краш на dev-девайсе.
+    user_answer: |
+      9. согласовано.
+      10. согласовано. но выгрузка останется всегда?
+      11. если работает — как тестить? предполагаю что отдам товарищу.
+          "успешный лог" для проверки выгрузки — хорошо, но не обязательно.
+    summary: |
+      Crash activity in :crash process approved. About's export button
+      must remain always accessible regardless of crash state.
+      Testing: author may not reproduce solo — dev trigger valuable.
+
+  - question_num: 5
+    timestamp: "2026-04-18 12:45:00"
+    topic: "batch_4_dev_gesture_confirmation"
+    agent_question: |
+      Одобряешь 7-тап-жест по версии в About как dev-триггер краша?
+    user_answer: |
+      согласовано
+    summary: |
+      7-tap dev trigger on BuildConfig.VERSION_NAME in AboutScreen footer.
+      Cycle 1 closed.
+
+  - question_num: 6
+    timestamp: "2026-04-18 13:15:00"
+    topic: "batch_5_banner_semantics_crashlog_caps_devgesture"
+    agent_question: |
+      (12) Restart-banner persistence: показывать пока crash.log на диске,
+           кнопка "Сохранить" удаляет файл, "Скрыть" создаёт рядом .dismissed флаг,
+           новый краш удаляет .dismissed и переписывает crash.log.
+      (13) crash.log: overwrite (один последний). Размеры: crash.log 100КБ,
+           logcat 100КБ, errors.log(.1) как есть.
+      (14) Bootstrap-loop: не городим counter, просто try/catch вокруг handler.
+           Dev-gesture: на main thread.
+    user_answer: |
+      все согласовано
+    summary: |
+      All Cycle 2 decisions locked:
+      - Banner tied to crash.log + .dismissed flag
+      - crash.log overwrite single-record
+      - Size caps 100KB / 100KB / full
+      - Simple bootstrap fallback via try/catch
+      - Dev-gesture on main thread (onClick direct throw)
+      Cycle 2 closed.
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding (CYCLE 1 CLOSED)
+# ============================================================================
+phase1_feature_overview:
+
+  feature_name:
+    score: 100
+    status: "complete"
+    value: "phase-2.5-logexport"
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 90
+    status: "complete"
+    value: |
+      Hotfix-interlude между Phase 2 и Phase 3. Добавить механизм сбора
+      и выгрузки диагностической информации, чтобы удалённый тестировщик
+      (владелец APK) мог собрать и прислать разработчику данные о краше
+      или ошибке приложения.
+
+      Компоненты:
+      1. Сбор информации (device info, errors.log, crash.log, фильтрованный logcat).
+      2. Уловление uncaught Kotlin/Java exceptions через
+         Thread.setDefaultUncaughtExceptionHandler → синхронная запись в crash.log.
+      3. CrashReportActivity в отдельном процессе (:crash), запускается
+         автоматически перед смертью основного процесса; один экран с кнопкой
+         "Сохранить лог" (SAF ACTION_CREATE_DOCUMENT).
+      4. Restart-banner на ProjectsList/ModelManager — показывается если
+         приложение в предыдущий раз завершилось аварийно; кнопки
+         "Сохранить лог" / "Скрыть".
+      5. Постоянная кнопка "Сохранить лог" в AboutScreen — доступна
+         независимо от состояния crash.log.
+      6. Dev-gesture: 7 быстрых тапов по BuildConfig.VERSION_NAME в
+         AboutScreen → диалог "Спровоцировать тест-краш?" → throw
+         RuntimeException("test crash from About"). В Phase 5 обернём
+         в if (BuildConfig.DEBUG).
+    gaps: ""
+    required: true
+
+  work_type:
+    score: 100
+    status: "complete"
+    value: "feature"
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 95
+    status: "complete"
+    value: |
+      Разработчик (solo, Honor 200) раздаёт debug APK близкому кругу
+      тестировщиков. У товарища на Phase-2 APK при нажатии "Загрузить"
+      модель не инициализируется, приложение падает (визуально — детали
+      неизвестны: snackbar/Android-dialog/silent). Текущее приложение
+      не даёт товарищу простого способа передать разработчику
+      техническую информацию о случившемся.
+
+      На самом крайнем уровне — native SIGSEGV из litertlm — информация
+      может вообще не попасть в наш лог; мы принимаем это ограничение.
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 90
+    status: "complete"
+    value: |
+      Близкий круг тестировщиков, получающих APK вручную через Telegram
+      или файловый обмен. Не технические настолько, чтобы копаться
+      в filesDir через adb. Нужен UX уровня "нажал кнопку — сохранил
+      файл — сам переслал мессенджером".
+
+      Тот же механизм подходит и для Phase 5 (публичный релиз), но
+      там планируется прикрывать 7-tap gesture через BuildConfig.DEBUG.
+    gaps: ""
+    required: false
+
+  success_criteria:
+    score: 90
+    status: "complete"
+    value: |
+      Happy paths:
+      A. Crash self-service (Kotlin uncaught exception):
+         1. Товарищ получает Phase-2.5 APK, ставит.
+         2. Воспроизводит действия → приложение крашится.
+         3. Немедленно открывается CrashReportActivity с кнопкой "Сохранить лог".
+         4. Товарищ жмёт, SAF-диалог, выбирает папку (Downloads), сохраняет .txt.
+         5. Открывает .txt через файловый менеджер, шлёт в Telegram.
+         6. Разработчик открывает, видит stack trace + device info + errors.log.
+
+      B. Crash recovery (native crash / закрытый CrashReportActivity):
+         1. Приложение "Завершилось" через системный диалог Android.
+         2. Товарищ перезапускает → видит restart-banner.
+         3. "Сохранить лог" → SAF → файл.
+
+      C. Proactive export (без краша):
+         1. Товарищ открывает About → видит кнопку "Сохранить лог".
+         2. SAF → файл с тем что есть на диске (возможно пустые секции).
+
+      Acknowledged limitation: нативный SIGSEGV в обход Thread handler
+      может не оставить записи ни в одном файле; logcat-секция даст
+      что-то только если ART-runtime успел что-то записать.
+    gaps: ""
+    required: true
+
+  constraints:
+    score: 90
+    status: "complete"
+    value: |
+      - Масштаб: M (новый Activity + Manifest entry + UncaughtHandler +
+        LogExportManager + 2 UI-точки + dev-gesture). Не S.
+      - Никакого Share Intent, FileProvider, grantUriPermissions — только SAF
+        ACTION_CREATE_DOCUMENT с ContentResolver.openOutputStream(uri).
+      - Никакой серверной инфраструктуры, телеметрии, uploading.
+      - Lотcat: только через Runtime.exec("logcat -d -v threadtime *:E --pid=N");
+        без READ_LOGS permission. На современных Android процесс видит только
+        свои собственные строки — это ок для наших целей.
+      - CrashReportActivity в :crash процессе — код должен быть
+        максимально защищённый; любой throw внутри handler → бесконечный
+        цикл крашей.
+      - Новых ERROR-компонентов в ErrorLog не добавляем — crash.log это
+        отдельная дорожка со своим форматом.
+      - Модульность: LogExportManager должен переиспользоваться тремя
+        UI-точками одинаково.
+      - Phase 2 осталась in-memory — к chat history экспорт не привязан.
+      - Privacy: test-phase, не фильтруем. В Phase 5 вернёмся к вопросу.
+    gaps: ""
+    required: true
+
+  testing_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      Unit (`:app/src/test` + Robolectric если нужно):
+        - LogExportManager.composeExport() — формат .txt, порядок секций.
+        - DeviceInfoCollector — корректные значения из Build.*.
+        - CrashLogWriter — формат stack trace, санитизация.
+        - LogcatReader — команда, обработка IOException.
+
+      Integration / E2E: НЕ ДЕЛАЕМ. В проекте нет Compose UI тестов,
+      SAF и отдельный процесс не покрываются.
+
+      Manual smoke на Honor 200:
+        (а) Pipeline check: About → "Сохранить лог" на чистом состоянии →
+            SAF → открыть .txt → проверить формат.
+        (б) Crash path: 7 тапов по версии → подтвердить → приложение
+            умирает → запускается CrashReportActivity → сохранить →
+            .txt содержит stack trace.
+        (в) Restart-banner path: искусственный краш → закрыть
+            CrashReportActivity без сохранения → перезапустить → увидеть
+            баннер → "Сохранить лог".
+
+      Если разработчик не может воспроизвести — та же инструкция
+      товарищу.
+    gaps: ""
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios (CYCLE 2 SCOPE — in progress)
+# ============================================================================
+phase2_user_experience:
+  user_stories:
+    score: 90
+    status: "complete"
+    value: |
+      US-A (Crash self-service, auto-recover):
+        1. Товарищ запускает приложение, жмёт "Загрузить" на модели.
+        2. Kotlin exception → handler пишет crash.log → стартует CrashReportActivity
+           в :crash процессе → главный процесс умирает.
+        3. Товарищ видит экран "Приложение аварийно закрылось" с двумя кнопками.
+        4. "Сохранить лог" → SAF Create Document → выбирает Downloads → файл .txt
+           сохранён → crash.log удалён с диска.
+        5. Открывает файл в файловом менеджере, шлёт разработчику.
+
+      US-B (Restart recovery):
+        1. Native SIGSEGV или "Закрыть" на CrashReportActivity → crash.log
+           на диске остался.
+        2. Товарищ перезапускает приложение → ModelManagerScreen показывает
+           баннер "Прошлый запуск завершился аварийно. [Сохранить лог] [Скрыть]".
+        3. "Сохранить лог" → SAF → .txt → crash.log удалён.
+           ИЛИ "Скрыть" → создаётся .dismissed флаг → баннер больше не
+           показывается пока не произойдёт новый краш.
+
+      US-C (Proactive export без краша):
+        1. Товарищ открывает About через Info-иконку в ModelManager TopAppBar.
+        2. Внизу AboutScreen видит кнопку "Сохранить лог".
+        3. Нажимает → SAF → .txt с device info + текущим errors.log + (возможно)
+           crash.log. Состояние crash.log не меняется.
+    gaps: ""
+    required: true
+  acceptance_criteria:
+    score: 90
+    status: "complete"
+    value: |
+      Формат: AC-N (testable). Итоговый checklist ~15 пунктов:
+      - Handler перехватывает uncaught exception на любом потоке.
+      - crash.log пишется синхронно до смерти процесса (100КБ cap).
+      - CrashReportActivity открывается в :crash процессе.
+      - При "Сохранить лог" SAF показывает диалог с suggested filename.
+      - .txt содержит: header (timestamp, version, device, active model),
+        crash.log, errors.log, errors.log.1 (если есть), logcat section.
+      - Баннер на ModelManagerScreen показывается если crash.log + нет .dismissed.
+      - "Сохранить" из любого entry удаляет crash.log.
+      - "Скрыть" создаёт .dismissed, новый краш его удаляет.
+      - About кнопка доступна всегда.
+      - 7 тапов по версии → диалог → confirm → тест-краш на main thread.
+      - SAF отмена → молчаливый возврат.
+      - logcat недоступен → секция "[logcat unavailable]" в .txt, остальное есть.
+      - :crash процесс гвардится SanctumApplication.getProcessName().
+    gaps: ""
+    required: true
+  edge_cases:
+    score: 90
+    status: "complete"
+    value: |
+      - errors.log пустой или отсутствует → секция в .txt пустая с пометкой.
+      - errors.log.1 отсутствует → секция не включается.
+      - crash.log > 100КБ → обрезается первыми 100КБ с пометкой "[truncated]".
+      - logcat output > 100КБ → обрезается последними 100КБ (свежее полезнее).
+      - logcat exec failed / empty → "[logcat unavailable: <reason>]".
+      - SAF cancelled → молчаливый возврат, .txt не создан.
+      - Нет свободного места → SAF сам покажет системную ошибку.
+      - CrashReportActivity сам упал (редкий bootstrap loop) → handler обёрнут
+        в try/catch вокруг файловой записи и startActivity. Если бросит —
+        Process.killProcess. Android default dialog, crash.log может быть
+        не записан. Товарищ перезапустит — баннер появится если crash.log успел.
+      - Краш до SanctumApplication.onCreate — out of scope.
+      - Native SIGSEGV (litertlm) — crash.log не пишется, logcat-секция от
+        процесса до этого момента может содержать tombstone-like строки, но
+        гарантии нет.
+    gaps: ""
+    required: true
+  error_scenarios:
+    score: 90
+    status: "complete"
+    value: |
+      Same as edge_cases. Strategy: never fail loudly — если секция не
+      собралась, в .txt будет placeholder "[section unavailable]", файл
+      всё равно сохранится и товарищ сможет прислать его без повторных
+      попыток.
+
+      Bootstrap защита: минимальная — try/catch вокруг handler'а без
+      счётчика. Риск приемлем для хотфикса.
+
+      SAF ответ null (отмена) — не показываем snackbar, просто возврат.
+      SAF ответ uri → openOutputStream → если IOException → показать
+      snackbar "Не удалось сохранить лог" (из AboutScreen) или toast
+      (из CrashReportActivity).
+    gaps: ""
+    required: true
+  verification_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      Agent: unit tests для LogExportManager.compose(), DeviceInfoCollector,
+      CrashLogWriter, LogcatReader (Robolectric @Config(sdk = [33])).
+      Grep проверки: :crash в manifest, handler в onCreate до mainActivityFqn,
+      getProcessName guard.
+      User: manual smoke по трём путям на Honor 200 — pipeline check из
+      About, crash path через 7-tap, restart-banner после искусственного
+      краша с последующим перезапуском без сохранения.
+    gaps: ""
+    required: true
+  ui_ux_requirements:
+    score: 85
+    status: "complete"
+    value: |
+      CrashReportActivity:
+        - Scaffold с простым центрированным содержимым. Никаких TopAppBar.
+        - Заголовок "Приложение аварийно закрылось".
+        - Body (сухо, по ux-guidelines): "Можно сохранить диагностический
+          лог и переслать разработчику."
+        - Две кнопки в ряд: "Сохранить лог" (primary) / "Закрыть" (TextButton).
+
+      Restart-banner на ModelManagerScreen:
+        - Material 3 Card (нет Banner composable в M3).
+        - Icon (Info/Warning) + Text "Прошлый запуск завершился аварийно."
+          + TextButton "Сохранить лог" + IconButton (X) "Скрыть".
+        - Располагается над LazyColumn с моделями (внутри Scaffold content).
+
+      AboutScreen:
+        - В конце Column (после SafeMarkdown и Footer) — HorizontalDivider +
+          Section "Диагностика" с одним пунктом: Text "Сохранить лог
+          приложения" + TextButton "Сохранить".
+        - Dev-gesture: 7 тапов подряд по строке версии (отсчёт по
+          System.currentTimeMillis, сброс после 2 секунд паузы) → AlertDialog
+          "Спровоцировать тест-краш?" [Да / Отмена] → на Да: throw
+          RuntimeException("test crash from About") в onClick (main thread).
+
+      Все тексты на русском через strings.xml.
+      Имя файла по умолчанию: "sanctum-log-YYYYMMDD-HHmm.txt".
+    gaps: ""
+    required: false
+  risks:
+    score: 90
+    status: "complete"
+    value: |
+      R1: Bootstrap loop — если CrashReportActivity сам крашится.
+          Митигация: try/catch вокруг handler, если стартует не удалось —
+          Process.killProcess без петли.
+      R2: Native SIGSEGV от litertlm обходит handler. Митигация: ничего
+          не делаем, признаём ограничение. logcat-секция даст возможные
+          намёки, баннер после перезапуска не покажется (нет crash.log).
+      R3: Hilt в :crash процессе — injected singletons не шарятся с main.
+          Митигация: CrashReportActivity не использует Hilt, работает
+          через файл на диске + raw Context.
+      R4: Recursive handler в :crash процессе. Митигация: guard
+          Application.getProcessName() == packageName до установки handler.
+      R5: strings.xml разрастается. Митигация: добавляем минимум ключей,
+          следуем ux-guidelines (короткие, без "пожалуйста").
+      R6: logcat на некоторых OEM (Honor paranoid mode) возвращает пусто.
+          Митигация: graceful empty section.
+      R7: .txt размер ≤ 4.3МБ (2+2+0.1+0.1+header) — Telegram/почта вывезут.
+          Митигация: документированные size caps.
+    gaps: ""
+    required: true
+  technical_decisions:
+    score: 90
+    status: "complete"
+    value: |
+      - Single .txt output, не .zip.
+      - SAF ACTION_CREATE_DOCUMENT, не FileProvider + Share Intent.
+      - UncaughtExceptionHandler пишет crash.log синхронно перед startActivity
+        + Process.killProcess.
+      - CrashReportActivity в отдельном :crash процессе, без Hilt.
+      - logcat: Runtime.exec через ProcessBuilder, "logcat -d -v threadtime
+        --pid=<mainProcessPid> *:E". В handler — сначала пишем logcat в
+        crash.log (поскольку :crash процесс увидит другой pid), потом
+        startActivity.
+      - Actually simpler: пишем только crash.log + stack trace в handler,
+        logcat от нашего pid собирается при вызове "Сохранить лог" — из
+        CrashReportActivity logcat нашего-старого-pid уже не доступен
+        (pid ушёл), но logcat любого E-уровня от :crash процесса пустой.
+        Решение: logcat собирается ТОЛЬКО при export из AboutScreen (жив
+        main process); из CrashReportActivity logcat-секция пустая с
+        пометкой "[logcat available only via About export]".
+      - crash.log: overwrite single record, ≤100КБ stack trace.
+      - No new ErrorLog whitelist component.
+      - 7-tap dev-gesture on main thread (onClick direct throw).
+      - Banner persistence via crash.log existence + .dismissed flag file.
+    gaps: ""
+    required: false
+  deploy_approach:
+    score: 100
+    status: "complete"
+    value: "Ручной APK как всегда (./gradlew :app:assembleDebug)."
+    gaps: ""
+    required: false
+  manual_user_actions:
+    score: 100
+    status: "complete"
+    value: |
+      Для тестировщика: установить APK. Всё.
+      Для разработчика: для smoke-теста — 7 тапов по версии в About.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context (CYCLE 2 SCOPE — in progress)
+# ============================================================================
+phase3_integration:
+  integration_points:
+    score: 90
+    status: "complete"
+    value: |
+      MODIFY:
+      - app/src/main/kotlin/app/sanctum/machina/SanctumApplication.kt —
+        установка UncaughtExceptionHandler с getProcessName() guard.
+      - app/src/main/kotlin/app/sanctum/machina/ui/about/AboutScreen.kt —
+        новая секция "Диагностика" + 7-tap dev-gesture на строке версии.
+      - app/src/main/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerScreen.kt —
+        restart-banner над LazyColumn (Card + Row).
+      - app/src/main/AndroidManifest.xml — <activity
+        android:name=".crash.CrashReportActivity" android:process=":crash"
+        android:exported="false" android:excludeFromRecents="true"
+        android:taskAffinity="" />.
+      - app/src/main/res/values/strings.xml — ~10 новых ключей.
+
+      NEW:
+      - app/src/main/kotlin/app/sanctum/machina/crash/CrashReportActivity.kt
+      - app/src/main/kotlin/app/sanctum/machina/crash/CrashHandler.kt
+      - app/src/main/kotlin/app/sanctum/machina/crash/CrashState.kt
+        (читает crash.log и .dismissed флаг для UI-слоя)
+      - app/src/main/kotlin/app/sanctum/machina/logexport/LogExportManager.kt
+      - app/src/main/kotlin/app/sanctum/machina/logexport/DeviceInfoCollector.kt
+      - app/src/main/kotlin/app/sanctum/machina/logexport/LogcatReader.kt
+
+      Tests:
+      - app/src/test/kotlin/app/sanctum/machina/logexport/*Test.kt
+        (Robolectric @Config(sdk = [33]), runTest pattern из ErrorLogTest).
+
+      ErrorLog (:core-runtime/log/) — READ ONLY, формат errors.log
+      не меняем, whitelist не расширяем.
+    gaps: ""
+    required: true
+  dependencies:
+    score: 90
+    status: "complete"
+    value: |
+      Никаких новых внешних зависимостей. Всё на classpath:
+      - SAF ACTION_CREATE_DOCUMENT — androidx.activity 1.10.1.
+      - Runtime.exec / ProcessBuilder — Kotlin stdlib.
+      - Material 3 (Card/Button/Scaffold) — compose BOM 2026.03.00.
+      - Build / PackageInfo — Android SDK.
+      - Robolectric 4.12 — для unit-тестов.
+
+      Hilt: LogExportManager + CrashState — @Singleton в main process.
+      CrashReportActivity — без Hilt (:crash процесс отдельный,
+      shared singletons не валидны; SAF+File работают без DI).
+    gaps: ""
+    required: false
+  technical_constraints:
+    score: 90
+    status: "complete"
+    value: |
+      - minSdk = 31 (Android 12). SAF с API 19. logcat --pid без permission.
+      - :crash процесс имеет собственный Hilt SingletonComponent (не шарится),
+        собственный Application.onCreate. Guard через
+        Application.getProcessName() (API 28+, наш минимум 31).
+      - logcat собирается ТОЛЬКО из main process (AboutScreen export),
+        не из :crash (у :crash другой pid, его logcat будет пустой).
+      - В CrashReportActivity .txt содержит placeholder для logcat-секции.
+      - .txt file size budget: ≤ 4.3МБ (2МБ + 2МБ + 100КБ + 100КБ + header).
+    gaps: ""
+    required: false
+  data_requirements:
+    score: 95
+    status: "complete"
+    value: |
+      Постоянное состояние (на диске):
+      - filesDir/logs/errors.log (+ .1) — существующее, не меняем.
+      - filesDir/logs/crash.log — новый, overwrite на каждый uncaught, ≤100КБ.
+      - filesDir/logs/crash.log.dismissed — пустой флаг-файл, создаётся при
+        "Скрыть" на баннере, удаляется при новом краше или "Сохранить".
+
+      Эфемерно (формируется при экспорте):
+      - Header блок .txt:
+        ```
+        === Sanctum Machina diagnostic log ===
+        Exported: YYYY-MM-DD HH:MM:SS
+        App: <packageName> <VERSION_NAME> (code <VERSION_CODE>, debug=<DEBUG>)
+        Device: <MANUFACTURER> <MODEL> (Android <SDK_INT>)
+        RAM total/available: X.X / Y.Y GB
+        Active model: <id or "none">
+        Downloaded models: <comma list with sizes>
+        ```
+      - Порядок секций: header, === crash.log ===, === errors.log ===,
+        === errors.log.1 === (если есть), === logcat ===.
+      - Пустые/недоступные секции помечаются "[empty]" / "[unavailable]".
+
+      Явный file-name suggestion: sanctum-log-YYYYMMDD-HHmm.txt (передаётся
+      launcher.launch(name)).
+    gaps: ""
+    required: false
+  migration_needs:
+    score: 100
+    status: "complete"
+    value: "N/A — нет данных пользователя для миграции."
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: "work/phase-2.5-logexport/user-spec.md"
+  status: "approved"
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+  required_threshold: 85
+  optional_threshold: 50
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty"
+  priority_order:
+    - "Required items with score < 85% (lowest first)"
+    - "Optional items mentioned by user"
+  question_strategy:
+    - "3-4 questions per batch"
+    - "Propose solutions based on PK + code"
+    - "Challenge with substance"
+
+# ============================================================================
+# Progress
+# ============================================================================
+progress:
+  current_phase: "ready_for_spec_draft"
+  questions_asked: 6
+  last_question: "batch_5_banner_crashlog_caps_gesture"
+  total_required_score: 1160
+  total_optional_score: 640
+  completion_estimate: "100%"
+  user_detail_level: "moderate"
+
+# ============================================================================
+# Notes
+# ============================================================================
+notes: |
+  BOTH CYCLES CLOSED — all required items >= 85%.
+
+  Final locked decisions:
+  - Feature size M.
+  - CrashReportActivity in :crash process, no Hilt inside :crash.
+  - SAF ACTION_CREATE_DOCUMENT; single .txt; no Share Intent.
+  - Logcat via ProcessBuilder *:E --pid, dump mode; collected ONLY in
+    AboutScreen export path (main process live).
+  - Handler writes crash.log synchronously (overwrite, ≤100КБ), starts
+    :crash activity, Process.killProcess.
+  - Banner persistence: driven by crash.log file + .dismissed flag.
+  - Dev-gesture: 7 taps on BuildConfig.VERSION_NAME in AboutFooter →
+    AlertDialog → throw RuntimeException() on main thread onClick.
+  - No new ErrorLog whitelist components; crash.log is separate channel.
+  - Privacy: test-phase, no filtering.
+  - Bootstrap-loop: minimal try/catch, no counter.
+
+  Acknowledged limitations documented:
+  - Native SIGSEGV (litertlm) may leave no record.
+  - Crash before SanctumApplication.onCreate — out of scope.
+  - logcat not available in CrashReportActivity path (placeholder in .txt).
+
+  Next: run interview-completeness-checker, then draft user-spec.md.

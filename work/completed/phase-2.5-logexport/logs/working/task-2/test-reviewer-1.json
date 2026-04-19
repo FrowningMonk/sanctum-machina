@@ -1,0 +1,35 @@
+{
+  "status": "ok",
+  "round": 1,
+  "summary": "Both test files implement every name/behaviour from task-2 TDD Anchor (7/7 for CrashHandler, 8/8 for CrashState). Robolectric setup mirrors ErrorLogTest canonically: RobolectricTestRunner + @Config(sdk=[33]) + ApplicationProvider + logsDir.deleteRecursively() in @Before and @After; no Mockito/MockK, only handrolled RecordingKiller/CountingKiller. Assertions are behavioural and directional — overwrite semantics checked with a negative assertion against the first exception's message, head-truncation checked with a startsWith header anchor plus a size-band window [maxBytes-1024, maxBytes+markerOverhead], single-kill invariant checked with callCount==1 under an injected throwing writer. handlerShape test correctly uses Java reflection (::class.java.declaredMethods) per task hint that kotlin-reflect is not on the test classpath. Test independence is clean — no shared mutable state, fresh fakes per test, logsDir wiped twice. The extra test nullMessageException_doesNotCrash aligns with the Edge Cases section of task-2 (explicitly listed) and earns its place, though its assertions are smoke-level compared to siblings. Two soft-directional findings (truncation marker position; thin null-message assertions) and one scope comment on the reflection test — all low severity. No blockers, no highs, no mediums.",
+  "coverage": {
+    "tdd_anchor_covered": true,
+    "extra_tests": ["nullMessageException_doesNotCrash"]
+  },
+  "findings": [
+    {
+      "severity": "low",
+      "file": "app/src/test/kotlin/app/sanctum/machina/crash/CrashHandlerTest.kt",
+      "line": "128-131",
+      "category": "assertion",
+      "issue": "stacktraceOver100KB_truncationMarkerAtEnd asserts content.contains(\"[truncated at 100 KB]\") but does not anchor the marker to the END of the file. Production code defines TRUNC_MARKER = \"\\n[truncated at 100 KB]\\n\" and appends it after the head slice (head + TRUNC_MARKER), so marker-at-end is a load-bearing directional invariant that the current assertion does not enforce. A regression that accidentally placed the marker at the head (e.g. TRUNC_MARKER + head) would still pass. The test title and the user-spec both say 'marker at end'.",
+      "recommendation": "Add a directional anchor alongside the contains() check, e.g. assertTrue(\"marker must be at the end\", content.trimEnd().endsWith(\"[truncated at 100 KB]\")) or assertTrue(content.takeLast(64).contains(\"[truncated at 100 KB]\")). Keeps existing assertions, adds ~1 line."
+    },
+    {
+      "severity": "low",
+      "file": "app/src/test/kotlin/app/sanctum/machina/crash/CrashHandlerTest.kt",
+      "line": "156-165",
+      "category": "assertion",
+      "issue": "nullMessageException_doesNotCrash only asserts callCount==1 and crashLog.exists(). The documented behaviour for a null-message exception (task-2 Edge cases; production uses throwable.message.orEmpty()) is that the 'message:' header renders as an empty string — the test does not verify this. If production silently regressed to writing the literal 'null' (e.g. someone replaces .orEmpty() with .toString()), this test would still pass. Since the extra test exists specifically to cover this edge case, the assertion should be tight.",
+      "recommendation": "Read crashLog and assert on the shape of the message line, e.g. val content = crashLog.readText(Charsets.UTF_8); assertTrue(\"message line must be empty, not literal 'null'\", content.contains(\"\\nmessage: \\n\") || content.contains(\"\\nmessage:\\n\")); and assertFalse(content.contains(\"message: null\")). Two extra assertions, zero extra setup."
+    },
+    {
+      "severity": "low",
+      "file": "app/src/test/kotlin/app/sanctum/machina/crash/CrashHandlerTest.kt",
+      "line": "143-153",
+      "category": "style",
+      "issue": "handlerShape_noSuspendCallsNoCoroutineImports implements only the 'no suspend' half of its name — it inspects declaredMethods parameterTypes for kotlin.coroutines.Continuation. The 'noCoroutineImports' clause is not enforced (no scan of source file or no check for kotlinx.coroutines types in field/parameter signatures). This is per the task hint ('Гарантирует отсутствие suspend на задекларированных методах без чтения сырого исходника') so it is not a defect, but the test name overpromises. If a developer later adds e.g. a CoroutineScope field to CrashHandler, the test would still pass. This is the kind of guardrail that pays for itself.",
+      "recommendation": "Either (a) rename the test to noSuspendFunctionsOnPublicSurface (matches what is actually asserted) or (b) additionally scan CrashHandler::class.java.declaredFields.map { it.type.name } and declaredMethods.flatMap { listOf(it.returnType.name) + it.parameterTypes.map { p -> p.name } } and assert none start with \"kotlinx.coroutines\". Option (b) is ~5 lines and closes the second half of the contract. Option (a) is zero-cost and purely cosmetic. Either is acceptable; current behaviour matches the TDD Anchor name verbatim so a rename would also require updating the anchor."
+    }
+  ]
+}

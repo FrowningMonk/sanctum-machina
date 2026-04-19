@@ -1,0 +1,76 @@
+{
+  "status": "ok",
+  "round": 2,
+  "summary": "Round 2 verification: all three targeted round-1 findings (1, 2, 4) are resolved correctly in commit b22d429, and findings 3/5/6 remain as documented deferrals with no drift. No new regressions introduced by the fixes. Grep invariants hold: `ErrorLog|errorLog` in `app/src/main/kotlin/app/sanctum/machina/crash/` → 0 hits, `kotlinx.coroutines` in `CrashHandler.kt` → 0 hits. Tests still reflect production behaviour — the new `init { refresh() }` in CrashState is compatible with the existing Robolectric setUp()/refresh() pattern, and the new `scrubSingleLine` helper is exercised implicitly by the existing stacktrace and null-message assertions.",
+  "verified_fixes": [
+    {
+      "round1_finding": 1,
+      "file": "app/src/main/kotlin/app/sanctum/machina/crash/CrashState.kt",
+      "line": "40-42",
+      "status": "resolved",
+      "evidence": "Explicit `init { refresh() }` block is present. `hasUnresolvedCrash.value` now publishes real disk state immediately after Hilt injection — no more implicit priming contract. `MutableStateFlow(false)` seed is only transient within the constructor body before `init` runs."
+    },
+    {
+      "round1_finding": 2,
+      "file": "app/src/main/kotlin/app/sanctum/machina/crash/CrashState.kt",
+      "line": "48-52",
+      "status": "resolved",
+      "evidence": "`markDismissed()` now calls `dismissedFlag.createNewFile()` directly with no `exists()` pre-check. Return value is ignored (idempotent). Matches task-2.md line verbatim and removes the redundant stat syscall."
+    },
+    {
+      "round1_finding": 4,
+      "file": "app/src/main/kotlin/app/sanctum/machina/crash/CrashHandler.kt",
+      "line": "76-96",
+      "status": "resolved",
+      "evidence": "`buildCrashRecord` now scrubs both `message` (line 79) and `threadName` (line 80) through the shared private helper `scrubSingleLine(raw)` at lines 95-96, which replaces `\\n` and `\\r` with spaces. Header single-line invariant for `thread:` is now symmetric with `message:`."
+    }
+  ],
+  "deferred_findings": [
+    {
+      "round1_finding": 3,
+      "file": "app/src/main/kotlin/app/sanctum/machina/crash/CrashHandler.kt",
+      "line": "45",
+      "status": "deferred_no_regression",
+      "note": "`crashLogWriter` remains `internal val` — acceptable per task hints (`форма на выбор имплементатора`). Deferred as optional polish."
+    },
+    {
+      "round1_finding": 5,
+      "file": "app/src/main/kotlin/app/sanctum/machina/crash/CrashHandler.kt + CrashState.kt",
+      "line": "13-15 (handler), 12-14 (state)",
+      "status": "deferred_to_task_8",
+      "note": "Triplet `LOG_DIR` / `CRASH_LOG` / `DISMISSED_FLAG` still duplicated between the two files. Intentional per task-2 implementation hint (`НЕ выноси файловые пути-константы в публичный API`). Task 8 (Code Audit) owns the consolidation decision."
+    },
+    {
+      "round1_finding": 6,
+      "file": "app/src/main/kotlin/app/sanctum/machina/crash/CrashHandler.kt",
+      "line": "42-46",
+      "status": "deferred_no_regression",
+      "note": "`context: Context` ctor param not explicitly normalized to `applicationContext` nor KDoc-annotated. Task 5 call site still controls what gets passed. No behavioral bug today."
+    }
+  ],
+  "grep_invariants": [
+    {
+      "check": "grep -rEn \"ErrorLog|errorLog\" app/src/main/kotlin/app/sanctum/machina/crash/",
+      "expected": "0 hits",
+      "observed": "0 hits",
+      "status": "pass"
+    },
+    {
+      "check": "grep -n \"kotlinx.coroutines\" app/src/main/kotlin/app/sanctum/machina/crash/CrashHandler.kt",
+      "expected": "0 hits",
+      "observed": "0 hits",
+      "status": "pass"
+    }
+  ],
+  "regression_scan": {
+    "crashhandler_scrubSingleLine_helper": "Private, pure string op (two `replace` calls). No I/O, no allocations beyond the result string. Exercised transitively by `nullMessageException_rendersEmptyMessageNotLiteralNull` (empty-message path) and `writesCrashLogBeforeKiller` (normal-message path). Thread name from `Thread.currentThread().name` in tests is single-line in practice, so normalization is a no-op there — still correctly covered.",
+    "crashstate_init_refresh": "Added `init { refresh() }` runs on Hilt singleton creation and on manual `CrashState(context)` in tests. `CrashStateTest.setUp()` still calls `logsDir.deleteRecursively()` BEFORE `CrashState(context)` instantiation (line 33-34 in the test), so `init { refresh() }` executes against an empty/nonexistent logs dir and correctly resolves to `false` without exception (matches `freshInstall_noLogsDir_flowFalseNoException`). All tests still call `state.refresh()` explicitly after seeding — semantics preserved.",
+    "crashstate_markDismissed_drop_guard": "`File.createNewFile()` on an already-existing file returns `false` without throwing (JVM contract). Dropping the pre-check cannot produce new exceptions. `markDismissed_flipsToFalseAndCreatesFlag` still passes semantically (flag file exists + flow == false).",
+    "new_issues": "None."
+  },
+  "tests_reflect_production": {
+    "CrashHandlerTest": "Unchanged. Still covers: write-before-kill ordering, dismissed-flag deletion, overwrite-not-append, outer-catch-once, >100KB head-truncation + marker, reflective no-suspend shape, and null-message → empty `message:` line. New `scrubSingleLine` helper is exercised implicitly and would need an additional test only if the caller ever fed it a multi-line message or thread name (low-value edge; acceptable to skip).",
+    "CrashStateTest": "Unchanged and still aligned with the new `init { refresh() }`. Each test explicitly re-calls `state.refresh()` after seeding files, so the `init`-driven refresh (which sees an empty dir due to `deleteRecursively()` right before `CrashState(context)` in setUp) does not interfere. `freshInstall_noLogsDir_flowFalseNoException` continues to exercise the nonexistent-dir path directly."
+  },
+  "findings": []
+}

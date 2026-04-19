@@ -1,0 +1,86 @@
+{
+  "round": 1,
+  "commit": "70e7fc4",
+  "status": "OK",
+  "verdict": "OK",
+  "summary": "Round 1 review of commit 70e7fc4 covering AndroidManifest.xml, SanctumApplication.kt, and the new SanctumApplicationTest.kt. All three files implement Task 5 exactly as specified. Manifest <activity> block is minimal, grouped between MainActivity and the WorkManager service, and mirrors Decision 3 attributes verbatim (android:process=\":crash\", exported=false, excludeFromRecents=true, taskAffinity=\"\", theme=@style/Theme.Sanctum, no <intent-filter>, no <meta-data>). SanctumApplication.onCreate orders operations correctly per tech-spec (super → process-name guard with installCrashHandler() → DefaultDownloadRepository.mainActivityFqn assignment), the private installCrashHandler() is a single Thread.setDefaultUncaughtExceptionHandler call with the correct arguments (applicationContext + Killer.Default), and the handler install is not wrapped in try/catch (per Decision 4 / Task hints). The Robolectric test stubs ActivityThread.mBoundApplication.processName via reflection — a reasonable route given tech-spec explicitly forbids opening SanctumApplication for testability — and symmetric @Before/@After snapshots cover both the global UncaughtExceptionHandler and the bound process name. SentinelHandler seeding in @Before removes the risk of a leaked CrashHandler from a prior Robolectric suite producing a false-positive assertTrue in installsCrashHandlerInMainProcess, and the skipsInstallInCrashProcess path uses assertSame(SentinelHandler, after) which is strictly stronger than the AC's 'handler is not CrashHandler' requirement. No critical, no major findings.",
+  "criticalIssues": [],
+  "suggestions": [],
+  "findings": [],
+  "acceptance_criteria_check": [
+    {
+      "ac": "AndroidManifest <activity android:name=\".crash.CrashReportActivity\" ... /> — exactly one, inside <application>",
+      "observed": "app/src/main/AndroidManifest.xml:47-53 declares the <activity> with all six required attributes and no extras. Placed after MainActivity and before the <service> block — matches the grouping recommended in task 5.md \"Details → Files\".",
+      "status": "pass"
+    },
+    {
+      "ac": "SanctumApplication.onCreate contains `if (getProcessName() == packageName) { installCrashHandler() }` BEFORE the DefaultDownloadRepository.mainActivityFqn = ... line",
+      "observed": "SanctumApplication.kt:17-20 places the guard at lines 17-19 and the FQN assignment at line 20 — correct order.",
+      "status": "pass"
+    },
+    {
+      "ac": "installCrashHandler() calls Thread.setDefaultUncaughtExceptionHandler(CrashHandler(applicationContext, Killer.Default))",
+      "observed": "SanctumApplication.kt:23-25 — private method, single statement, exact signature match against CrashHandler.kt:42-46 (class CrashHandler(context: Context, killer: Killer = Killer.Default, ...)) and Killer.kt:16-20 (Killer.Default companion object).",
+      "status": "pass"
+    },
+    {
+      "ac": "SanctumApplicationTest covers both guard branches (main process → handler installed; :crash process → handler NOT installed) with symmetric setUp/tearDown of the global handler",
+      "observed": "SanctumApplicationTest.kt:51-62 (installsCrashHandlerInMainProcess) asserts `installed is CrashHandler`; lines 64-81 (skipsInstallInCrashProcess) use both assertFalse(is CrashHandler) and assertSame(SentinelHandler, after). @Before (lines 36-42) snapshots both the handler and process name then seeds SentinelHandler; @After (lines 44-48) restores both — symmetric and correct.",
+      "status": "pass"
+    },
+    {
+      "ac": "No try/catch around the guard",
+      "observed": "SanctumApplication.kt:17-20 — bare if-block, no try/catch, matches Decision 4 / Task hints explicit guidance.",
+      "status": "pass"
+    },
+    {
+      "ac": "No new gradle dependencies",
+      "observed": "Diff touches only AndroidManifest.xml and three .kt files; libs.versions.toml and app/build.gradle.kts are unchanged in the commit.",
+      "status": "pass"
+    }
+  ],
+  "cross_file_consistency": [
+    {
+      "check": "CrashHandler constructor signature matches SanctumApplication call site",
+      "result": "pass",
+      "evidence": "CrashHandler.kt:42-46 declares `class CrashHandler(private val context: Context, private val killer: Killer = Killer.Default, internal val crashLogWriter: ...)`. SanctumApplication.kt:24 invokes `CrashHandler(applicationContext, Killer.Default)` — Context + Killer positional args match the first two parameters; the third (crashLogWriter) uses its default. No ambiguity."
+    },
+    {
+      "check": "Killer.Default is reachable as a companion object of the Killer interface",
+      "result": "pass",
+      "evidence": "Killer.kt:13-21 declares `interface Killer { fun kill(pid: Int); companion object Default : Killer { override fun kill(pid: Int) { Process.killProcess(pid) } } }`. The companion is named `Default`, so `Killer.Default` resolves directly in SanctumApplication.kt:24."
+    },
+    {
+      "check": "Manifest FQN .crash.CrashReportActivity resolves to an existing class",
+      "result": "pass",
+      "evidence": "app/src/main/kotlin/app/sanctum/machina/crash/CrashReportActivity.kt exists (Task 4). Manifest android:name=\".crash.CrashReportActivity\" combined with app/build.gradle.kts:10 namespace = \"app.sanctum.machina\" resolves to app.sanctum.machina.crash.CrashReportActivity — matches the physical file. `:app:assembleDebug` would fail at manifest-merger if this drifted."
+    },
+    {
+      "check": "Theme.Sanctum exists",
+      "result": "pass_by_inspection",
+      "evidence": "Task 4 commit earlier (204886e) already depends on Theme.Sanctum and the AndroidManifest <application> tag at line 29 uses android:theme=\"@style/Theme.Sanctum\" — the resource clearly resolves in the current build."
+    }
+  ],
+  "dimension_notes": {
+    "architecture": "Guard → install → FQN-assignment ordering respects the implicit invariant that CrashHandler must be live before any potentially-throwing static bootstrap. Matches tech-spec Decision 4 rationale verbatim.",
+    "separation_of_concerns": "installCrashHandler() is a one-liner extracted from onCreate — readable, named, and easy to cover with a reflection-based test. Comment above the guard (SanctumApplication.kt:13-16) explains the *why* (recursion risk in :crash), not the *what*.",
+    "error_handling": "No try/catch — correct per Decision 4 / Task hints. Internal handler failures are handled by CrashHandler's own outer try-catch (CrashHandler.kt:49-73), not at the install site. Installing a handler cannot itself throw under API 28+ with a non-null Context.",
+    "type_safety": "No `any`-style loose typing (Kotlin). `getProcessName()` returns `String!` (platform type); the comparison `== packageName` is null-safe since packageName is non-null and `null == packageName` evaluates to false — guard behaviour on a theoretical null is documented in task 5.md \"Edge cases\" and is correct (skip install).",
+    "testing": "Test reflection path via ActivityThread.mBoundApplication.processName is well-justified in the file-level KDoc (SanctumApplicationTest.kt:15-27). Alternative routes (a subclass overriding getProcessName, @Config(application = …)) were rejected because the task explicitly prohibits modifying SanctumApplication for testability. The reflection walks a documented Robolectric-emulated ActivityThread internal — acceptable risk for a test that guards a specific Decision from regressing. SentinelHandler seeding eliminates a false-positive path where a CrashHandler leaked from CrashHandlerTest could satisfy `installed is CrashHandler` without the production code actually running. tearDown restores the process name (not just the handler) — stronger than the AC requires, and defensive against Robolectric JVM-global leakage.",
+    "cross_file_consistency": "CrashHandler(Context, Killer) constructor, Killer.Default companion, and CrashReportActivity FQN all verified against their defining files. See cross_file_consistency block above.",
+    "resource_management": "CrashHandler is constructed once per process in installCrashHandler() — singleton by virtue of Thread.setDefaultUncaughtExceptionHandler accepting only one handler at a time. No shared-resource duplication risk."
+  },
+  "style_notes": {
+    "imports": "SanctumApplication.kt imports are minimal and all used: android.app.Application, DefaultDownloadRepository, CrashHandler, Killer, HiltAndroidApp. No dead imports.",
+    "indentation": "SanctumApplicationTest.kt uses 4-space indentation, matching the :app test module convention (CrashHandlerTest.kt, LogExportManagerTest.kt). :core-runtime ErrorLogTest.kt uses 2-space, but that is the pre-existing convention difference between modules — SanctumApplicationTest is in :app and correctly follows :app's 4-space style.",
+    "comments": "The three-line comment in SanctumApplication.kt:13-16 explains the *why* (process-name recursion + order rationale), not the *what* — exactly the style pattern recommended in code-writing/universal patterns. The file-level KDoc in SanctumApplicationTest.kt:15-27 explains both the reflection choice and the symmetric-cleanup rationale. Neither file carries ornamental or TODO-style clutter.",
+    "unused_attributes": "Manifest <activity> block has no stray attributes — exactly the six Decision 3 attributes and nothing else (no android:label, no android:launchMode, no <intent-filter>, no <meta-data>)."
+  },
+  "metrics": {
+    "filesReviewed": 3,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 0,
+    "testCoverageAssessment": "adequate"
+  }
+}
