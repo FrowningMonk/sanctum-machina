@@ -231,7 +231,7 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 ## Task 10: Test Audit
 
 **Status:** Done
-**Commit:** _TBD — this entry committed together with task status flip_
+**Commit:** e6dfb5a
 **Agent:** main agent
 **Summary:** Проведён full-feature test-quality audit семи новых test-файлов Phase 2.5 (47 @Test-методов на CrashHandlerTest / CrashStateTest / LogExportManagerTest / DeviceInfoCollectorTest / LogcatReaderTest / TapCounterTest / SanctumApplicationTest) по всем 7 осям из Description: поведенческое покрытие AC (head/tail-truncation направленные, порядок секций по индексам, banner truth-table, overwrite-семантика, cross-component `.dismissed` reset), содержательность ассертов (0 тестов-сахарин, 2 легитимных `assertNotNull` как pre-check), style consistency с `ErrorLogTest` (Robolectric + hand-rolled fakes, 0 Mockito/MockK импортов), pyramid balance (unit-only оправдан через code-research §9.1 — `androidTest` не сконфигурирован, `compose-ui-test` не на classpath; SAF/`:crash`/dispatch вынесены на manual user-verify), seam coverage (Killer / CommandRunner / DeviceInfoProvider + функциональные seam'ы `crashLogWriter` и `openOutputStreamForTest`), negative paths (IOException / null OS / 4 logcat-placeholder ветки / handler internal failure), reflection+argv инварианты (handlerShape via declaredMethods; argv exactly-6 + regex pid). **Вердикт — approve**, Task 11 не блокируется. Полный отчёт: [logs/working/task-10/test-audit-report.md](logs/working/task-10/test-audit-report.md).
 **Deviations:** None.
