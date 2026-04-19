@@ -1,0 +1,16 @@
+{
+  "round": 1,
+  "task": "7",
+  "reviewer": "code-reviewer",
+  "verdict": "pass_with_nits",
+  "summary": "Task 7 implementation correctly wires RestartCrashBanner + SAF export into ModelManagerScreen following the documented Flow B contract. All 10 acceptance criteria are satisfied; patterns (SnackbarHost, Result<Unit> wrapper, in-flight guard reset in finally, PaddingValues(0.dp) on inner ModelList, Locale.ROOT timestamp) mirror AboutScreen/AboutViewModel exactly. One minor KDoc drift (dangling [clearCrashState] reference) is the only finding.",
+  "findings": [
+    {
+      "severity": "nit",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerViewModel.kt",
+      "line": 40,
+      "issue": "KDoc on `hasUnresolvedCrash` references `[clearCrashState]` but no such method exists on this ViewModel. The actual public proxies are `refreshCrashState`, `dismissCrashBanner`, and `saveLogAndClearCrash`. `CrashState.clear()` is only reached indirectly from inside `saveLogAndClearCrash`, not via a standalone proxy.",
+      "fix": "Replace `[clearCrashState]` with `[saveLogAndClearCrash]` (or drop the third item and say `..., and [saveLogAndClearCrash], which ...calls CrashState.refresh() after the mutation`). No behavioural change — doc correction only."
+    }
+  ]
+}

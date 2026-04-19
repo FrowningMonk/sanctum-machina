@@ -1,0 +1,49 @@
+{
+  "validator": "task-validator",
+  "batch": [11],
+  "iteration": 2,
+  "scope": "narrow-recheck",
+  "status": "approved",
+  "findings": [],
+  "resolved_from_round_1": [
+    {
+      "severity": "critical",
+      "category": "frontmatter",
+      "task": 11,
+      "section": "Required Skills",
+      "previous_issue": "Path used tilde prefix '~/.claude/skills/pre-deploy-qa/SKILL.md' which does not resolve (no '~/.claude/' tree exists on this machine).",
+      "current_state": "Line 16 now reads '[skills/pre-deploy-qa/SKILL.md](../../../.claude/skills/pre-deploy-qa/SKILL.md)'. Verified target file exists at C:/AI-WORK/PhoneWrap/.claude/skills/pre-deploy-qa/SKILL.md (6008 bytes).",
+      "verdict": "resolved"
+    },
+    {
+      "severity": "critical",
+      "category": "content",
+      "task": 11,
+      "section": "Context Files",
+      "previous_issue": "Referenced Task 10 output as 'test-reviewer-*.json' wildcard — hallucinated; Task 10 AC (line 51) produces only 'test-audit-report.md'.",
+      "current_state": "Lines 76-78 now correctly reference the three upstream audit reports by their actual filenames: 'task-8/code-audit-report.md', 'task-9/security-audit-report.md', 'task-10/test-audit-report.md'. Cross-verified against Tasks 8/9/10 ACs — all three filenames match the deliverables declared in those tasks.",
+      "verdict": "resolved"
+    },
+    {
+      "severity": "major",
+      "category": "content",
+      "task": 11,
+      "section": "Context Files",
+      "previous_issue": "Four project-knowledge files referenced with tilde prefix '~/.claude/skills/project-knowledge/references/*.md' — would fail to load at runtime.",
+      "current_state": "Lines 70-73 now use the project-local relative form '../../../.claude/skills/project-knowledge/references/{project,architecture,patterns,deployment}.md'. All four target files verified to exist on disk.",
+      "verdict": "resolved"
+    }
+  ],
+  "regression_check": {
+    "residual_tilde_paths": "none (grep for '~/.claude' in 11.md returned 0 hits)",
+    "residual_reviewer_json_wildcards": "none (grep for 'reviewer-*.json|test-reviewer' in 11.md returned 0 hits)",
+    "frontmatter_intact": "status=planned, depends_on=[8,9,10], wave=4, skills=[pre-deploy-qa], verify=[], reviewers=[] — all well-formed arrays, no type drift",
+    "internal_consistency": "Required Skills section (/skill:pre-deploy-qa) matches frontmatter.skills; Reviewers section ('None — QA IS the verification') matches empty frontmatter.reviewers"
+  },
+  "stats": {
+    "tasks_checked": 1,
+    "issues_found": 0,
+    "round_1_critical_resolved": 2,
+    "round_1_major_resolved": 1
+  }
+}

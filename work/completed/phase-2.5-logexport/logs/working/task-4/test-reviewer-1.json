@@ -1,0 +1,16 @@
+{
+  "commit": "204886e",
+  "round": 1,
+  "verdict": "OK",
+  "summary": "Test absence in Task 4 is fully defensible per tasks/4.md TDD Anchor (lines 55-59) and tech-spec.md Testing Strategy (line 246): Activity + Compose UI require androidTest instrumentation which is NOT configured in the project (code-research §9.1). Smoke gates (:app:assembleDebug, :app:lintDebug) are the substitute TDD anchor and both ran green. The two new files add no untested business logic — CrashReportActivity is Android-lifecycle glue (SAF launcher, Toasts, finish()) and RestartCrashBanner is a pure stateless composable. Existing Task 2/3 test suite still covers the contracts this task depends on (LogExportManager secondary Context-only constructor, ExportSource.CrashReport, writeTo IOException surfacing) — all 83 :app:testDebugUnitTest tasks green, zero regressions. User-level E2E verification is deliberately deferred to Task 6 (dev-gesture) and Task 7 (banner wiring) per R1 downgrade (tasks/4.md lines 126-128). One low-severity observation about a trivially testable private helper; not a gap.",
+  "findings": [
+    {
+      "id": "T4-R1-001",
+      "severity": "low",
+      "title": "filenameTimestamp() is the only pure-JVM candidate, but marginal value",
+      "location": "app/src/main/kotlin/app/sanctum/machina/crash/CrashReportActivity.kt:106-107",
+      "description": "The private helper `filenameTimestamp(): String = SimpleDateFormat(\"yyyyMMdd-HHmm\", Locale.ROOT).format(Date())` is the single pure-JVM-testable fragment in the commit. Task spec (tasks/4.md line 157) explicitly flags `Locale.ROOT` as important: without it, non-ISO locales skew the format. However, writing a test today would essentially verify the JDK's SimpleDateFormat — low ROI. The function is also `private` to the activity, so extracting it to a top-level / internal helper would be a prerequisite, which is arguably over-engineering for a three-line utility that ships with the activity. Flagging as `low` / advisory only: the existing smoke gate (lint + assembleDebug) is sufficient for Task 4's scope, and filename-format drift would surface immediately in Task 6 user verification. No action required in R1.",
+      "suggested_fix": "Optional (do not block): if extracted at some later point (e.g. for reuse by Task 7 / ModelManagerScreen banner host), add a one-liner JUnit test asserting `filenameTimestamp()` matches regex `^\\d{8}-\\d{4}$` and uses `Locale.ROOT` (`Locale.setDefault(Locale.forLanguageTag(\"ar-SA\"))` before call, assert format still ISO-numeric). Otherwise accept the smoke-gate-only coverage — it is consistent with the tech-spec Testing Strategy for this activity."
+    }
+  ]
+}

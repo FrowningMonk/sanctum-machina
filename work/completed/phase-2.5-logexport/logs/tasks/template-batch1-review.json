@@ -1,0 +1,94 @@
+{
+  "validator": "task-validator",
+  "batch": [1, 2, 3, 4, 5],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "decomposition",
+      "task": 5,
+      "section": "frontmatter.depends_on / wave",
+      "issue": "Task 5 has `wave: 2` and `depends_on: [2, 4]`. Task 4 is also `wave: 2`. Dependency rule requires the dependent task's wave to be strictly greater than each dependency's wave. Task 5 cannot be in the same wave as Task 4 while depending on it — if Wave 2 runs in parallel, Task 5 may start before Task 4 produces `CrashReportActivity.kt`, and `:app:assembleDebug` in Task 5 will fail (the manifest `<activity android:name=\".crash.CrashReportActivity\" …>` references a class not yet on classpath). The tech-spec itself groups both under 'Wave 2 (depends on Wave 1)', but the real dependency chain requires 2 sub-waves inside Wave 2.",
+      "fix": "Either bump Task 5 to `wave: 3` (make it a separate post-UI wave) OR split Task 5 so the manifest `<activity>` declaration is moved into Task 4 (same file producer) and keep only the `SanctumApplication` handler install in a later sub-wave. Align tech-spec Implementation Tasks wave grouping accordingly. Re-check Tasks 6 and 7 for the same issue."
+    },
+    {
+      "severity": "critical",
+      "category": "consistency",
+      "task": 5,
+      "section": "Details / Implementation hints",
+      "issue": "Task 5 references `Killer.Default` (e.g. `Thread.setDefaultUncaughtExceptionHandler(CrashHandler(applicationContext, Killer.Default))` in What-to-do step 2 and Acceptance Criteria, and `Killer.Default — из Task 2` in Implementation hints). Task 2 declares the default implementation as top-level `object DefaultKiller : Killer` (see Task 2 What-to-do step 2 and Details → Files). These two names do not resolve to the same symbol — `Killer.Default` implies a nested object inside the `Killer` interface, while Task 2 produces a separate top-level `DefaultKiller`. Integration build will fail with `Unresolved reference: Default` in `SanctumApplication.kt`.",
+      "fix": "Pick one shape and apply it to both tasks. Recommended: change Task 2 to declare `interface Killer { companion object { object Default : Killer { override fun kill(pid: Int) = android.os.Process.killProcess(pid) } } }` (matches Task 5's `Killer.Default` usage). Alternatively, change Task 5's references from `Killer.Default` to `DefaultKiller` and add `import app.sanctum.machina.crash.DefaultKiller`. Update both AC and Implementation hints on the chosen side."
+    },
+    {
+      "severity": "major",
+      "category": "carry-forward",
+      "task": 4,
+      "section": "frontmatter.verify / Verification Steps → User",
+      "issue": "Tech-spec Task 4 explicitly defines `Verify-user:` ('ask the user to install the APK after Task 5 lands and confirm: CrashReportActivity appears on a test crash, SAF opens with correct suggested name, successful save removes crash.log and dismisses the screen, cancel returns to the screen with buttons still clickable'). The task file sets `verify: [smoke]` (missing `user`) and the 'User' subsection explicitly defers all user verification to Tasks 6 and 7 ('В Task 4 пользователю ничего проверять не нужно'). This silently drops the tech-spec's Verify-user contract for Task 4 — reviewers downstream will not see the user-check as a gate tied to this task.",
+      "fix": "Set `verify: [smoke, user]` in frontmatter. In Verification Steps → User, copy the exact Verify-user text from tech-spec Task 4 and mark it as 'to be executed after Task 5 lands' (mirrors tech-spec wording) rather than deleting it. Keep the note that the actual trigger path for the activity requires Tasks 5 and 6; that's an execution order detail, not grounds for dropping the user-verify requirement."
+    },
+    {
+      "severity": "major",
+      "category": "atomicity",
+      "task": 3,
+      "section": "Scope / file count",
+      "issue": "Task 3 creates 8 files (4 production classes — `LogExportManager`, `DeviceInfoCollector`, `LogcatReader`, `TapCounter` — plus 4 test files). `TapCounter` is pure-JVM with no Android deps, no filesystem or SAF I/O, and no semantic overlap with the three logexport classes — it is purely the 7-tap detector for the About dev-gesture. Bundling it into Task 3 violates single-responsibility / 1-3 file scope and decomposition R1 (logical cohesion). The three other classes form one subsystem (`logexport/`), but `TapCounter` is an About-screen UI helper. Tech-spec co-locates all four, but that is a tech-spec decomposition miss the task layer can correct.",
+      "fix": "Option A (recommended): split `TapCounter.kt` + `TapCounterTest.kt` into a standalone Task 3b (wave 1, no deps, skills `[code-writing]`, reviewers `[code-reviewer, test-reviewer]` — no filesystem work so security-auditor optional). Task 6 (AboutScreen dev-gesture) already depends on Task 3 logically; make it depend on 3b instead for that concern. Option B: leave as-is and add an explicit note that Task 3 is a cohesive 'logexport subsystem + TapCounter helper' bundle; add a comment to the split rationale in the task description. Prefer Option A — it restores atomicity and reduces review surface."
+    },
+    {
+      "severity": "major",
+      "category": "consistency",
+      "task": 1,
+      "section": "Required Skills vs frontmatter.reviewers / TDD Anchor",
+      "issue": "Task 1 frontmatter lists only `reviewers: [code-reviewer]`, but the task involves Russian UX strings directly visible to users (error messages, banner text, dialog copy). The skills-and-reviewers catalog normally pairs UI/copy tasks with at least `test-reviewer` (to verify the AC checklist is enforceable) or a UX copy reviewer if one exists. Additionally, the TDD Anchor section is populated with 'compile check / visual inspection / lint' prose rather than `path::test_name — description` entries OR removed entirely per the task-creator rule for non-code (resources/config) tasks. Either it should be deleted (this is a pure resources task) or filled with real test anchors.",
+      "fix": "(1) Decide whether Task 1 is a code task or a resources/config task. If resources/config (recommended — strings.xml has no runtime behavior), delete the TDD Anchor section entirely per task-creator rule. Keep the 'compile check / lint' content under Verification Steps → Automated (where it already also appears). (2) Optionally add `test-reviewer` to reviewers to double-check AC enforceability, but this is not strictly required."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 2,
+      "section": "What to do / TDD Anchor",
+      "issue": "Task 2 What-to-do step 3 lists CrashReportActivity startActivity as `Intent(context, Class.forName(\"app.sanctum.machina.crash.CrashReportActivity\"))` with a `// TODO(Task 4): switch to CrashReportActivity::class.java once the class lands` comment. This deliberately leaves a TODO marker in production code and couples Task 2 to Task 4 class-loader behaviour. The validator flags TODO/FIXME markers as a minor issue by default. A cleaner approach avoids the TODO.",
+      "fix": "Replace the Class.forName approach with `Intent().setClassName(context, \"app.sanctum.machina.crash.CrashReportActivity\")` (no class resolution at compile time, no TODO needed) — this is already listed as the alternative in Task 2's What-to-do step 3. Remove the TODO comment from the final code. Update Acceptance Criteria to assert no TODO/FIXME markers remain in `app/src/main/kotlin/app/sanctum/machina/crash/`."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 4,
+      "section": "TDD Anchor",
+      "issue": "Task 4 is a code task (new Compose Activity + composable) but TDD Anchor reads as a rationale paragraph ('Tests-first не применяется... Compose UI требуют instrumentation...') rather than `path::test_name — description` entries. Per task-creator rules, TDD Anchor for code tasks should contain anchored tests; for non-code tasks the section is deleted. Compose UI without instrumentation is a known project gap, so the pragmatic fix is to delete the section and move the justification into Description or Details.",
+      "fix": "Delete the TDD Anchor section. Move the paragraph about instrumentation absence and smoke-gate substitution into the Description (or keep it only in Details → Implementation hints). Compose-screenshot tests or Paparazzi-style snapshot tests could also be introduced as lightweight alternatives if the project later adds them — note this as a Phase-5 backlog candidate in NOTES.md rather than in the task file."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 1,
+      "section": "Post-completion",
+      "issue": "Task 1 Post-completion checklist has 5 items (template has 3). The two extras ('Зафиксировать список финально добавленных ключей…', 'Отметить решение о переиспользовании btn_close / btn_cancel…') are task-specific and useful, but they blur the boundary between post-completion bookkeeping and the task's own deliverables (the final key list is arguably a deliverable that belongs in a code comment in strings.xml or the decisions.md entry itself, not a separate post-completion bullet).",
+      "fix": "Keep the two extras but re-phrase them as sub-bullets under the first 'Записать краткий отчёт в decisions.md' item so the structure still matches the template's 3-item shape. Alternative: leave as-is — this is stylistic and does not block the task."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 3,
+      "section": "Details → Files (DeviceInfoCollector)",
+      "issue": "Task 3 Details for `DeviceInfoCollector.kt` says `activeModelId()` and `downloadedModels()` may return stub values (`null` / empty list) with a TODO comment 'для последующей интеграции с ModelRegistry'. This creates a latent TODO and a feature gap — the tech-spec Data Models section shows `active model: litert-community/gemma-4-E2B-it-litert-lm` and a populated `downloaded models:` list as expected output. Leaving stubs means the exported .txt from `AboutScreen` will have empty model info in production, contradicting the user-spec AC on header content.",
+      "fix": "Decide in Task 3 whether to (a) wire `DeviceInfoCollector` to the existing `ModelRegistry` (if it's a simple injection — check code-research for the registry location) or (b) explicitly defer model-list integration to a follow-up task with a concrete number and add that task to the tech-spec. Do not merge Task 3 with a 'TODO: integrate later' stub — it will regress silently once Tasks 6/7 use the header. If deferral is chosen, flag in decisions.md and add a Phase-2.5 sub-task."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 2,
+      "section": "Implementation hints (Continuation reflection test)",
+      "issue": "The TDD anchor `handlerShape_noSuspendCallsNoCoroutineImports` uses reflection to assert the class has no `Continuation` parameters. This is a reasonable structural guard but is close to the 'tests string presence / structure, not behaviour' category the validator flags. It does not test the actual handler-under-coroutine behaviour (which is the real concern behind D10). It is a legitimate trip-wire, not a behavioural test.",
+      "fix": "Keep the reflection anchor as a trip-wire AND add a behavioural anchor: `CrashHandlerTest::uncaughtException_doesNotBlockOnIo` — run `uncaughtException` on a thread that has no coroutine dispatcher installed, assert it completes without `IllegalStateException` / 'No context' errors. This verifies the absence of suspend calls by their observable effect, not by reflection alone."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 10,
+    "critical": 2,
+    "major": 3,
+    "minor": 5
+  }
+}

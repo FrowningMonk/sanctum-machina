@@ -1,0 +1,107 @@
+{
+  "validator": "task-validator",
+  "batch": [6, 7, 8, 9, 10],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "decomposition",
+      "task": 6,
+      "section": "frontmatter.depends_on / wave",
+      "issue": "Task 6 has wave=2 and depends_on=[1, 3, 5], but Task 5 is also in wave=2. Rule: 'Task with depends_on: [X] must have wave > wave of task X.' Same-wave dependency means Task 6 can race Task 5. This violation is inherited from tech-spec (all of Tasks 4,5,6,7 placed in Wave 2 with mutual dependencies), but surfaces at task-file level.",
+      "fix": "Either (a) bump Task 6 to wave=3 (and cascade Task 7 to wave=4), or (b) reorganize tech-spec so Task 5 is promoted to its own intermediate wave. Minimal fix: change Task 6 frontmatter wave to 3; propagate the same treatment to Tasks 4→2, 5→3, 6→4, 7→5 across the batch."
+    },
+    {
+      "severity": "critical",
+      "category": "decomposition",
+      "task": 7,
+      "section": "frontmatter.depends_on / wave",
+      "issue": "Task 7 has wave=2 and depends_on=[1, 2, 3, 4, 5, 6]. Tasks 4, 5, and 6 are all in wave=2. Same-wave dependency violation: Task 7 cannot safely run in parallel with Tasks 4/5/6 since it strictly needs their outputs (RestartCrashBanner from Task 4, CrashHandler+manifest from Task 5, dev-gesture from Task 6 for user-verify).",
+      "fix": "Bump Task 7 to a later wave. Minimal fix consistent with tech-spec intent: introduce sub-waves (Task 4 → wave 2, Task 5 → wave 3, Task 6 → wave 4, Task 7 → wave 5), or at least Task 7 → wave 3 and push Audit Wave to wave 4."
+    },
+    {
+      "severity": "critical",
+      "category": "content",
+      "task": 7,
+      "section": "Context Files",
+      "issue": "PK links are broken. Task 7 uses paths like `../../../.claude/skills/project-knowledge/project.md`, `.../patterns.md`, `.../architecture.md`, `.../ux-guidelines.md` — but the actual files live under `.claude/skills/project-knowledge/references/`. None of these four links resolve from the task file location at `work/phase-2.5-logexport/tasks/7.md`.",
+      "fix": "Prepend `references/` to all four project-knowledge links. Example: `../../../.claude/skills/project-knowledge/references/patterns.md`. Same fix for project.md, architecture.md, ux-guidelines.md."
+    },
+    {
+      "severity": "major",
+      "category": "decomposition",
+      "task": 6,
+      "section": "frontmatter.depends_on",
+      "issue": "Task 6 §Verify-user step 2 reads 'Да → app dies → CrashReportActivity appears'. CrashReportActivity is created by Task 4, not Task 5. Task 6 relies transitively on Task 4 via Task 5 (which depends_on [2,4]), but the dependency is implicit, not declared. If anyone reorganizes Task 5's deps later, Task 6 silently breaks.",
+      "fix": "Change depends_on from [1, 3, 5] to [1, 3, 4, 5] to make the dependency on CrashReportActivity (Task 4) explicit."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 6,
+      "section": "Context Files",
+      "issue": "PK links use tilde prefix (`~/.claude/skills/project-knowledge/references/project.md`). Tilde does not resolve in markdown links rendered by editors/CI. Template uses `~` but this project's actual repo-relative pattern (as seen in Tasks 8/9/10) is `../../../.claude/skills/project-knowledge/references/…`.",
+      "fix": "Replace `~/.claude/...` prefix with `../../../.claude/...` for project.md, architecture.md, patterns.md, ux-guidelines.md in Context Files. Align with Tasks 8/9/10."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 6,
+      "section": "TDD Anchor",
+      "issue": "TDD Anchor section is present but contains only prose justification for why no unit tests are written (Compose UI not covered per patterns.md). No test entries in the format `tests/path::test_name — description`. Task 6 IS a code task, but Compose-UI-only tasks in this project legitimately have no unit tests. Template says TDD Anchor should be deleted for non-code tasks; for code tasks without new tests the convention is ambiguous.",
+      "fix": "Either (a) delete the TDD Anchor section entirely and add a note 'No new unit tests — see Verification Steps → User for coverage rationale' under Details → Implementation hints, or (b) retitle the section to 'Test Strategy' to avoid TDD-Anchor-format expectation. Task 7 has the same issue, apply consistently."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 7,
+      "section": "TDD Anchor",
+      "issue": "Same as Task 6: section is present but contains prose, not TDD test entries. Project convention: Compose UI not unit-tested.",
+      "fix": "Apply the same treatment as Task 6 fix. Delete the TDD Anchor section or retitle to 'Test Strategy'."
+    },
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": 8,
+      "section": "Required Skills",
+      "issue": "Required Skills uses tilde-prefixed path `[skills/code-reviewing/SKILL.md](~/.claude/skills/code-reviewing/SKILL.md)`. Other Audit-Wave tasks (9, 10) use repo-relative `../../../.claude/skills/…/SKILL.md`. Minor inconsistency.",
+      "fix": "Align with Tasks 9/10: change to `../../../.claude/skills/code-reviewing/SKILL.md`."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 7,
+      "section": "Context Files",
+      "issue": "`code-research.md` is listed as feature-specific context file but the feature folder file for it is not confirmed in tech-spec frontmatter. If it does not exist, this link breaks. (Tech-spec references code-research.md sections extensively, so it likely exists, but worth verifying.)",
+      "fix": "Verify `work/phase-2.5-logexport/code-research.md` exists. If not, remove the link or replace with a note in Details."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 8,
+      "section": "Verification Steps → Automated",
+      "issue": "Automated subsection explicitly states 'Отсутствуют' (none) — correct for audit task. However the template's Automated subsection expects test commands. Consider either omitting the Automated subsection or keeping the current explicit 'none' note. Current form is readable but deviates slightly from template.",
+      "fix": "Optional: replace Automated subsection content with a single-line HTML comment `<!-- Audit task — no automated tests to run -->` and omit the visible bullet. Current form is acceptable."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 9,
+      "section": "Verification Steps → Smoke / User",
+      "issue": "Task 9 includes explicit 'Отсутствует' text in both Smoke and User subsections. Template says 'Omit section if no user/smoke checks.' Explicit-absent text is clear but adds noise.",
+      "fix": "Optional: omit the Smoke and User subsections entirely instead of filling them with 'Отсутствует'. Current form is acceptable but not per-template-letter."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 10,
+      "section": "Verification Steps",
+      "issue": "Task 10 has only Automated subsection (missing Smoke/User). Template allows omission when absent, so this is technically fine — but Tasks 8 and 9 chose explicit 'Отсутствует' notes. Inconsistency across the three Audit Wave tasks.",
+      "fix": "Pick one convention across Tasks 8/9/10 (either all-omit-when-absent or all-explicit-none) for consistency. No functional impact."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 12
+  }
+}

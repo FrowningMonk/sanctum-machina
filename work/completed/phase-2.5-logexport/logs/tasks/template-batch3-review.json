@@ -1,0 +1,54 @@
+{
+  "validator": "task-validator",
+  "batch": [11],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 11,
+      "section": "Verification Steps",
+      "issue": "Template defines three subsections under Verification Steps: Automated, Smoke, User. Task 11 uses Automated, Structural greps, User — replacing the templated 'Smoke' heading with a task-specific 'Structural greps' heading. This is stylistic and the content is correct (greps are a valid form of smoke check for a pre-deploy QA task), but it deviates from the template heading set.",
+      "fix": "Either rename '### Structural greps' to '### Smoke' (keep content) and put the greps under it, or leave as-is if the decomposition convention permits task-specific Verification subsections. No semantic issue — report for consistency only."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 11,
+      "section": "Context Files",
+      "issue": "testing.md from project-knowledge is not listed. Task 11 runs the full unit test suite and reasons about test coverage (LogExportManagerTest, CrashHandlerTest, etc.), so testing conventions could be relevant context. Note that patterns.md is already listed with a testing-conventions annotation, which partially covers this.",
+      "fix": "Optional: add [testing.md](~/.claude/skills/project-knowledge/references/testing.md) to the 'Project context' block if a dedicated testing.md exists in the PK references folder. Skip if testing content lives inside patterns.md only."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 11,
+      "section": "Reviewers",
+      "issue": "Frontmatter 'reviewers: []' correctly signals a self-verifying task (matches checklist: pre-deploy-qa should have reviewers: []). The Reviewers section uses prose ('None — QA IS the verification...') to explain, which is clear but not a structural pattern defined by the template. The template's Reviewers section assumes a bulleted list format.",
+      "fix": "Acceptable as-is given the explicit empty-reviewers semantics. If a stricter template-adherence is desired, prepend a single bullet like '- (none — QA is the verification; see Tasks 8/9/10 for upstream audit)' so the section parses as a list."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 1,
+    "issues_found": 3,
+    "criticals": 0,
+    "majors": 0,
+    "minors": 3
+  },
+  "notes": {
+    "frontmatter": "All fields valid. status=planned, depends_on=[8,9,10] (array of numbers), wave=4, skills=[pre-deploy-qa] (array), verify=[] (array), reviewers=[] (array, valid for self-verifying QA task), teammate_name present-and-empty.",
+    "structure_order": "Title -> Required Skills -> Description -> What to do -> Acceptance Criteria -> Context Files -> Verification Steps -> Details -> Reviewers -> Post-completion. TDD Anchor correctly absent (non-code task, matches template rule 'For non-code tasks — delete this section').",
+    "tdd_anchor_absence": "CORRECT. Task 11 is a pre-deploy-qa task (QA IS the verification, no code produced). Template comment explicitly says: 'Fill if task includes writing code. For non-code tasks (user instructions, deploy, config) — delete this section.' Task explicitly states 'Эта задача НЕ пишет код и НЕ имеет TDD-цикла'.",
+    "ac_carry_forward": "All 11 tech-spec Acceptance Criteria items are covered by Task 11 — either as direct AC entries, as gradle commands in What-to-do §1, or as structural greps in What-to-do §3. Task's own AC additionally mandates the QA report artifact and the hand-off checklist which are task-specific outputs not in tech-spec (acceptable extension).",
+    "tdd_carry_forward": "N/A — Task 11 has no TDD cycle by design. Tech-spec Task 11 entry has no TDD Anchor either. Upstream test coverage (from tasks 2, 3, 5) is referenced in What-to-do §1 as gates to run, not as tests to author.",
+    "upstream_references": "Task correctly references audit outputs from Tasks 8, 9, 10 under 'Upstream audit reports' in Context Files with wildcard paths (code-reviewer-*.json, security-auditor-*.json, test-reviewer-*.json) — appropriate since review-round count is unknown in advance. depends_on=[8,9,10] in frontmatter aligns with these references.",
+    "atomicity": "Single logical unit: a pre-deploy QA gate producing one artifact (pre-deploy-qa-report.md) and one hand-off to user. Steps are cohesive (automated gates + structural greps + AC mapping + hand-off) — all serve the same outcome.",
+    "content_quality_highlights": [
+      "What-to-do section is concrete and mechanical: exact gradle invocations, exact grep commands with expected match counts, exact report location.",
+      "Edge cases enumerated (flaky tests, build failure, grep mismatch, ambiguous AC).",
+      "Implementation hints non-trivial (Grep tool over bash grep, git diff --stat first, stdout preservation).",
+      "AC items all testable (report exists, commands passed, grep counts matched, AC table populated, hand-off delivered).",
+      "User verification section enumerates 4 concrete on-device scenarios (US-A / US-B / US-C / Negative) with step-level detail."
+    ]
+  }
+}
