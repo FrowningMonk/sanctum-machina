@@ -208,6 +208,24 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 - `git diff main -- core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt` → пусто (Decision 10 сохранён).
 - Gradle-гейты в scope этого таска не запускаются — это задача Task 11 (pre-deploy QA).
 
+---
+
+## Task 9: Security Audit
+
+**Status:** Done
+**Commit:** 271e9ae
+**Agent:** main agent
+**Summary:** Проведён full-feature security audit Phase 2.5 против OWASP Top 10 (2021). Вердикт — **PASS**: Critical/High/Medium/Low findings отсутствуют. Все 10 осей явно оценены (A02/A06/A07/A10 — N/A с обоснованием; A01/A03/A04/A05/A08/A09 — PASS с доказательствами по файлам и строкам). Два residual-риска — Decision 11 (нефильтрованный экспорт) и native-SIGSEGV fallback — явно приняты как осознанные trade-off'ы со ссылкой на user-spec "Ограничения"/"Риски". Одно информационное наблюдение — per-process permissions не фильтруются Android'ом (`:crash` наследует INTERNET/CAMERA/RECORD_AUDIO, но код в `:crash` их не использует). Task 11 не блокируется; новая fix-задача не требуется. Полный отчёт: [logs/working/task-9/security-audit-report.md](logs/working/task-9/security-audit-report.md).
+**Deviations:** None.
+
+**Findings:** Critical 0 · High 0 · Medium 0 · Low 0. Accepted residual risks: RR-1 (Decision 11 — unfiltered export), RR-2 (native SIGSEGV fallback).
+
+**Reviews:** Нет (Security Audit сам является ревью для своего направления — JSON-ревьюеры для Task 9 не назначаются).
+
+**Verification:**
+- 9 structural `grep`-проверок в секции «Structural Checks» отчёта — все PASS (exported=false на CrashReportActivity, 0 `openInputStream`/`takePersistableUriPermission`/`Runtime.exec`, единственный `ProcessBuilder` с фиксированным argv, `FLAG_SECURE` on crash window, process=":crash" ровно 1 раз, 0 `ErrorLog.e` под `crash/`, 0 `BuildConfig.DEBUG` в AboutScreen — последнее осознанно по Decision 12).
+- Формат отчёта — markdown, секции Summary / OWASP Top 10 Evaluation / Accepted Residual Risks / Findings / Recommendations / Structural Checks.
+
 Format is strict — use only these sections, do not add others.
 Do not include: file lists, findings tables, JSON reports, step-by-step logs.
 Review details — in JSON files via links. QA report — in logs/working/.
