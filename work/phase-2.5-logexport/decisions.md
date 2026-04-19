@@ -226,6 +226,27 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 - 9 structural `grep`-проверок в секции «Structural Checks» отчёта — все PASS (exported=false на CrashReportActivity, 0 `openInputStream`/`takePersistableUriPermission`/`Runtime.exec`, единственный `ProcessBuilder` с фиксированным argv, `FLAG_SECURE` on crash window, process=":crash" ровно 1 раз, 0 `ErrorLog.e` под `crash/`, 0 `BuildConfig.DEBUG` в AboutScreen — последнее осознанно по Decision 12).
 - Формат отчёта — markdown, секции Summary / OWASP Top 10 Evaluation / Accepted Residual Risks / Findings / Recommendations / Structural Checks.
 
+---
+
+## Task 10: Test Audit
+
+**Status:** Done
+**Commit:** _TBD — this entry committed together with task status flip_
+**Agent:** main agent
+**Summary:** Проведён full-feature test-quality audit семи новых test-файлов Phase 2.5 (47 @Test-методов на CrashHandlerTest / CrashStateTest / LogExportManagerTest / DeviceInfoCollectorTest / LogcatReaderTest / TapCounterTest / SanctumApplicationTest) по всем 7 осям из Description: поведенческое покрытие AC (head/tail-truncation направленные, порядок секций по индексам, banner truth-table, overwrite-семантика, cross-component `.dismissed` reset), содержательность ассертов (0 тестов-сахарин, 2 легитимных `assertNotNull` как pre-check), style consistency с `ErrorLogTest` (Robolectric + hand-rolled fakes, 0 Mockito/MockK импортов), pyramid balance (unit-only оправдан через code-research §9.1 — `androidTest` не сконфигурирован, `compose-ui-test` не на classpath; SAF/`:crash`/dispatch вынесены на manual user-verify), seam coverage (Killer / CommandRunner / DeviceInfoProvider + функциональные seam'ы `crashLogWriter` и `openOutputStreamForTest`), negative paths (IOException / null OS / 4 logcat-placeholder ветки / handler internal failure), reflection+argv инварианты (handlerShape via declaredMethods; argv exactly-6 + regex pid). **Вердикт — approve**, Task 11 не блокируется. Полный отчёт: [logs/working/task-10/test-audit-report.md](logs/working/task-10/test-audit-report.md).
+**Deviations:** None.
+
+**Findings:** Critical 0 · Major 0 · Minor 0. Три nit-level наблюдения: (F1) ячейка (F,T) truth-table `CrashState` — `.dismissed` существует при отсутствующем `crash.log` — не покрыта отдельным тестом, математически эквивалентна (F,F), но не локнута от AND→OR рефакторинга; (F2) `assertNotNull(out)` в `nonHiltConstruction_instantiatesWithoutInjection:286` избыточен по типу; (F3) tolerance window `bytes.size >= maxBytes - 1024` в `stacktraceOver100KB_truncationMarkerAtEnd` можно сузить до `-128`. Все три — опциональны, не блокируют Final Wave; решение по фиксам за пользователем / агентом Task 11.
+
+**Reviews:** Нет (Test Audit сам является ревью — JSON-ревьюеры для Task 10 не назначаются).
+
+**Verification:**
+- `./gradlew :app:test` (precondition-гейт аудита) → BUILD SUCCESSFUL in 21s; 47 новых тестов Phase 2.5 зелёные.
+- Coverage matrix (26 измерений) → 25 covered, 1 partial (Finding 1); полная таблица с именами тестов — в отчёте §2.
+- `grep "org.mockito\|io.mockk"` по аудируемым файлам → 0 реальных импортов (единственное вхождение строки «no Mockito/MockK» — в KDoc-комментарии `LogcatReaderTest.kt:12`).
+- `grep assertNotNull` → 2 попадания в аудируемых файлах, оба — легитимный pre-check перед substantive assertion.
+
+<!-- Template remnants below were pre-existing artifact from earlier entries; preserved for transparency.
 Format is strict — use only these sections, do not add others.
 Do not include: file lists, findings tables, JSON reports, step-by-step logs.
 Review details — in JSON files via links. QA report — in logs/working/.
