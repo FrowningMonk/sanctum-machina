@@ -138,6 +138,31 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 
 **Test harness note:** процесс-имя стабируется через reflection на `ActivityThread.mBoundApplication.processName` — того же поля, которое `Application.getProcessName()` читает на API 28+. Путь выбран по варианту (б) из task spec; вариант (а) (подкласс `SanctumApplication`) отпадает, т.к. класс `final` + `@HiltAndroidApp`, а task явно запрещает делать его `open` ради тестируемости. `@Before`/`@After` симметрично сохраняют и восстанавливают и global uncaught handler, и `processName`, чтобы не пачкать соседние Robolectric-классы.
 
+## Task 6: AboutScreen — Diagnostics section + 7-tap dev-gesture
+
+**Status:** Done
+**Commit:** be28764
+**Agent:** main agent
+**Summary:** Добавлены две пользовательские поверхности Flow C и Dev-gesture в `AboutScreen.kt`. Раздел «Диагностика» под `AboutFooter` с кнопкой «Сохранить лог»: `@HiltViewModel AboutViewModel` (трёхстрочный делегат над `LogExportManager.buildExport(About)` + `writeTo`, ловит `IOException` в `Result.failure`), SAF-лончер `CreateDocument("text/plain")` с именем `sanctum-log-yyyyMMdd-HHmm.txt` (Locale.ROOT), in-flight guard `launching` сбрасывается в `finally` независимо от ветки (success / IOException / cancel), Snackbar-результат через `SnackbarHost` в `Scaffold`. Dev-gesture на строке версии: `Modifier.clickable(indication = null)` → `TapCounter.tap(): Boolean` → `showDialog` живёт в composable, не в детекторе (Вариант А из таска — `AboutFooter` знает только про `onVersionTap: () -> Unit`). `AlertDialog` на срабатывании: confirm `{ showDialog = false; throw RuntimeException("test crash from About") }` прямо на UI-потоке без Handler/Thread/launch (Decision 9), порядок «закрыть → бросить» предотвращает мелькание старого state на рестарте `:crash`.
+**Deviations:** Добавлен новый файл `LogExportModule.kt` с `@Binds` для `CommandRunner → DefaultCommandRunner` и `DeviceInfoProvider → AndroidDeviceInfoProvider`. В Task 3 этот модуль был намеренно отложен («понадобится только если Wave 2 действительно инжектит `LogExportManager` через Hilt» — см. decisions.md Task 3); Task 6 — первый потребитель Hilt-графа `LogExportManager` (через `AboutViewModel`), поэтому бинды добавлены здесь. Попутно `DefaultCommandRunner` получил `@Inject constructor()` чтобы `@Binds` разрешался. `AboutViewModel` оставлен внутри `AboutScreen.kt` (3-строчный делегат, не заслуживает отдельного файла).
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: OK → [logs/working/task-6/code-reviewer-1.json](logs/working/task-6/code-reviewer-1.json)
+- security-auditor: OK → [logs/working/task-6/security-auditor-1.json](logs/working/task-6/security-auditor-1.json)
+- test-reviewer: OK → [logs/working/task-6/test-reviewer-1.json](logs/working/task-6/test-reviewer-1.json)
+
+**Verification:**
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL.
+- `./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL (регрессий Wave 1 нет; новых юнит-тестов Task 6 не добавил по TDD Anchor — Compose UI проект не покрывает).
+- `./gradlew :app:lintDebug` → 0 errors, 46 warnings (все pre-existing). `HardcodedText` / `MissingPermission` / `UnusedResources` на файлах Task 6 — 0.
+- User-verification on Honor 200 (Android 16, HONOR ELI-NX9):
+  - Flow C (Save from About): SAF открыл диалог с именем `sanctum-log-20260419-1156.txt`, Snackbar «Лог сохранён», файл содержит хедер + `crash.log=[empty]` + `errors.log=[empty]` + живой `logcat` с own-pid фильтрацией (AC «logcat непустой, а не placeholder» — пройден, Decision 8 works).
+  - Flow A + dev-gesture (Crash path): 7 тапов по версии → `AlertDialog` → «Да» → приложение падает → `CrashReportActivity` появляется. `crash.log` содержит верхний фрейм `AboutScreen.kt:194` (ровно строка с `throw`), путь `Dialog.dispatchTouchEvent` → `Compose.ClickableNode.onPointerEvent` → UI-callback, **без** `Handler.post` / `Thread.run` / coroutine frames — Decision 9 подтверждён стактрейсом. `thread: main`, `logcat` из `:crash`-пути — placeholder `[logcat available only via About export]` (Decision 8 works).
+  - Cancel: отмена SAF-диалога — Snackbar не показан, кнопка снова кликабельна.
+  - Boundary: 3 тапа → пауза >2 с → 5 тапов — диалог не появляется (счётчик сбросился); 7 подряд без пауз — диалог показан.
+
 ---
 
 <!-- Entries are added by agents as tasks are completed.
