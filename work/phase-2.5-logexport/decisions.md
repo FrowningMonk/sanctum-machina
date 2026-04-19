@@ -189,6 +189,25 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 - `./gradlew :app:lintDebug` → BUILD SUCCESSFUL; новых `HardcodedText` ошибок нет, все строки идут из `R.string.*` Task 1.
 - User-verification on Honor 200 (все три сценария из task 7 "Verification Steps → User" — Save path, Dismiss path, Cancel path): прошли.
 
+---
+
+## Task 8: Code Audit
+
+**Status:** Done
+**Commit:** 00ac52f
+**Agent:** main agent
+**Summary:** Проведён холистический код-аудит Phase 2.5 по 11 измерениям скилла `code-reviewing` плюс 5 межкомпонентных пунктов из Description таска (shared-file-state, module boundaries, patterns.md, Compose-паттерны, Decisions 5 & 10). Все 9 structural invariants зелёные (module boundary, `ErrorLog` whitelist не тронут, manifest-процесс, process-name guard, non-Hilt `CrashReportActivity`, единственный `Log.e` breadcrumb в handler, SafeMarkdown сохранён). Shared-file-state контракт между `CrashHandler`/`CrashState`/`CrashReportActivity`/`LogExportManager` согласован (пути `filesDir/logs/`, overwrite-семантика, `.dismissed` lifecycle). Отчёт: [logs/working/task-8/code-audit-report.md](logs/working/task-8/code-audit-report.md).
+**Deviations:** None.
+
+**Findings:** Три LOW-severity, все — doc/style drift. CRITICAL/HIGH/MEDIUM отсутствуют. (1) Устаревший TODO в `CrashHandler.kt:62`, ссылающийся на Task 4 — Task 4 уже завершён, а `setClassName(pkg, FQN)` indirection должна остаться (избегает загрузки класса `CrashReportActivity` в main-процессе); (2) KDoc на `DefaultCommandRunner` (`LogcatReader.kt:76-79`) не соответствует классификатору в `read()` — говорит «empty», возвращает «unknown»; (3) Литералы маркера обрезки `crash.log` расходятся между `CrashHandler.kt:17` и `LogExportManager.kt:22` (trailing `\n`), путь в `LogExportManager` в текущем коде недостижим. Task 11 (pre-deploy QA) не блокируется; фиксы можно оформить отдельным housekeeping-коммитом либо отложить.
+
+**Reviews:** Нет (Code Audit сам является ревью — JSON-ревьюеры для него не назначаются).
+
+**Verification:**
+- Все 9 structural grep-проверок зафиксированы в отчёте в секции «Structural checks» как таблица expected-vs-actual — все PASS.
+- `git diff main -- core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt` → пусто (Decision 10 сохранён).
+- Gradle-гейты в scope этого таска не запускаются — это задача Task 11 (pre-deploy QA).
+
 Format is strict — use only these sections, do not add others.
 Do not include: file lists, findings tables, JSON reports, step-by-step logs.
 Review details — in JSON files via links. QA report — in logs/working/.
