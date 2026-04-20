@@ -61,6 +61,7 @@ androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycl
 androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
 compose-richtext-commonmark = { group = "com.halilibo.compose-richtext", name = "richtext-commonmark", version.ref = "composeRichtext" }
 compose-richtext-ui-material3 = { group = "com.halilibo.compose-richtext", name = "richtext-ui-material3", version.ref = "composeRichtext" }
+androidx-compose-ui-text-google-fonts = { group = "androidx.compose.ui", name = "ui-text-google-fonts" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

@@ -73,6 +73,7 @@ dependencies {
 
     implementation(libs.compose.richtext.commonmark)
     implementation(libs.compose.richtext.ui.material3)
+    implementation(libs.androidx.compose.ui.text.google.fonts)
 
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)

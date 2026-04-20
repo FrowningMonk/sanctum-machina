@@ -10,32 +10,36 @@ import androidx.navigation.navArgument
 import app.sanctum.machina.ui.about.AboutScreen
 import app.sanctum.machina.ui.chat.ChatScreen
 import app.sanctum.machina.ui.modelmanager.ModelManagerScreen
+import app.sanctum.machina.ui.theme.SanctumTheme
 
 @Composable
 fun SanctumApp() {
     val navController = rememberNavController()
-    NavHost(navController = navController, startDestination = "model_manager") {
-        composable("model_manager") {
-            ModelManagerScreen(
-                onLoad = { modelName ->
-                    navController.navigate("chat/${Uri.encode(modelName)}")
-                },
-                onAbout = { navController.navigate("about") },
-            )
-        }
-        composable(
-            route = "chat/{modelName}",
-            arguments = listOf(navArgument("modelName") { type = NavType.StringType }),
-        ) { entry ->
-            val raw = entry.arguments?.getString("modelName") ?: return@composable
-            val modelName = Uri.decode(raw)
-            ChatScreen(
-                modelName = modelName,
-                onBack = { navController.popBackStack() },
-            )
-        }
-        composable("about") {
-            AboutScreen(onBack = { navController.popBackStack() })
+    SanctumTheme {
+        NavHost(navController = navController, startDestination = "model_manager") {
+            composable("model_manager") {
+                ModelManagerScreen(
+                    onLoad = { modelName ->
+                        navController.navigate("chat/${Uri.encode(modelName)}")
+                    },
+                    onAbout = { navController.navigate("about") },
+                )
+            }
+            composable(
+                route = "chat/{modelName}",
+                arguments = listOf(navArgument("modelName") { type = NavType.StringType }),
+            ) { entry ->
+                val raw = entry.arguments?.getString("modelName") ?: return@composable
+                val modelName = Uri.decode(raw)
+                ChatScreen(
+                    modelName = modelName,
+                    onBack = { navController.popBackStack() },
+                )
+            }
+            composable("about") {
+                AboutScreen(onBack = { navController.popBackStack() })
+            }
+            // TODO Task 7: wrap chat/quick composable in SanctumIncognitoTheme
         }
     }
 }
