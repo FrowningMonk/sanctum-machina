@@ -480,6 +480,271 @@ If warmup is in flight on the default model when the user taps a drawer entry fo
 
 ---
 
+## K) Implementation gaps — Phase 3 spec
+
+## Updated: 2026-04-20
+
+Targeted deep-dives into five specific areas that were underspecified in sections A–J but are
+blocking accurate task decomposition for Phase 3.
+
+---
+
+### K1. `ModelInitStatus` — exact values and lifecycle
+
+**File:** `C:\AI-WORK\PhoneWrap\core-runtime\src\main\kotlin\app\sanctum\machina\core\registry\ModelInitStatus.kt`
+
+Sealed class, four members:
+
+```kotlin
+sealed class ModelInitStatus {
+  object Idle        : ModelInitStatus()   // no engine loaded; lifecycle ops illegal
+  object Initializing: ModelInitStatus()   // createEngine in flight; caller must wait
+  object Ready       : ModelInitStatus()   // engine created, inference permitted
+  data class Failed(val message: String) : ModelInitStatus()  // last init failed; engine NOT loaded; caller may retry
+}
+```
+
+**State transitions (derived from `DefaultModelRegistry.kt`):**
+
+| From | To | Trigger (line) |
+|---|---|---|
+| any | `Initializing` | `initialize(modelName)` entry — line 181, before `releaseEngine` |
+| `Initializing` | `Ready` | both GPU and CPU `awaitInitialize` succeed (lines 188, 201) |
+| `Initializing` | `Failed(msg)` | GPU+CPU both return non-empty error string (line 206) |
+| any non-`Idle` | `Idle` | `cleanup(modelName)` — line 216; also `delete(modelName)` — line 159 |
+| `Idle` | `Idle` | `delete()` when already Idle — no-op path (line 149 guard) |
+
+**How status is currently exposed:** `ModelInitStatus` is a field on `ModelEntry.initStatus`. `ModelEntry` is carried in `DefaultModelRegistry._models: MutableStateFlow<List<ModelEntry>>`, publicly readable as `ModelRegistry.models: StateFlow<List<ModelEntry>>`. Both `ModelManagerViewModel` (line 34: `val models = registry.models`) and `ChatViewModel` (line 124: `registry.getModel(modelName)`, which returns non-null only when `initStatus === Ready`) consume this flow.
+
+**There is NO dedicated `StateFlow<ModelInitStatus>` per model.** To read a single model's init status a consumer must do `registry.models.value.find { it.model.name == name }?.initStatus`. No convenience accessor exists today.
+
+**Phase 3 implications:**
+- `ChatViewModel` and the new home hub need to observe `ModelInitStatus` per model for: (a) Send-enabled gate, (b) "Load" button vs spinner vs label in TopAppBar. The cleanest addition is a new computed property or extension on `ModelRegistry`, e.g. `fun statusOf(modelName: String): StateFlow<ModelInitStatus?>` derived via `models.map { ... }.stateIn(...)`. This avoids adding a second field to `ModelRegistry` interface while giving consumers a narrow flow.
+- `ModelInitStatus.Failed(message)` carries the error string that should be shown in the Snackbar (AC-D3). `ChatViewModel.init`'s current `fold(onFailure = { e -> val cause = e.message … _uiState.value = ChatUiState.Failed(cause) })` already does this — it just needs to survive the refactor where init is moved to `SanctumApplication.onCreate` / `EngineCoordinator`.
+
+---
+
+### K2. `AllowedModel` → `Model` mapping — `modelId` field status
+
+**Files read:**
+- `C:\AI-WORK\PhoneWrap\core-runtime\src\main\kotlin\app\sanctum\machina\core\data\ModelAllowlist.kt`
+- `C:\AI-WORK\PhoneWrap\core-runtime\src\main\kotlin\app\sanctum\machina\core\data\Model.kt`
+
+**`AllowedModel` fields (exact):**
+```kotlin
+data class AllowedModel(
+  val name: String,       // e.g. "Gemma-4-E4B-it-litert-lm"  — human label, used as Model.name
+  val modelId: String,    // e.g. "litert-community/gemma-4-E4B-it-litert-lm"  — HF repo id
+  val modelFile: String,
+  val commitHash: String,
+  val sizeInBytes: Long,
+  ...
+)
+```
+
+**`Model` fields (exact) — `modelId` is NOT present:**
+```kotlin
+data class Model(
+  val name: String,         // copied from AllowedModel.name
+  val displayName: String,  // always "" (defaulted, never set in AllowedModel.toModel())
+  val version: String,      // AllowedModel.version ?: commitHash
+  val url: String,          // constructed as "https://huggingface.co/$modelId/resolve/$commitHash/$modelFile?download=true"
+  val learnMoreUrl: String,  // "https://huggingface.co/$modelId"
+  ...
+  var normalizedName: String = ""  // derived in init{} via NORMALIZE_NAME_REGEX.replace(name, "_")
+  // NO modelId field
+)
+```
+
+**Exact mapping code** (`AllowedModel.toModel()`, lines 76–95 of `ModelAllowlist.kt`):
+`modelId` is used to construct `url` and `learnMoreUrl` but is **discarded** — not stored on the resulting `Model` instance. After `toModel()` returns, the HF repo id is only recoverable by parsing `model.url` (fragile) or by going back to the allowlist.
+
+**What `DefaultModelRegistry` uses as the map key:** `_models` is keyed by `model.name` everywhere — `updateEntry(model.name, ...)`, `find { it.model.name == modelName }`. The `modelName: String` parameter on all registry interface methods is semantically `Model.name`, not `AllowedModel.modelId`.
+
+**What changes are needed to expose `modelId: String` on `Model`:**
+
+1. Add `val modelId: String = ""` to `Model` (with empty-string default so existing non-allowlist model construction sites compile unchanged).
+2. In `AllowedModel.toModel()` pass `modelId = modelId` to the `Model(...)` constructor.
+3. `DefaultModelRegistry.refreshAllowlist()` line 113: `existing.associateBy { it.model.name }` — this key must stay `name` for the Phase 3 merge window to avoid a simultaneous key-migration; the DataStore migration (AC-R8) will independently rewrite `PerModelSettings` keys from `name` to `modelId` after the `Model.modelId` field exists.
+4. `ChatViewModel.modelName` (line 65, read from `SavedStateHandle`) stays `String` but is renamed `modelName` → in Phase 3 the nav arg transitions to `chatId`, so the VM reads `chatId` and derives `modelName` from a Room DAO read. The `modelId` field then becomes the stable Room FK.
+
+**Current blast radius of `Model.name` as the identity key:** `DefaultModelRegistry` — 6 call sites; `ChatViewModel` — 8 call sites (lines 262, 280, 316, 338, 355, 393, 535 + the immutable `modelName` field at line 65); `ModelManagerViewModel.onCancel`/`onLoad` — 2 call sites; `PerModelSettings` DataStore keys — all occurrences. A single `val modelId: String` addition on `Model` plus `AllowedModel.toModel()` plumbing is the only code change needed in `:core-runtime`; all call-site migrations are Phase 3 tasks, not preconditions.
+
+---
+
+### K3. `ModelManagerViewModel` — current state and required additions for Phase 3
+
+**File:** `C:\AI-WORK\PhoneWrap\app\src\main\kotlin\app\sanctum\machina\ui\modelmanager\ModelManagerViewModel.kt`
+
+**Current state fields (all public):**
+
+| Field | Type | Source |
+|---|---|---|
+| `models` | `StateFlow<List<ModelEntry>>` | `registry.models` (direct delegation, line 34) |
+| `hasUnresolvedCrash` | `StateFlow<Boolean>` | `crashState.hasUnresolvedCrash` (line 44) |
+| `navEvents` | `SharedFlow<NavEvent>` | `_navEvents.asSharedFlow()` (line 47) |
+
+`NavEvent` is a sealed interface with one subclass: `data class OpenChat(val modelName: String)`.
+
+**Current methods:**
+
+| Method | Signature | What it does |
+|---|---|---|
+| `onDownload` | `fun onDownload(entry: ModelEntry)` | Launches `registry.download(entry.model)` in `viewModelScope` |
+| `onCancel` | `fun onCancel(modelName: String)` | `registry.cancelDownload(modelName)` |
+| `onLoad` | `fun onLoad(modelName: String)` | Emits `NavEvent.OpenChat(modelName)` |
+| `refreshCrashState` | `fun refreshCrashState()` | `crashState.refresh()` |
+| `dismissCrashBanner` | `fun dismissCrashBanner()` | `crashState.markDismissed()` |
+| `saveLogAndClearCrash` | `suspend fun saveLogAndClearCrash(uri: Uri): Result<Unit>` | Builds + writes export, clears crash state |
+
+**No constructor injection of `AppSettingsRepository` today.** The VM only takes `ModelRegistry`, `CrashState`, `LogExportManager`.
+
+**Methods needed for Phase 3 (US-8 / AC-F7):**
+
+(a) **Setting default model via `AppSettings`** — requires:
+- Add `AppSettingsRepository` to constructor injection.
+- Add `suspend fun setDefaultModel(modelId: String)` — calls `settingsRepository.saveAppSettings { it.toBuilder().setDefaultModelId(modelId).build() }` (or equivalent DataStore update API), then emits a Snackbar event `NavEvent.ShowSnackbar(message)`.
+- Add `val defaultModelId: StateFlow<String>` — derived from `settingsRepository.observeAppSettings().map { it.defaultModelId }.stateIn(viewModelScope, ...)` — consumed by the UI to render the ⭐ next to the current default.
+- Extend `NavEvent` with `data class ShowSnackbar(val message: String) : NavEvent` (or use a separate `SharedFlow<String>` for toasts — both are one-line additions).
+
+(b) **"Load" navigating to quick chat** — current `onLoad(modelName)` emits `NavEvent.OpenChat(modelName)`. Per spec US-12/AC-F4 the destination changes: "Load" must open a **quick chat** on this model, not a persistent chat. The minimal change is renaming `OpenChat` to `OpenQuickChat` (or adding a parameter `kind = QUICK`) and updating the `SanctumApp.kt` NavEvent handler to navigate to `chat/quick?modelName={...}` instead of `chat/{modelName}`. The VM method signature itself does not change.
+
+(c) **Reading current default to show ⭐** — handled by the `defaultModelId: StateFlow<String>` described in (a). The composable does `if (entry.model.modelId == defaultModelId) show star`. No additional VM method needed.
+
+**Count of new methods / constructor injections:**
+- 1 new constructor param: `AppSettingsRepository`.
+- 2 new state fields: `defaultModelId: StateFlow<String>`, optionally a `snackbarEvents: SharedFlow<String>`.
+- 1 new suspend fun: `setDefaultModel(modelId: String)`.
+- 1 modification: `onLoad` routing logic or `NavEvent.OpenChat` kind parameter.
+
+---
+
+### K4. `ChatViewModel.init {}` and `onCleared()` — exact code that must change
+
+**File:** `C:\AI-WORK\PhoneWrap\app\src\main\kotlin\app\sanctum\machina\ui\chat\ChatViewModel.kt`
+
+**Exact `init {}` block (lines 97–115):**
+```kotlin
+init {
+    viewModelScope.launch {
+        // Apply persisted overrides before init so awaitInitialize sees the
+        // user's accelerator + system prompt (D24, D21).
+        applyEffectiveConfigToModel()
+        registry.initialize(modelName).fold(
+            onSuccess = {
+                refreshModelCaps()
+                _uiState.value = ChatUiState.Ready(isGenerating = false)
+            },
+            onFailure = { e ->
+                val cause =
+                    e.message?.takeIf { it.isNotBlank() }
+                        ?: e::class.simpleName.orEmpty()
+                _uiState.value = ChatUiState.Failed(cause)
+            },
+        )
+    }
+}
+```
+
+**Exact `onCleared()` block (lines 531–536):**
+```kotlin
+override fun onCleared() {
+    super.onCleared()
+    // viewModelScope is already cancelled here; GlobalScope is lint-discouraged.
+    // A fresh SupervisorJob scope lets cleanup outlive the ViewModel.
+    CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { registry.cleanup(modelName) }
+}
+```
+
+**What must change for Phase 3:**
+
+The `init {}` call to `registry.initialize(modelName)` is the correct place for two scenarios that still require it in Phase 3:
+1. Persistent or quick chat where the model is NOT the currently warm default (cross-model case, triggered by user tapping "Load" in TopAppBar per US-4 step 5). In this case `init {}` should NOT call `initialize` automatically — the VM should observe `registry.models` to derive current `initStatus` for `modelName` and stay in `ChatUiState.Loading` (or a new "EngineIdle" state) until the user explicitly taps "Load".
+2. The default warm case: the VM opens, the engine is already `Ready` (warmed by `SanctumApplication.onCreate`). `init {}` should detect this and go directly to `ChatUiState.Ready` without calling `registry.initialize`.
+
+The refactored `init {}` becomes an **observe-and-derive** pattern, not an imperative call:
+```kotlin
+// Phase 3 pseudocode
+init {
+    viewModelScope.launch {
+        applyEffectiveConfigToModel()
+        // Observe registry status and derive UI state reactively.
+        registry.models.collect { entries ->
+            val status = entries.find { it.model.name == modelName }?.initStatus
+            _uiState.value = when (status) {
+                ModelInitStatus.Ready -> ChatUiState.Ready(isGenerating = _uiState.value.let { it as? ChatUiState.Ready }?.isGenerating ?: false)
+                ModelInitStatus.Initializing -> ChatUiState.Loading
+                is ModelInitStatus.Failed -> ChatUiState.Failed(status.message)
+                ModelInitStatus.Idle, null -> ChatUiState.Loading  // wait for user to tap "Load"
+            }
+        }
+    }
+}
+```
+
+The `onCleared()` call `registry.cleanup(modelName)` **must be removed entirely** (AC-E6). Rationale: with Application-scope engine ownership, `cleanup` is now the responsibility of the cross-model reinit flow (user-initiated via "Load" button) and of process death (OS reclaims memory). A VM being cleared on Back navigation must NOT tear down the warm engine. The `CoroutineScope(SupervisorJob() + Dispatchers.IO)` pattern used here would survive the VM but kill the engine before the next VM for the same model is created — a race window that wipes warmup benefits.
+
+**After removal, the `onCleared()` body reduces to just `super.onCleared()`** (or can be deleted entirely if the compiler permits).
+
+**Additional Phase 3 `init {}` wiring needed:**
+- Load persistent message history from Room DAO: `messageDao.observeByChat(chatId).collect { _persistedMessages.value = it }` — new field, runs in parallel with the engine-status collect.
+- For quick chats: no DAO load; `_persistedMessages` stays empty; a `quickChatIdentity: QuickChatIdentity` object tracks the ephemeral session in-memory only.
+- `applyEffectiveConfigToModel()` (line 101) stays in `init {}` for the cross-model case where the user explicitly triggers reinit. For the warm-default case it should still run before the engine-ready check, since `configValues` patch the `Model` object that the registry already holds.
+
+---
+
+### K5. `DeviceInfoCollector` — stubbed implementation and injection changes
+
+**File:** `C:\AI-WORK\PhoneWrap\app\src\main\kotlin\app\sanctum\machina\logexport\DeviceInfoCollector.kt`
+
+**Exact stubbed lines in `AndroidDeviceInfoProvider` (lines 127–132):**
+```kotlin
+// TODO(Phase 3+): wire to ModelRegistry — tracked in NOTES.md backlog
+//  ("Phase 2.5 follow-up: wire DeviceInfoCollector.activeModelId/downloadedModels").
+override fun activeModelId(): String? = null
+
+// TODO(Phase 3+): wire to ModelRegistry — see activeModelId().
+override fun downloadedModels(): List<Pair<String, Long>> = emptyList()
+```
+
+Both return dead-stub values. In `buildHeader()` these produce the documented stubs: `"active model: none"` and `"downloaded models:\n  (none)"`.
+
+**What real values look like:**
+- `activeModelId()` should return the `model.name` (or post-Phase-3-migration: `model.modelId`) of the entry in `registry.models.value` whose `initStatus === ModelInitStatus.Ready`. If no model is `Ready`, returns `null` → output stays `"none"`.
+- `downloadedModels()` should return a `List<Pair<String, Long>>` where each pair is `(model.name, model.sizeInBytes)` (or `model.modelId` after the name→id migration) for every `ModelEntry` whose `downloadStatus.status == ModelDownloadStatusType.SUCCEEDED`.
+
+**Injection changes needed:**
+
+`AndroidDeviceInfoProvider` currently takes only `@ApplicationContext Context` in its `@Inject constructor` (line 99). It needs `ModelRegistry` added:
+
+```kotlin
+class AndroidDeviceInfoProvider @Inject constructor(
+    @ApplicationContext private val context: Context,
+    private val registry: ModelRegistry,   // NEW
+) : DeviceInfoProvider {
+    override fun activeModelId(): String? =
+        registry.models.value
+            .firstOrNull { it.initStatus === ModelInitStatus.Ready }
+            ?.model?.name   // swap .name → .modelId after AC-R8 migration
+
+    override fun downloadedModels(): List<Pair<String, Long>> =
+        registry.models.value
+            .filter { it.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED }
+            .map { it.model.name to it.model.sizeInBytes }
+}
+```
+
+**Hilt binding — no module change needed.** `LogExportModule.kt` has `@Binds abstract fun bindDeviceInfoProvider(impl: AndroidDeviceInfoProvider): DeviceInfoProvider` (line 22–23). Hilt resolves `AndroidDeviceInfoProvider`'s constructor by field type; adding `ModelRegistry` to the constructor is sufficient — Hilt already provides `ModelRegistry` as a `@Singleton` (via `CoreRuntimeModule`). No new `@Provides` or `@Binds` is required.
+
+**Caution:** `AndroidDeviceInfoProvider` is also instantiated **without Hilt** in the `:crash` process path (Decision 5). `LogExportManager` has a secondary constructor that builds `DeviceInfoCollector` by hand, calling `AndroidDeviceInfoProvider(context)` directly. This secondary constructor will break when `ModelRegistry` is added to the constructor. Fix: overload `AndroidDeviceInfoProvider` with a secondary constructor `constructor(@ApplicationContext context: Context) : this(context, null)` and make `registry` nullable, or extract a separate `CrashProcessDeviceInfoProvider` stub for the `:crash` process that hardcodes `null`/`emptyList()`. The second option is cleaner (avoids null-check pollution in the main path) and aligns with the existing pattern where `:crash` deliberately knows nothing about the model registry.
+
+**Key files for this fix:**
+- `C:\AI-WORK\PhoneWrap\app\src\main\kotlin\app\sanctum\machina\logexport\DeviceInfoCollector.kt` — add `ModelRegistry` constructor param + implement the two methods.
+- `C:\AI-WORK\PhoneWrap\app\src\main\kotlin\app\sanctum\machina\logexport\LogExportManager.kt` — find the secondary constructor that instantiates `AndroidDeviceInfoProvider(context)` and fix it (either null registry or separate crash-process stub).
+- `C:\AI-WORK\PhoneWrap\app\src\main\kotlin\app\sanctum\machina\logexport\LogExportModule.kt` — no changes needed.
+
+---
+
 ## Appendix: quick reference of key file paths
 
 - Entry point / nav: `C:\AI-WORK\PhoneWrap\app\src\main\kotlin\app\sanctum\machina\ui\SanctumApp.kt`
@@ -498,3 +763,11 @@ If warmup is in flight on the default model when the user taps a drawer entry fo
 - App Gradle config: `C:\AI-WORK\PhoneWrap\app\build.gradle.kts`
 - Manifest: `C:\AI-WORK\PhoneWrap\app\src\main\AndroidManifest.xml`
 - .gitignore (Room rule): `C:\AI-WORK\PhoneWrap\.gitignore`
+- ModelInitStatus (sealed class): `C:\AI-WORK\PhoneWrap\core-runtime\src\main\kotlin\app\sanctum\machina\core\registry\ModelInitStatus.kt`
+- ModelEntry (wrapper with initStatus): `C:\AI-WORK\PhoneWrap\core-runtime\src\main\kotlin\app\sanctum\machina\core\registry\ModelEntry.kt`
+- ModelRegistry (interface): `C:\AI-WORK\PhoneWrap\core-runtime\src\main\kotlin\app\sanctum\machina\core\registry\ModelRegistry.kt`
+- AllowedModel / ModelAllowlist: `C:\AI-WORK\PhoneWrap\core-runtime\src\main\kotlin\app\sanctum\machina\core\data\ModelAllowlist.kt`
+- Model (data class, no modelId field): `C:\AI-WORK\PhoneWrap\core-runtime\src\main\kotlin\app\sanctum\machina\core\data\Model.kt`
+- ModelManagerViewModel: `C:\AI-WORK\PhoneWrap\app\src\main\kotlin\app\sanctum\machina\ui\modelmanager\ModelManagerViewModel.kt`
+- DeviceInfoCollector / AndroidDeviceInfoProvider: `C:\AI-WORK\PhoneWrap\app\src\main\kotlin\app\sanctum\machina\logexport\DeviceInfoCollector.kt`
+- LogExportModule (Hilt bindings for logexport): `C:\AI-WORK\PhoneWrap\app\src\main\kotlin\app\sanctum\machina\logexport\LogExportModule.kt`
