@@ -106,9 +106,9 @@ interface DeviceInfoProvider {
  */
 class AndroidDeviceInfoProvider private constructor(
     @ApplicationContext private val context: Context,
-    // Kotlin-nullable parameters collide with non-null at the JVM signature
-    // level, so the registry is captured as a thunk — empty list in the crash
-    // path, live `registry.models.value` lookup in the Hilt path.
+    // Registry is captured as a thunk so the :crash-process ctor can supply an
+    // empty-list fallback without a separate `NullModelRegistry` implementation
+    // and without leaking a Hilt dependency into that path (Decision 10).
     private val entriesProvider: () -> List<ModelEntry>,
 ) : DeviceInfoProvider {
 

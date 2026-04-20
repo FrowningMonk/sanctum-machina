@@ -29,7 +29,6 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -187,6 +186,33 @@ class SettingsMigrationHelperTest {
       "updateData must be called exactly once (atomic rekey)",
       1,
       dataStore.updateCount,
+    )
+  }
+
+  @Test
+  fun migration_writesRekeyAndSentinel_inSingleAtomicWrite() = testScope.runTest {
+    // Regression guard (Decision 8): the rekey and sentinel flip MUST land in
+    // the same DataStore transition — otherwise a process kill between two
+    // writes leaves rekeyed data without the sentinel, and the next boot runs
+    // migration against modelId-keyed data, sees every key as orphan, and
+    // drops every per-model override.
+    registry.set(allowed("N", "id/n"))
+    rawDataStore.updateData {
+      it.toBuilder()
+        .putPerModelOverrides("N", PerModelSettings.newBuilder().setTopK(5).build())
+        .build()
+    }
+    dataStore.resetCount()
+
+    val helper = SettingsMigrationHelper(repository, registry, dataStore, errorLog)
+    helper.migrateIfNeeded()
+
+    assertEquals("exactly one atomic write", 1, dataStore.updateCount)
+    val snapshot = rawDataStore.data.first()
+    assertTrue("sentinel must be set", snapshot.settingsKeysMigrated)
+    assertTrue(
+      "rekeyed entry must be present in same snapshot",
+      snapshot.perModelOverridesMap.containsKey("id/n"),
     )
   }
 

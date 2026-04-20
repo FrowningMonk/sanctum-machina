@@ -41,6 +41,12 @@ class SettingsMigrationHelper @Inject constructor(
     val nameToModelId: Map<String, String> =
       registry.models.value.associate { it.model.name to it.model.modelId }
 
+    // Rekey and sentinel flip happen in the SAME updateData transform. A separate
+    // markSettingsMigrated() write would expose a kill-window: process death
+    // between the two writes would leave rekeyed data without the sentinel, and
+    // the next boot would re-run the migration against modelId-keyed data, see
+    // every key as "orphan", and clear all overrides. Folding the flag in makes
+    // the migration a single atomic DataStore transition (Decision 8, AC-R8).
     dataStore.updateData { current ->
       val old = current.perModelOverridesMap
       val remapped = LinkedHashMap<String, app.sanctum.machina.core.settings.proto.PerModelSettings>(old.size)
@@ -58,9 +64,8 @@ class SettingsMigrationHelper @Inject constructor(
       current.toBuilder()
         .clearPerModelOverrides()
         .putAllPerModelOverrides(remapped)
+        .setSettingsKeysMigrated(true)
         .build()
     }
-
-    appSettings.markSettingsMigrated()
   }
 }
