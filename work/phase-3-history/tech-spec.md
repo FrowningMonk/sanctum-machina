@@ -1,6 +1,6 @@
 ---
 created: 2026-04-20
-status: draft
+status: approved
 branch: phase/3-history
 size: L
 ---
