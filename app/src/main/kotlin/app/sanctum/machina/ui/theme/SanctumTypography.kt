@@ -8,6 +8,8 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.googlefonts.Font
 import androidx.compose.ui.text.googlefonts.GoogleFont
+import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.TextUnitType
 import androidx.compose.ui.unit.sp
 import app.sanctum.machina.R
 
@@ -82,7 +84,7 @@ val SanctumTypography = Typography(
     bodyMedium = TextStyle(
         fontFamily = InterFamily,
         fontWeight = FontWeight.Normal,
-        fontSize = 14.sp, // 14.5sp rounds to 14
+        fontSize = 14.5.sp,
         lineHeight = 20.sp,
     ),
     bodySmall = TextStyle(
@@ -103,6 +105,6 @@ val SanctumTypography = Typography(
         fontWeight = FontWeight.Normal,
         fontSize = 10.sp,
         lineHeight = 14.sp,
-        letterSpacing = 0.18.sp,
+        letterSpacing = TextUnit(0.18f, TextUnitType.Em),
     ),
 )

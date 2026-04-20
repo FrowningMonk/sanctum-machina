@@ -2,7 +2,7 @@ package app.sanctum.machina.ui.theme
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
 data class SanctumColors(
@@ -59,7 +59,7 @@ val SanctumDarkColors = SanctumColors(
     incognitoEdge = SanctumIncognitoEdgeDark,
 )
 
-val LocalSanctumColors = compositionLocalOf { SanctumLightColors }
+val LocalSanctumColors = staticCompositionLocalOf { SanctumLightColors }
 
 val MaterialTheme.sanctumColors: SanctumColors
     @Composable get() = LocalSanctumColors.current

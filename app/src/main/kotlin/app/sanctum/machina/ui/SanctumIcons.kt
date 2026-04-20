@@ -1,7 +1,6 @@
 package app.sanctum.machina.ui
 
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
@@ -114,17 +113,17 @@ object SanctumIcons {
             lineTo(4f, 16f)
             close()
         }
-        path(fill = fill, pathFillType = PathFillType.EvenOdd) {
-            moveTo(8f, 9f); arcTo(0.8f, 0.8f, 0f, isMoreThanHalf = false, isPositiveArc = true, 8.8f, 9f)
-            arcTo(0.8f, 0.8f, 0f, isMoreThanHalf = false, isPositiveArc = true, 8f, 9.8f)
+        path(fill = fill) {
+            moveTo(7.2f, 9f)
+            arcTo(0.8f, 0.8f, 0f, isMoreThanHalf = false, isPositiveArc = true, 8.8f, 9f)
             arcTo(0.8f, 0.8f, 0f, isMoreThanHalf = false, isPositiveArc = true, 7.2f, 9f)
-            arcTo(0.8f, 0.8f, 0f, isMoreThanHalf = false, isPositiveArc = true, 8f, 9f)
+            close()
         }
-        path(fill = fill, pathFillType = PathFillType.EvenOdd) {
-            moveTo(12f, 9f); arcTo(0.8f, 0.8f, 0f, isMoreThanHalf = false, isPositiveArc = true, 12.8f, 9f)
-            arcTo(0.8f, 0.8f, 0f, isMoreThanHalf = false, isPositiveArc = true, 12f, 9.8f)
+        path(fill = fill) {
+            moveTo(11.2f, 9f)
+            arcTo(0.8f, 0.8f, 0f, isMoreThanHalf = false, isPositiveArc = true, 12.8f, 9f)
             arcTo(0.8f, 0.8f, 0f, isMoreThanHalf = false, isPositiveArc = true, 11.2f, 9f)
-            arcTo(0.8f, 0.8f, 0f, isMoreThanHalf = false, isPositiveArc = true, 12f, 9f)
+            close()
         }
     }
 
@@ -288,28 +287,22 @@ object SanctumIcons {
 
     val IconMore: ImageVector = icon("IconMore") {
         path(fill = fill) {
-            moveTo(4f, 8.8f)
-            arcTo(1.2f, 1.2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 4f, 8.8f)
+            moveTo(2.8f, 10f)
             arcTo(1.2f, 1.2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 5.2f, 10f)
-            arcTo(1.2f, 1.2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 4f, 11.2f)
             arcTo(1.2f, 1.2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 2.8f, 10f)
-            arcTo(1.2f, 1.2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 4f, 8.8f)
+            close()
         }
         path(fill = fill) {
-            moveTo(10f, 8.8f)
-            arcTo(1.2f, 1.2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 10f, 8.8f)
+            moveTo(8.8f, 10f)
             arcTo(1.2f, 1.2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 11.2f, 10f)
-            arcTo(1.2f, 1.2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 10f, 11.2f)
             arcTo(1.2f, 1.2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 8.8f, 10f)
-            arcTo(1.2f, 1.2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 10f, 8.8f)
+            close()
         }
         path(fill = fill) {
-            moveTo(16f, 8.8f)
-            arcTo(1.2f, 1.2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 16f, 8.8f)
+            moveTo(14.8f, 10f)
             arcTo(1.2f, 1.2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 17.2f, 10f)
-            arcTo(1.2f, 1.2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 16f, 11.2f)
             arcTo(1.2f, 1.2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 14.8f, 10f)
-            arcTo(1.2f, 1.2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 16f, 8.8f)
+            close()
         }
     }
 
@@ -374,12 +367,10 @@ object SanctumIcons {
             moveTo(10f, 8f); lineTo(10f, 12f)
         }
         path(fill = fill) {
-            moveTo(10f, 13.9f)
-            arcTo(0.6f, 0.6f, 0f, isMoreThanHalf = false, isPositiveArc = true, 10f, 13.9f)
+            moveTo(9.4f, 14.5f)
             arcTo(0.6f, 0.6f, 0f, isMoreThanHalf = false, isPositiveArc = true, 10.6f, 14.5f)
-            arcTo(0.6f, 0.6f, 0f, isMoreThanHalf = false, isPositiveArc = true, 10f, 15.1f)
             arcTo(0.6f, 0.6f, 0f, isMoreThanHalf = false, isPositiveArc = true, 9.4f, 14.5f)
-            arcTo(0.6f, 0.6f, 0f, isMoreThanHalf = false, isPositiveArc = true, 10f, 13.9f)
+            close()
         }
     }
 
