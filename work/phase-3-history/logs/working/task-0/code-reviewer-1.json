@@ -1,0 +1,48 @@
+{
+  "verdict": "approved_with_notes",
+  "summary": "The design system foundation is solid: all 15 SanctumColors fields are present and correctly mapped, Theme.kt contains no dynamic-color calls, shapes match the spec (2dp/22dp), SanctumIncognitoTheme delegates correctly, SmSigil draws all four elements faithfully to sanctum-atoms.jsx, 21 icon constants are present, and the build dependency is correctly wired. Three issues require attention before the next UI task: (1) letterSpacing in labelSmall uses an absolute sp value instead of an em-relative value, making the kicker spacing 10x too tight; (2) the redundant zero-length arcTo in IconMore (and same pattern in IconGhost/IconWarn dots) is harmless but noise; (3) compositionLocalOf should be staticCompositionLocalOf for a theme object that only changes at the root.",
+  "findings": [
+    {
+      "severity": "major",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/theme/SanctumTypography.kt",
+      "line": "106",
+      "issue": "letterSpacing for labelSmall is 0.18.sp (absolute), but the design specifies 0.18em (relative to font size). For a 10sp font, 0.18em = 1.8sp. Using 0.18.sp results in tracking that is 10x tighter than designed — the kicker text will appear compressed.",
+      "fix": "Use TextUnit(0.18f, TextUnitType.Em) instead of 0.18.sp. Import androidx.compose.ui.unit.TextUnitType. This is the only correct way to express em-based letter-spacing in Compose TextStyle."
+    },
+    {
+      "severity": "minor",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/theme/SanctumColors.kt",
+      "line": "62",
+      "issue": "compositionLocalOf { SanctumLightColors } creates a CompositionLocal that triggers recomposition of all consumers whenever the value changes. For a theme that only changes at the root (SanctumTheme entry point), staticCompositionLocalOf is the correct choice — it avoids per-frame comparison overhead and signals the intent that this value is stable at scope boundaries.",
+      "fix": "Change compositionLocalOf { SanctumLightColors } to staticCompositionLocalOf { SanctumLightColors }. No other changes needed — the usage pattern in Theme.kt (CompositionLocalProvider at root) is identical."
+    },
+    {
+      "severity": "minor",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/SanctumIcons.kt",
+      "line": "292",
+      "issue": "Each filled circle in IconMore, IconWarn (dot), and the eye dots in IconGhost begins with a redundant arcTo back to the moveTo point (e.g., moveTo(4f, 8.8f) followed immediately by arcTo(..., 4f, 8.8f)). A zero-length arc from a point to itself draws nothing and is dead code. While this does not affect rendering, it signals a copy-paste pattern that was not cleaned up and slightly inflates the path data.",
+      "fix": "Remove the first arcTo in each filled-circle path so the sequence starts with the first actual quadrant arc. For IconMore dot at (4,10): moveTo(4f, 8.8f); arcTo(1.2f, 1.2f, 0f, false, true, 5.2f, 10f); arcTo(1.2f, 1.2f, 0f, false, true, 4f, 11.2f); arcTo(1.2f, 1.2f, 0f, false, true, 2.8f, 10f); arcTo(1.2f, 1.2f, 0f, false, true, 4f, 8.8f)."
+    },
+    {
+      "severity": "note",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/theme/SanctumTypography.kt",
+      "line": "86",
+      "issue": "bodyMedium uses 14.sp with comment '14.5sp rounds to 14'. Compose sp values accept Float so 14.5f.sp is valid and would be more faithful to the design spec.",
+      "fix": "Change fontSize = 14.sp to fontSize = 14.5.sp — no rounding is necessary in Compose, and the comment can be removed."
+    },
+    {
+      "severity": "note",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/SanctumIcons.kt",
+      "line": "1",
+      "issue": "SanctumIcons.kt is in package app.sanctum.machina.ui (file path ui/SanctumIcons.kt), but Task 0 spec lists the creation target as app/src/main/kotlin/app/sanctum/machina/ui/theme/SanctumIcons.kt (theme subpackage). The current placement is defensible — icons are a UI concern, not a theme concern — but it deviates from the spec's stated file path. Downstream tasks (7-11) will need to import from ui not ui.theme.",
+      "fix": "No change required — the current location in ui/ is architecturally cleaner than theme/. Document the deviation: add a one-line comment at the top of the file ('Icons live in ui/ not ui/theme/ for clarity') and note it in decisions.md."
+    },
+    {
+      "severity": "note",
+      "file": "work/phase-3-history/tasks/0.md",
+      "line": "60",
+      "issue": "The task Acceptance Criteria states 'SanctumColors data class содержит все 13 токенов' but sanctum-tokens.jsx defines 15 tokens per palette (13 base + accentInk + incognitoInk). The implementation correctly has 15 fields matching the design source. The '13' count in the AC is a documentation error in the task file.",
+      "fix": "Update the Acceptance Criteria line to read '15 полей' to match the actual design source. This is a task documentation fix, not a code fix."
+    }
+  ]
+}

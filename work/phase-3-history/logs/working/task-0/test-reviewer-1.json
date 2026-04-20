@@ -1,0 +1,18 @@
+{
+  "verdict": "approved_with_notes",
+  "summary": "Smoke gate passed (compileDebugKotlin + assembleDebug both BUILD SUCCESSFUL). The TDD anchor is appropriate for a pure design-system task: no business logic exists to unit-test, and compilation success is the correct gate. Two notes worth tracking: (1) SanctumColors data class has 15 fields while the AC states 13 — the extra fields (incognitoBg, incognitoInk) are intentional additions covering the incognito theme, but the AC wording needs reconciliation; (2) SanctumIcons.kt is placed in package ui (not ui/theme) and icons are object members, not top-level vals — the TDD anchor says 'top-level val', which is technically not satisfied. Neither issue blocks approval since the build is clean and all 21 icons are accessible via SanctumIcons.IconXxx.",
+  "findings": [
+    {
+      "severity": "note",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/theme/SanctumColors.kt",
+      "issue": "SanctumColors data class has 15 fields (bg, bgSunk, bgRaised, ink, inkMuted, inkDim, hair, hairStrong, userBubble, accent, accentInk, danger, incognitoBg, incognitoInk, incognitoEdge), but Acceptance Criteria says '13 токенов для каждой темы'. The two extra fields (incognitoBg, incognitoInk) are design-system additions for the incognito palette. The implementation is functionally richer than the AC describes.",
+      "fix": "Reconcile the AC wording in tasks/0.md: update '13 токенов' to '15 токенов' to match what was built, or confirm the discrepancy is intentional and note it in decisions.md. No code change needed — the extra tokens are correct."
+    },
+    {
+      "severity": "note",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/SanctumIcons.kt",
+      "issue": "SanctumIcons.kt resides in package 'app.sanctum.machina.ui' (file path ui/SanctumIcons.kt), not ui/theme/ as implied by the task's 'Files to create' list. Additionally, the TDD anchor specifies 'all 21 icons available as top-level val in SanctumIcons.kt', but they are object-member vals inside 'object SanctumIcons', accessed as SanctumIcons.IconXxx — not top-level vals. The build succeeds and all icons are usable, but the anchor's exact wording is not literally met.",
+      "fix": "The object-member pattern is the correct Kotlin idiom for a namespace of related constants and should be kept. Update the TDD anchor wording in tasks/0.md from 'top-level val' to 'val inside object SanctumIcons' for accuracy. If package placement matters for consistency, move to ui/theme/ in a follow-up — but this has no functional impact."
+    }
+  ]
+}
