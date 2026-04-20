@@ -35,7 +35,7 @@ abstract class SanctumDatabase : RoomDatabase() {
                 .addCallback(ForeignKeysOnOpenCallback)
                 .build()
 
-        private val ForeignKeysOnOpenCallback = object : Callback() {
+        internal val ForeignKeysOnOpenCallback: Callback = object : Callback() {
             override fun onOpen(db: SupportSQLiteDatabase) {
                 super.onOpen(db)
                 db.execSQL("PRAGMA foreign_keys = ON")

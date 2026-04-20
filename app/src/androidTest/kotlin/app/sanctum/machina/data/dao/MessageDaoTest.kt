@@ -27,6 +27,7 @@ class MessageDaoTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         db = Room.inMemoryDatabaseBuilder(context, SanctumDatabase::class.java)
             .allowMainThreadQueries()
+            .addCallback(SanctumDatabase.ForeignKeysOnOpenCallback)
             .build()
         chatDao = db.chatDao()
         messageDao = db.messageDao()
@@ -96,6 +97,48 @@ class MessageDaoTest {
 
         val msg = messageDao.getByChatId(chatId).single()
         assertEquals("", msg.text)
+    }
+
+    @Test
+    fun nullableFieldsRoundTrip() = runBlocking {
+        val chatId = insertChat()
+        val inserted = MessageEntity(
+            chatId = chatId,
+            role = "assistant",
+            text = "hi",
+            thinkingText = "chain-of-thought",
+            imagePath = "attachments/1/img_1.png",
+            audioPath = "attachments/1/aud_1.pcm",
+            createdAt = 42L,
+            tokenCount = 128,
+        )
+        val id = messageDao.insert(inserted)
+
+        val loaded = messageDao.getByChatId(chatId).single()
+        assertEquals(id, loaded.id)
+        assertEquals("chain-of-thought", loaded.thinkingText)
+        assertEquals("attachments/1/img_1.png", loaded.imagePath)
+        assertEquals("attachments/1/aud_1.pcm", loaded.audioPath)
+        assertEquals(128, loaded.tokenCount)
+    }
+
+    @Test
+    fun observeByChatFiltersByChatId() = runBlocking {
+        val chatA = insertChat()
+        val chatB = chatDao.insert(
+            ChatEntity(modelId = "m", createdAt = 2L, lastMessageAt = 2L)
+        )
+        messageDao.insert(MessageEntity(chatId = chatA, role = "user", text = "A1", createdAt = 10L))
+        messageDao.insert(MessageEntity(chatId = chatB, role = "user", text = "B1", createdAt = 20L))
+        messageDao.insert(MessageEntity(chatId = chatA, role = "user", text = "A2", createdAt = 30L))
+
+        val onlyA = messageDao.observeByChat(chatA).first()
+        val onlyB = messageDao.observeByChat(chatB).first()
+
+        assertEquals(2, onlyA.size)
+        assertEquals(listOf("A1", "A2"), onlyA.map { it.text })
+        assertEquals(1, onlyB.size)
+        assertEquals("B1", onlyB[0].text)
     }
 
     @Test

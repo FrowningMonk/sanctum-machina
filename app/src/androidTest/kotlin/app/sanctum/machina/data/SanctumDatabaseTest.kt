@@ -24,6 +24,7 @@ class SanctumDatabaseTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         db = Room.inMemoryDatabaseBuilder(context, SanctumDatabase::class.java)
             .allowMainThreadQueries()
+            .addCallback(SanctumDatabase.ForeignKeysOnOpenCallback)
             .build()
     }
 
@@ -35,6 +36,18 @@ class SanctumDatabaseTest {
     @Test
     fun freshDbOpens() {
         assertTrue(db.isOpen)
+    }
+
+    @Test
+    fun foreignKeysPragmaIsOn() {
+        db.openHelper.readableDatabase.query("PRAGMA foreign_keys").use { cursor ->
+            assertTrue("PRAGMA foreign_keys cursor empty", cursor.moveToFirst())
+            assertEquals(
+                "PRAGMA foreign_keys must be 1 (ON) — ForeignKeysOnOpenCallback should set it",
+                1,
+                cursor.getInt(0)
+            )
+        }
     }
 
     @Test

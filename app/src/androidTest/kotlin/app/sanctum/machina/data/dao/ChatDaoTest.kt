@@ -6,8 +6,14 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.sanctum.machina.data.SanctumDatabase
 import app.sanctum.machina.data.model.ChatEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -27,6 +33,7 @@ class ChatDaoTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         db = Room.inMemoryDatabaseBuilder(context, SanctumDatabase::class.java)
             .allowMainThreadQueries()
+            .addCallback(SanctumDatabase.ForeignKeysOnOpenCallback)
             .build()
         dao = db.chatDao()
     }
@@ -57,6 +64,21 @@ class ChatDaoTest {
         assertEquals(now, chat.lastMessageAt)
         assertEquals(0, chat.isManuallyTitled)
         assertNull(chat.projectId)
+    }
+
+    @Test
+    fun insertAndGetByIdPreservesProjectIdValue() = runBlocking {
+        val id = dao.insert(
+            ChatEntity(
+                projectId = 42L,
+                modelId = "m",
+                createdAt = 1L,
+                lastMessageAt = 1L
+            )
+        )
+
+        val chat = dao.getById(id)!!
+        assertEquals(42L, chat.projectId)
     }
 
     @Test
@@ -102,12 +124,28 @@ class ChatDaoTest {
 
     @Test
     fun observeAllEmitsOnInsert() = runBlocking {
-        val before = dao.observeAll().first()
-        assertEquals(0, before.size)
+        // Live collector — must observe an emission triggered by the INSERT,
+        // not just the initial emission Room delivers on subscribe.
+        val emissions = MutableSharedFlow<List<ChatEntity>>(replay = 0, extraBufferCapacity = 16)
+        val job = launch(Dispatchers.IO) {
+            dao.observeAll().collect { emissions.emit(it) }
+        }
 
-        dao.insert(ChatEntity(modelId = "m", createdAt = 1L, lastMessageAt = 1L))
+        // First emission is the current (empty) state.
+        val initial = withTimeout(2_000L) { emissions.first() }
+        assertEquals(0, initial.size)
 
-        val after = dao.observeAll().first()
-        assertEquals(1, after.size)
+        // Trigger a re-emission via insert; wait for the non-empty list.
+        val waitUpdated = async(Dispatchers.IO) {
+            emissions.first { it.isNotEmpty() }
+        }
+        delay(50L) // let the collector re-subscribe for the next emission
+        dao.insert(ChatEntity(modelId = "m", createdAt = 1L, lastMessageAt = 10L))
+
+        val updated = withTimeout(5_000L) { waitUpdated.await() }
+        assertEquals(1, updated.size)
+        assertEquals(10L, updated[0].lastMessageAt)
+
+        job.cancel()
     }
 }
