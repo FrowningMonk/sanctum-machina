@@ -1,0 +1,64 @@
+{
+  "verdict": "pass_with_warnings",
+  "sources": {
+    "user_spec": true,
+    "tech_spec": true,
+    "tasks": false
+  },
+  "requirements_total": 14,
+  "requirements_covered": 12,
+  "requirements_partial": 2,
+  "requirements_missing": 0,
+  "findings": [
+    {
+      "type": "gap",
+      "source": "tech-spec",
+      "requirement": "US-13: Model deleted externally — startup health-check mechanism",
+      "detail": "User-spec step 2 says SanctumApplication.onCreate runs a health-check that marks models as not-downloaded in models_meta. Tech-spec Task 6 (SanctumApplication rework) lists four housekeeping actions but omits this health-check entirely. The Architecture cold-start sequence (step 3) also omits it. Task 9 (DrawerViewModel) says to check 'if tap target chat's model_id has no downloaded file' but the data source for this check is undefined — it is unclear whether DrawerViewModel performs a filesystem check at tap-time, reads from registry.models StateFlow, or reads from a separate models_meta store. The tech-spec needs to specify the mechanism.",
+      "severity": "major"
+    },
+    {
+      "type": "gap",
+      "source": "tech-spec",
+      "requirement": "AC-G1 (regression) — agent verification step 10 missing",
+      "detail": "User-spec 'Агент проверяет' table includes step 10: verify allowBackup=false and dataExtractionRules via 'aapt dump xmltree app-debug.apk AndroidManifest.xml'. Tech-spec Agent Verification Plan has only 10 steps, but step 10 there is 'Debug APK assembly', not the manifest regression check. The privacy manifest verification is absent from the agent-executable checklist.",
+      "severity": "minor"
+    },
+    {
+      "type": "partial",
+      "source": "tech-spec",
+      "requirement": "US-3: Open existing chat on the active model — instant Send",
+      "detail": "US-3 (same-model open = instant, Send available immediately) is not explicitly called out in any task or decision. It is implied by the reactive ChatViewModel engine-state observation (if model already Ready, Send is active), but the tech-spec never explicitly confirms AC-E2 is covered. The cross-model path (US-4) has a dedicated Architecture subsection; the same-model fast path has none.",
+      "severity": "minor"
+    },
+    {
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "AC-M1 / US-13: DrawerViewModel pre-nav model-availability check",
+      "detail": "Task 9 description says DrawerViewModel should check 'if tap target chat's model_id has no downloaded file' before navigating. The tech-spec's Shared Resources and Architecture sections do not define how this check is performed. ModelRegistry.models StateFlow contains ModelEntry with ModelInitStatus, but that reflects runtime initialization state, not on-disk presence (a model can be not-initialized but still on disk). If the check uses only registry.models it will falsely show 'Модель недоступна' for models that are on disk but cold. A filesystem-check or a dedicated 'isDownloaded' field on ModelEntry is required but not specified.",
+      "severity": "major"
+    },
+    {
+      "type": "gap",
+      "source": "tech-spec",
+      "requirement": "AC-F3: Auto-set default_model_id on first successful download",
+      "detail": "AC-F3 states: after the first successful model download, the downloaded model automatically becomes default_model_id if default_model_id is currently empty. Tech-spec Task 11 (Model Manager updates) and the AppSettingsRepository extensions (Task 2) do not describe where or how this auto-set logic fires. It is not mentioned in WarmupCoordinator, AppModule, ModelManagerViewModel, or any task's description. Without explicit assignment of this responsibility, AC-F3 will be missed in implementation.",
+      "severity": "major"
+    }
+  ],
+  "scope_creep": [],
+  "overengineering": [],
+  "underengineering": [
+    {
+      "item": "US-13 startup health-check omitted from SanctumApplication tasks",
+      "reason": "See gap finding above. Absence of the health-check mechanism means the 'Модель недоступна' drawer dialog has no reliable data to trigger on. The risk of silently navigating into a chat whose model file is gone is real.",
+      "severity": "major"
+    },
+    {
+      "item": "AC-F3 auto-default assignment on first download not assigned to any task",
+      "reason": "No task owns the 'if default_model_id is empty, set it to newly downloaded model' logic. It is not in ModelManagerViewModel (Task 11), not in WarmupCoordinator (Task 5), not in AppSettingsRepository. This is a first-run experience requirement that will be silently missed.",
+      "severity": "major"
+    }
+  ],
+  "notes": "Tech-spec is well-structured and covers 12 of 14 requirements fully. Two major underengineering gaps: (1) US-13 startup health-check mechanism for detecting externally-deleted model files is described in user-spec but absent from every tech-spec section and task; (2) AC-F3 auto-default-model assignment on first download has no owning task or component. Two minor gaps: the same-model fast path (US-3/AC-E2) lacks an explicit architecture note, and privacy manifest regression (agent verification step 10) is missing from the tech-spec verification plan. No scope creep or overengineering found. Solution section is technically substantive. Wave dependencies are valid. Testing strategy is appropriate for L-size."
+}

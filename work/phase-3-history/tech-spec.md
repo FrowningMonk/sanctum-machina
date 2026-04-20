@@ -55,8 +55,10 @@ Bundled debt: `Model.name → Model.modelId` DataStore key migration (AC-R8), `E
 **Cold start sequence:**
 1. `SanctumApplication.onCreate` → `super.onCreate()` triggers Hilt injection → `installCrashHandler()` → (inside `packageName` guard) `warmupCoordinator.warmupDefault()` launched on `Dispatchers.Default`.
 2. `WarmupCoordinator` reads `AppSettings.default_model_id` (fallback `last_used_model_id`) → calls `registry.initialize(modelId)` → on success updates `last_used_model_id` → on failure `ErrorLog.e("engine-warmup", ...)`.
-3. Concurrent housekeeping (also inside onCreate, separate coroutine): purge `filesDir/quick/`, delete orphan `filesDir/attachments/.staging-*/`, call `chatRepository.sweepZombieChats()`, detect DB corruption.
-4. UI starts at `HomeScreen` — warmup runs in the background.
+3. Concurrent housekeeping (also inside onCreate, separate coroutine): purge `filesDir/quick/` with `try/catch + ErrorLog.e("attachment-save", ...)` on failure (failure breaks incognito guarantee — must not be silent); delete orphan `filesDir/attachments/.staging-*/` (with `ErrorLog.e("attachment-save", ...)`); call `chatRepository.sweepZombieChats()`; detect DB corruption.
+4. AC-F3 observer (inside `packageName` guard, separate coroutine): observe `registry.models` for any model transitioning to `isDownloaded = true`; if `AppSettings.default_model_id` is empty at that moment → `appSettings.setDefaultModelId(modelId)`. This fires at most once per blank-default session. Model-downloaded detection: `ModelEntry.isDownloaded` (set by `DefaultModelRegistry` startup file scan + `DownloadWorker` completion callback).
+5. US-13 health-check: `DefaultModelRegistry` constructor already scans local files on startup and sets `ModelEntry.isDownloaded` correctly. No additional health-check is needed in `SanctumApplication`; stale `isDownloaded=true` entries for externally-deleted model files are corrected by the registry scan before any UI reads them.
+6. UI starts at `HomeScreen` — warmup runs in the background.
 
 **Persistent chat send sequence (US-2 first message, AC-P7):**
 1. User at `chat/draft`, types, taps Send.
@@ -71,8 +73,13 @@ Bundled debt: `Model.name → Model.modelId` DataStore key migration (AC-R8), `E
 - UI: `val displayMessages = combine(persistedMessages, _streamingMessage) { persisted, streaming -> persisted.map { it.toDomain() } + listOfNotNull(streaming) }`.
 - Atomic handover at `done=true`: Room INSERT fires, persisted list emits with new ASSISTANT row, VM clears `_streamingMessage` in the same `mapLatest` block observing the new emission — prevents double-bubble flicker.
 
+**Same-model fast path (US-3, AC-E2):**
+- Drawer tap → chat's `model_id == registry.activeModelName.value` → navigate to `chat/{chatId}`.
+- ChatViewModel observes registry status for `chat.model_id`; status is already `ModelInitStatus.Ready` → Send is enabled immediately, no waiting. History loads from Room instantly.
+
 **Cross-model read-first (US-4):**
-- Drawer tap → chat's `model_id ≠ registry.activeModelName.value` → navigate immediately to `chat/{chatId}` (no pre-nav dialog).
+- Drawer tap → first check `ModelEntry.isDownloaded` from `registry.models` for `chat.model_id`; if `!isDownloaded` → show "Модель недоступна" dialog (US-13) before navigating.
+- If downloaded: chat's `model_id ≠ registry.activeModelName.value` → navigate immediately to `chat/{chatId}` (no pre-nav dialog, no reinit).
 - ChatScreen: `displayMessages` from Room visible instantly. `ChatIdentity.Persistent` mode observes registry status for `chat.model_id` — status is `Idle` (not the warm model), so TopAppBar shows "Загрузить", Send is disabled.
 - User taps "Загрузить" → `warmupCoordinator.cancelAndRestart(chat.model_id)` → `registry.cleanup(activeModel) + registry.initialize(chat.model_id)`.
 
@@ -243,11 +250,11 @@ Stored in `SavedStateHandle` via nav arg (`chatId: Long?` optional; absence + `k
 
 - `AutoTitleGeneratorTest` — all AC-U2 cases: trim, whitespace collapse, cut at last space ≤20, append "…", fallback "Чат от DD.MM HH:mm", manual-title flag suppresses auto-title
 - `SettingsMigrationHelperTest` — happy path (rekey name→id), orphan key dropped + logged, sentinel prevents re-run, single `updateData` call per run
-- `ChatRepositoryTest` — save draft→commit happy path, IOException on staging write → rollback + no Room row, zombie sweep logic (0-message chat with missing dir → delete), auto-title triggers on commit
-- `WarmupCoordinatorTest` — model resolution order a/b/c (AC-F5), `cancelAndRestart` while warmup in flight, warmup failure → `ErrorLog.e("engine-warmup", ...)`, `last_used_model_id` updated on success
+- `ChatRepositoryTest` — save draft→commit happy path; IOException on staging write → rollback + no Room row; Room `@Transaction` succeeds but `rename()` throws → staging dir cleaned up + Room row deleted; `deleteChat()` calls `File.deleteRecursively()` on `filesDir/attachments/{chatId}/` + Room delete (assert both); zombie sweep logic (0-message chat with missing dir → deleted); auto-title triggers on commit
+- `WarmupCoordinatorTest` — model resolution order a/b/c (AC-F5); `cancelAndRestart` while warmup in-flight verifies in-flight Job is cancelled BEFORE new `initialize()` call starts (not just final state); warmup failure → `ErrorLog.e("engine-warmup", ...)`; `last_used_model_id` updated on success; AC-F3 observer sets `default_model_id` on first-downloaded model when previously empty
 - `ModelRegistryTest` (extended) — `activeModelName` reflects `ModelInitStatus.Ready`; null when Idle/Initializing/Failed; concurrent reads during initialize
 - `ErrorLogTest` (extended) — 6 new components pass validation; existing components unchanged
-- `ChatViewModelTest` — Draft mode sends commit chain, Quick mode never touches Room, `onCleared` does not call `registry.cleanup`, engine-state transitions drive TopAppBar state
+- `ChatViewModelTest` — Draft mode sends commit chain; Quick mode never touches Room (no `MessageDao` calls); `onCleared` does not call `registry.cleanup`; engine-state transitions drive TopAppBar state; double-bubble handover: `_streamingMessage` cleared in the same emission cycle where the persisted ASSISTANT row first appears (verify no emission where both in-memory AND persisted ASSISTANT co-exist)
 
 ### Integration tests (instrumented, `connectedAndroidTest`, Honor 200)
 
@@ -276,13 +283,14 @@ All agent verification is via `./gradlew` commands. No deployment needed; no MCP
 | 1. Full build | `./gradlew build` | `BUILD SUCCESSFUL` |
 | 2. App unit tests | `./gradlew :app:testDebugUnitTest` | Green; includes Phase-3 units |
 | 3. core-runtime tests | `./gradlew :core-runtime:testDebugUnitTest` | Green; includes ErrorLog new-component tests |
-| 4. core-settings tests | `./gradlew :core-settings:testDebugUnitTest` | Green; includes migration sentinel tests |
+| 4. core-settings tests | `./gradlew :core-settings:testDebugUnitTest` | Green; includes proto field round-trip tests. Note: `SettingsMigrationHelperTest` lives in `:app` — covered by step 2. |
 | 5. DAO instrumented (device) | `./gradlew :app:connectedAndroidTest` | All DAO tests green; cascade test passes |
 | 6. Lint | `./gradlew lintDebug` | No critical errors |
 | 7. Schema JSON | `ls app/schemas/app.sanctum.machina.data.SanctumDatabase/1.json` | File present |
 | 8. ErrorLog whitelist | grep for all 6 new components + `"settings-io"` in `ErrorLog.kt` | 7 components found |
 | 9. Proto fields | grep `default_model_id\|last_used_model_id` in `app_settings.proto` | Both `optional` fields present |
-| 10. Debug APK | `./gradlew :app:assembleDebug` | `app-debug.apk` produced |
+| 10. Privacy manifest | `aapt dump xmltree app-debug.apk AndroidManifest.xml \| grep -E "allowBackup\|dataExtractionRules"` | `allowBackup=false` and `dataExtractionRules=@xml/data_extraction_rules` unchanged (regression guard) |
+| 11. Debug APK | `./gradlew :app:assembleDebug` | `app-debug.apk` produced |
 
 ### Tools required
 
@@ -382,7 +390,7 @@ Technical criteria (complement user-spec acceptance criteria):
 ### Wave 3 (зависит от Wave 2)
 
 #### Task 6: SanctumApplication rework
-- **Description:** Extend `SanctumApplication.onCreate` (behind `getProcessName() == packageName` guard, after `installCrashHandler()`): inject `WarmupCoordinator` + `ChatRepository` via `@Inject`; call `warmupCoordinator.warmupDefault()`; run housekeeping coroutines (`filesDir/quick/` purge, orphan `.staging-*` cleanup, `chatRepository.sweepZombieChats()`). Wrap `Room.databaseBuilder.build()` (in AppModule) with corruption handler: on exception, rename `sanctum.db` to `sanctum.db.corrupt_{ts}`, create fresh DB, expose `corruptionOccurred` via `AppCorruptionState` singleton, log `ErrorLog.e("history-read", ...)`. Trigger `SettingsMigrationHelper.migrateIfNeeded()` once. This task wires all Phase-3 application-startup orchestration.
+- **Description:** Extend `SanctumApplication.onCreate` (behind `getProcessName() == packageName` guard, after `installCrashHandler()`): inject `WarmupCoordinator` + `ChatRepository` via `@Inject`; call `warmupCoordinator.warmupDefault()`; trigger `SettingsMigrationHelper.migrateIfNeeded()`. Run housekeeping coroutines with error handling: `filesDir/quick/` purge wrapped in `try/catch + ErrorLog.e("attachment-save", ...)` (failure breaks quick-chat incognito guarantee — must not be silent), orphan `.staging-*` cleanup with same error handling, `chatRepository.sweepZombieChats()`. Add AC-F3 observer coroutine: collect `registry.models` for any model becoming `isDownloaded=true` when `AppSettings.default_model_id` is empty → call `appSettings.setDefaultModelId(modelId)`. Wrap `Room.databaseBuilder.build()` in AppModule with corruption handler: on exception, rename `sanctum.db` to `sanctum.db.corrupt_{ts}`, create fresh DB, expose `corruptionOccurred` via `AppCorruptionState` singleton, log `ErrorLog.e("history-read", ...)`.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Files to modify:** `app/src/main/kotlin/app/sanctum/machina/SanctumApplication.kt`, `app/src/main/kotlin/app/sanctum/machina/di/AppModule.kt`
@@ -411,7 +419,7 @@ Technical criteria (complement user-spec acceptance criteria):
 ### Wave 5 (зависит от Wave 4)
 
 #### Task 9: Drawer UI
-- **Description:** Implement `DrawerContent` composable + `DrawerViewModel`: chat list from `chatRepository.observeChats()` sorted by `last_message_at DESC`, each row showing title + model name + relative date. Swipe-left on row → red "Удалить" reveal → confirmation `AlertDialog` (with chat title + message count); on confirm calls `chatRepository.deleteChat()` and pops back if the deleted chat is currently open. Long-press on row → "Переименовать" `AlertDialog` with pre-filled `TextField` (60-char limit; empty input resets to auto-title by clearing `is_manually_titled`). Empty state: "Нет сохранённых чатов." + "Новый чат" button. Pre-navigation check: if tap target chat's `model_id` has no downloaded file → show "Модель недоступна" `AlertDialog` with "Отмена" / "Скачать" (navigates to `model_manager`).
+- **Description:** Implement `DrawerContent` composable + `DrawerViewModel`: chat list from `chatRepository.observeChats()` sorted by `last_message_at DESC`, each row showing title + model name + relative date. Swipe-left on row → red "Удалить" reveal → confirmation `AlertDialog` (with chat title + message count); on confirm calls `chatRepository.deleteChat()` and pops back if the deleted chat is currently open. Long-press on row → "Переименовать" `AlertDialog` with pre-filled `TextField` (60-char limit; empty input resets auto-title by setting `is_manually_titled=false`). Empty state: "Нет сохранённых чатов." + "Новый чат" button. Pre-navigation check: combine chat list with `registry.models` to determine `ModelEntry.isDownloaded` for each chat's `model_id`; if `!isDownloaded` → show "Модель недоступна" `AlertDialog` with "Отмена" / "Скачать" (navigates to `model_manager`) — this uses `ModelEntry.isDownloaded` (file-existence state from registry scan), not `ModelInitStatus` (engine runtime state).
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, test-reviewer
 - **Verify-user:** Open drawer → chat list shows; swipe-delete shows confirmation; long-press shows rename; tapping chat with missing model shows dialog
