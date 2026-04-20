@@ -1,0 +1,99 @@
+{
+  "status": "passed",
+  "summary": "All 5 major gaps from round 1 are resolved. The testing strategy now explicitly states: deleteChat() filesystem cleanup with both assertions, rename-failure rollback path, cancelAndRestart sequencing (cancelled BEFORE new initialize()), double-bubble handover (same emission cycle, no co-existence emission), and AVP step 4 module routing corrected with a note. 8 minor issues from round 1 remain open — none are blocking. No new issues found in the updated text.",
+  "roundOneResolution": {
+    "deleteChat_filesystem": {
+      "resolved": true,
+      "evidence": "Testing Strategy line: 'deleteChat() calls File.deleteRecursively() on filesDir/attachments/{chatId}/ + Room delete (assert both)'"
+    },
+    "renameFailure_rollback": {
+      "resolved": true,
+      "evidence": "Testing Strategy line: 'Room @Transaction succeeds but rename() throws → staging dir cleaned up + Room row deleted'"
+    },
+    "cancelAndRestart_sequencing": {
+      "resolved": true,
+      "evidence": "Testing Strategy line: 'cancelAndRestart while warmup in-flight verifies in-flight Job is cancelled BEFORE new initialize() call starts (not just final state)'"
+    },
+    "doubleBubble_handover": {
+      "resolved": true,
+      "evidence": "Testing Strategy line: '_streamingMessage cleared in the same emission cycle where the persisted ASSISTANT row first appears (verify no emission where both in-memory AND persisted ASSISTANT co-exist)'"
+    },
+    "avp_step4_routing": {
+      "resolved": true,
+      "evidence": "AVP step 4 now reads: 'Note: SettingsMigrationHelperTest lives in :app — covered by step 2.' AVP also now has 11 steps matching user-spec (Privacy manifest check is step 10, assembleDebug is step 11)."
+    }
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy — ChatRepositoryTest",
+      "issue": "Zombie sweep test only covers the positive case (0-message chat with missing dir → deleted). The negative guard from AC-P8 — a chat with 1+ messages and a missing attachment dir must NOT be deleted — has no stated test case. A bug deleting all chats with missing dirs regardless of message count would pass the stated scenario.",
+      "recommendation": "Add a second sweep test case: insert a chat row with 1+ message rows but no filesystem directory; call sweepZombieChats(); assert the chat row is NOT deleted. This mirrors the exact guard condition in AC-P8."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy — SettingsMigrationHelperTest",
+      "issue": "The stated scenarios cover happy path, orphan-key drop, sentinel check, and single updateData call count. The crash-safety invariant is not stated: if updateData throws mid-migration, the sentinel must remain false and per_model_overrides must be unchanged. Without this, a bug that sets the sentinel before data is written escapes testing.",
+      "recommendation": "Add a test: FakeDataStore throws IOException on the first updateData call; assert settings_keys_migrated remains false and per_model_overrides still contains the original keys unmodified. This verifies the all-or-nothing guarantee AC-R8 depends on."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy — AutoTitleGeneratorTest",
+      "issue": "The fallback 'Чат от DD.MM HH:mm' is listed as a test scenario but the spec does not explicitly call out empty-string ('') or whitespace-only (' ') inputs as distinct cases. If the implementation checks for null but not empty or whitespace, the fallback never fires for those inputs.",
+      "recommendation": "Explicitly list test cases for: empty string input (''), whitespace-only input ('   '), and null (if applicable). All three should produce the timestamp fallback title, not a trimmed empty string."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "Section: Testing Strategy — ModelRegistryTest",
+      "issue": "The 'concurrent reads during initialize' scenario is listed without specifying how concurrency is simulated under JUnit4 + hand-rolled fakes. Implementors will likely write a sequential test (call initialize, then read), which does not exercise the race condition described in J5 of code-research.",
+      "recommendation": "Specify the test mechanism: use a CompletableDeferred to suspend initialize mid-flight; read activeModelName during the suspension (assert null); complete the deferred; assert the model name appears. This is achievable with kotlinx-coroutines-test runTest + advanceUntilIdle, no Mockito needed."
+    },
+    {
+      "severity": "minor",
+      "category": "wrong_test_type",
+      "location": "Section: Testing Strategy — SanctumDatabaseTest",
+      "issue": "The scenario 'schema JSON matches @Entity definitions (Room compiler snapshot comparison)' describes a build-time artifact comparison, not a runtime test. Room's schema JSON is exported by KSP at compile time; at connectedAndroidTest time the JSON file already exists on disk. The test as described would only verify file presence (already covered by AVP step 7), not that the running Room instance matches the JSON.",
+      "recommendation": "Replace with a test that opens the in-memory database via Room.inMemoryDatabaseBuilder and queries sqlite_master to assert that tables 'chats' and 'messages' exist with the expected columns. The schema JSON comparison belongs in the AVP (already step 7), not in an instrumented test."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy — ChatDaoTest / MessageDaoTest",
+      "issue": "Neither DAO test lists coverage for the initial empty-list emission: observeByChat(chatId) must emit an empty list immediately on subscription before any messages exist. Missing this means a bug that hangs the Flow until the first insert would pass all stated tests.",
+      "recommendation": "Add a test: subscribe to observeByChat(nonExistentChatId), collect the first emission, assert it is an empty list (not a timeout/hang). Verifiable with turbine or manual Channel collection in a test coroutine scope. Required by AC-E4 semantics."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy — SanctumApplication / AppModule (DB corruption handler)",
+      "issue": "No unit or integration test is stated for the DB corruption handler path (Decision 9 / AC-D5). The rename-on-corruption flow is an architectural risk mitigation but has no test coverage in the strategy.",
+      "recommendation": "Add a unit test for the corruption-handler logic extracted into a testable function: given a simulated exception from the database builder, assert (a) the rename is attempted, (b) corruptionOccurred is set true, (c) ErrorLog.e('history-read', ...) is called. Use a hand-rolled FakeDatabaseBuilder that throws on first call."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: E2E tests — AC-R3 partial-stream state",
+      "issue": "AC-R3 ('process killed mid-stream → USER in Room, ASSISTANT lost, visible on reopen') is listed only as manual verification. It is technically testable as an instrumented test by simulating partial state directly via DAO operations without requiring a real process kill.",
+      "recommendation": "Consider adding an instrumented test in SanctumDatabaseTest: insert a USER message row, do NOT insert the ASSISTANT row (simulating kill mid-stream), reopen the DAO query, assert only the USER message is returned. This does not require killing the process — it tests the data model's correct representation of the partial-stream state."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 3,
+    "litmusTest": {
+      "checked": 14,
+      "passed": 14,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 7,
+      "integration": 3,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

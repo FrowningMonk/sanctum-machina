@@ -1,0 +1,48 @@
+{
+  "status": "pass",
+  "round": 2,
+  "sources": {
+    "user_spec": true,
+    "tech_spec": true,
+    "tasks": false
+  },
+  "requirements_total": 14,
+  "requirements_covered": 14,
+  "requirements_partial": 0,
+  "requirements_missing": 0,
+  "targeted_fixes": {
+    "US-13_health_check": {
+      "status": "resolved",
+      "detail": "Architecture 'How it works' step 5 now explicitly states: 'DefaultModelRegistry constructor already scans local files on startup and sets ModelEntry.isDownloaded correctly.' Task 9 explicitly distinguishes ModelEntry.isDownloaded (file-presence from registry scan) from ModelInitStatus (engine runtime state). The mechanism is fully specified."
+    },
+    "AC_F3_auto_default": {
+      "status": "resolved",
+      "detail": "Task 6 (SanctumApplication rework) now includes the AC-F3 observer coroutine: collect registry.models for isDownloaded=true transitions when default_model_id is empty. Cold start sequence step 4 documents the mechanism. WarmupCoordinatorTest includes the AC-F3 test case."
+    },
+    "US3_AC_E2_same_model_fast_path": {
+      "status": "resolved",
+      "detail": "Architecture 'How it works' now has an explicit 'Same-model fast path (US-3, AC-E2)' subsection confirming instant Send availability when chat.model_id == registry.activeModelName.value."
+    },
+    "privacy_manifest_regression": {
+      "status": "resolved",
+      "detail": "AVP now has 11 steps. Step 10 is the privacy manifest check: 'aapt dump xmltree app-debug.apk AndroidManifest.xml | grep -E allowBackup|dataExtractionRules'. Step 11 is Debug APK assembly. User-spec ordering is preserved."
+    }
+  },
+  "findings": [
+    {
+      "type": "structural_gap",
+      "source": "tech-spec",
+      "requirement": "AC-F3: Auto-set default on first download — ownership split between Task 6 and WarmupCoordinatorTest",
+      "detail": "Task 6 places the AC-F3 observer coroutine in SanctumApplication.onCreate, with SanctumApplication directly calling appSettings.setDefaultModelId(modelId). However, (a) Task 6's @Inject list only declares WarmupCoordinator + ChatRepository — AppSettingsRepository is not listed as an injected dependency of SanctumApplication, so the observer cannot reach setDefaultModelId() without it; (b) WarmupCoordinatorTest contains the test case 'AC-F3 observer sets default_model_id on first-downloaded model when previously empty', which implies the coordinator is responsible. Task 5 (WarmupCoordinator creation) does not mention AC-F3 at all. The ownership is split across two places and the injection chain is incomplete. An implementor reading Task 5 will not build AC-F3 into WarmupCoordinator; an implementor reading Task 6 will not know where to inject AppSettingsRepository. The test will test the wrong class or fail to compile.",
+      "severity": "critical"
+    },
+    {
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "AC-F3: DownloadWorker → registry.models isDownloaded update path not specified",
+      "detail": "Cold start sequence step 4 says ModelEntry.isDownloaded is 'set by DefaultModelRegistry startup file scan + DownloadWorker completion callback.' DownloadWorker appears nowhere in the Architecture components list (What we're building / modifying) and is not marked as a modified component. If DownloadWorker does not currently emit isDownloaded=true into registry.models upon completing a download, the AC-F3 observer in SanctumApplication will never fire during a live session (only the startup scan would update state). User-spec US-8 step 4 requires auto-default to fire immediately after the model finishes downloading in the same session. The tech-spec must either (a) add DownloadWorker to the modified-components list with a note about setting isDownloaded, or (b) specify that AC-F3 only fires on next cold start (which contradicts US-8 step 4).",
+      "severity": "major"
+    }
+  ],
+  "summary": "14/14 requirements covered after round-2 fixes. All four targeted issues are resolved: US-13 health-check mechanism is now specified via DefaultModelRegistry startup scan and ModelEntry.isDownloaded; AC-F3 auto-default observer is now owned by Task 6 with a documented mechanism; US-3/AC-E2 same-model fast path has an explicit Architecture subsection; AVP step 10 now covers aapt dump privacy manifest regression check. Two new findings introduced by the edits: (1) critical structural gap — AC-F3 ownership is split between Task 6 (assigns it to SanctumApplication) and WarmupCoordinatorTest (implies it lives in WarmupCoordinator), and Task 6 does not inject AppSettingsRepository which is required for the observer to call setDefaultModelId(); (2) major underengineering — DownloadWorker is cited as a setter of ModelEntry.isDownloaded but is not in the modified-components list, leaving the live-session download → auto-default path undocumented."
+}
