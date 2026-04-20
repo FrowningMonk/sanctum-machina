@@ -1,0 +1,80 @@
+{
+  "verdict": "APPROVED",
+  "status": "passed",
+  "summary": "Both round-1 majors are genuinely resolved, not papered over. (1) ForeignKeysOnOpenCallback is now internal and explicitly attached in all three @Before blocks, and the new foreignKeysPragmaIsOn test reads PRAGMA foreign_keys directly and asserts it equals 1 — this proves the callback body actually runs (removing the execSQL line would make the test fail). (2) observeAllEmitsOnInsert now uses a live MutableSharedFlow collector launched on Dispatchers.IO with the insert triggering a re-emission consumed via first { it.isNotEmpty() } under a 5s timeout — Room's invalidation tracker must fire for the test to pass, so replacing the @Query Flow with a snapshot would cause a genuine timeout failure. The new round-trip / filter tests (insertAndGetByIdPreservesProjectIdValue, nullableFieldsRoundTrip, observeByChatFiltersByChatId) have specific, unambiguous assertions and close the round-1 minor gaps. Two notes kept as minors: the production wiring of addCallback(ForeignKeysOnOpenCallback) inside SanctumDatabase.create() is not itself exercised (tests attach the callback independently — Option B from round 1 as accepted), and observeAllEmitsOnInsert relies on a 50 ms delay heuristic to let the collector subscribe before the triggering insert. Both are low-risk and documented below. Two original round-1 minors (freshDbOpens tests only db.isOpen; schemaContainsChatsAndMessages duplicates framework behavior) were not addressed but carry no functional risk.",
+  "resolvedVsRemaining": {
+    "resolved": [
+      "Major 1 (foreignKeyEnforcementEnabled false positive) — ForeignKeysOnOpenCallback widened to internal; all three @Before blocks attach it; new foreignKeysPragmaIsOn test directly asserts PRAGMA foreign_keys == 1. Deleting the execSQL line or failing to attach the callback in tests would now fail at least one test.",
+      "Major 2 (observeAllEmitsOnInsert did not test Flow reactivity) — rewritten with a live collector; the second emission can only arrive if Room's invalidation tracker fires on insert. A snapshot-returning query would hang and time out.",
+      "Round-1 minor: ChatEntity.projectId round-trip — insertAndGetByIdPreservesProjectIdValue asserts projectId == 42L.",
+      "Round-1 minor: MessageEntity nullable fields round-trip — nullableFieldsRoundTrip asserts thinkingText / imagePath / audioPath / tokenCount survive insert+read.",
+      "Round-1 minor: WHERE chat_id filter on observeByChat — observeByChatFiltersByChatId inserts into two chats and asserts isolation per chatId."
+    ],
+    "remaining": [
+      "Minor: production SanctumDatabase.create() wires ForeignKeysOnOpenCallback via .addCallback(...), but no test exercises that specific builder path — tests rebuild the DB with inMemoryDatabaseBuilder and attach the callback manually. If someone deleted the .addCallback line from create(), no test would fail. Trivially-correct single line, but worth a deliberate note.",
+      "Minor: observeAllEmitsOnInsert uses delay(50L) to give the inner collector time to subscribe before the triggering insert. Low flakiness risk on typical emulators but not zero on slow CI hardware.",
+      "Minor (carried from round 1, not addressed): freshDbOpens asserts only db.isOpen — covered transitively by every other test's @Before.",
+      "Minor (carried from round 1, not addressed): schemaContainsChatsAndMessages verifies a framework invariant already implicit in every DAO test.",
+      "Minor (carried from round 1, not addressed): nullableFieldsRoundTrip does not also assert the default-null case for a MessageEntity without those fields (the existing insertAndGetByChatId covers text but does not explicitly assert thinkingText/imagePath/audioPath/tokenCount are null when unset)."
+    ]
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/main/kotlin/app/sanctum/machina/data/SanctumDatabase.kt:29-36 (production create()) — not exercised by any test",
+      "issue": "The three test @Before blocks construct the DB via Room.inMemoryDatabaseBuilder(...) and independently attach SanctumDatabase.ForeignKeysOnOpenCallback. This proves the callback *does* enable PRAGMA foreign_keys (good — verifies the callback's body). It does NOT prove the production SanctumDatabase.create() function wires the callback — deleting '.addCallback(ForeignKeysOnOpenCallback)' from create() would leave every test green. Accepted in round 1 as Option B, but noting it explicitly as a residual coverage gap on a one-line-but-load-bearing call site.",
+      "litmusTestFailed": false,
+      "recommendation": "Optional hardening — add one file-backed test that calls SanctumDatabase.create(context) directly (not inMemoryDatabaseBuilder), reads PRAGMA foreign_keys on db.openHelper.readableDatabase, and asserts == 1. Use context.deleteDatabase(SanctumDatabase.DATABASE_NAME) in @Before and @After. This locks in AC-R6 end-to-end against the exact production builder chain. Low priority — the existing tests are enough to block any real regression in the callback's behavior; this only guards against a specific two-character edit that would show up in code review anyway."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/androidTest/kotlin/app/sanctum/machina/data/dao/ChatDaoTest.kt:126-150",
+      "issue": "observeAllEmitsOnInsert uses delay(50L) between the async { emissions.first { it.isNotEmpty() } } subscription and the triggering dao.insert(). With replay = 0 on MutableSharedFlow, an emission published before the inner collector has subscribed would be dropped, so the test leans on 50 ms being enough on every CI device. On typical emulators this is fine, but it is a timing heuristic rather than a synchronization barrier. Real flakiness risk is low (Room delivers invalidation asynchronously, so in practice the inner collector is almost always ready first), but the test is not strictly deterministic.",
+      "litmusTestFailed": false,
+      "recommendation": "Either (a) switch to Turbine (dao.observeAll().test { awaitItem(); dao.insert(...); val after = awaitItem(); assertEquals(1, after.size); cancelAndIgnoreRemainingEvents() }) which handles subscription synchronously, or (b) raise the SharedFlow's replay to 1 so a missed emission is still available to late subscribers, or (c) collect directly into a CompletableDeferred / Channel with capacity and await it — e.g. val deferred = CompletableDeferred<List<ChatEntity>>(); launch { dao.observeAll().collect { if (it.isNotEmpty()) deferred.complete(it) } }; yield(); dao.insert(...); val updated = withTimeout(5_000) { deferred.await() }. Any of these removes the 50 ms guess. Not blocking — the current test should pass reliably on the target Android emulator; noted so the next person touching it does not copy the delay pattern."
+    },
+    {
+      "severity": "minor",
+      "category": "redundant_testing",
+      "location": "app/src/androidTest/kotlin/app/sanctum/machina/data/SanctumDatabaseTest.kt:36-39 and :74-79",
+      "issue": "freshDbOpens (asserts only db.isOpen) and schemaContainsChatsAndMessages (asserts Room created the tables listed in @Database(entities = ...)) were flagged as redundant in round 1 and were not removed or strengthened in fa3b7e1. Both failure modes are caught transitively by every DAO test in the sibling files — if the DB did not open or the tables were missing, every other test's @Before would also fail. Not harmful, just noise.",
+      "litmusTestFailed": false,
+      "recommendation": "Either delete both, or promote freshDbOpens to a smoke test that also asserts the DAO accessors return non-null: assertNotNull(db.chatDao()); assertNotNull(db.messageDao()) — that guards against forgetting to declare an abstract accessor when a future entity is added. Keep noProjectFilesTable and noProjectsTable unchanged; they are genuine AC-R7 guards on schema absence. Low priority — deferring is acceptable if the team wants to minimize diff churn on this round."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/androidTest/kotlin/app/sanctum/machina/data/dao/MessageDaoTest.kt:102-123 (nullableFieldsRoundTrip)",
+      "issue": "nullableFieldsRoundTrip covers the positive case (non-null strings + tokenCount round-trip) but not the explicit default-null case for MessageEntity. Round 1 recommended adding one-line assertions to insertAndGetByChatId that msg.thinkingText == null && msg.imagePath == null && msg.audioPath == null && msg.tokenCount == null when those fields are unset. That was not added. Low value — Room would reject insertion if nullability were wrong — but it is a cheap assertion against accidental Kotlin default-value drift.",
+      "litmusTestFailed": false,
+      "recommendation": "In MessageDaoTest.insertAndGetByChatId, after list[0].role etc., add:\n  assertNull(list[0].thinkingText)\n  assertNull(list[0].imagePath)\n  assertNull(list[0].audioPath)\n  assertNull(list[0].tokenCount)\nFour lines; pins the Kotlin default-value contract matching Decision 2."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "litmusTest": {
+      "checked": 14,
+      "passed": 14,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 0,
+      "integration": 14,
+      "e2e": 0,
+      "assessment": "healthy"
+    },
+    "tddAnchorCoverage": {
+      "expected": 8,
+      "present": 8,
+      "highQuality": 8,
+      "weak": 0
+    }
+  },
+  "taskRequired": {
+    "needed": false,
+    "reason": "Both round-1 majors are resolved with direct, behavior-verifying assertions (foreignKeysPragmaIsOn reads the PRAGMA; observeAllEmitsOnInsert uses a live collector that can only complete if Room's invalidation tracker fires). All round-1 minor recommendations that protect against bug classes were also addressed (projectId round-trip, nullable round-trip, chat_id filter). Remaining findings are all minor: three cosmetic carry-overs from round 1 (freshDbOpens, schemaContainsChatsAndMessages, missing assertNull in insertAndGetByChatId) and two optional hardening suggestions (exercise production create() end-to-end; replace delay(50L) with Turbine or a Channel). None of these block Task 1 from advancing."
+  }
+}
