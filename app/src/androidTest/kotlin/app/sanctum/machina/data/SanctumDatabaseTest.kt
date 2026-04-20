@@ -34,11 +34,6 @@ class SanctumDatabaseTest {
     }
 
     @Test
-    fun freshDbOpens() {
-        assertTrue(db.isOpen)
-    }
-
-    @Test
     fun foreignKeysPragmaIsOn() {
         db.openHelper.readableDatabase.query("PRAGMA foreign_keys").use { cursor ->
             assertTrue("PRAGMA foreign_keys cursor empty", cursor.moveToFirst())

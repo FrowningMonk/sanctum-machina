@@ -81,4 +81,4 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `app/schemas/app.sanctum.machina.data.SanctumDatabase/1.json` → сгенерирован, поля/индексы/FK соответствуют tech-spec Data Models
 - `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL
 - `./gradlew :app:assembleDebugAndroidTest` → BUILD SUCCESSFUL (все тесты компилируются)
-- `./gradlew :app:connectedAndroidTest` → **отложено**: устройство Honor 200 не было подключено во время выполнения задачи. Проверка будет выполнена пользователем вручную и в Task 16 (Pre-deploy QA).
+- `./gradlew :app:connectedAndroidTest` → **BUILD SUCCESSFUL** на Honor 200 (ELI-NX9, Android 16): 18/18 instrumented-тестов прошли (ChatDaoTest 6, MessageDaoTest 7, SanctumDatabaseTest 5). Промежуточная итерация (19 тестов) отловила, что `RoomDatabase.isOpen` ложный до первого запроса — тест `freshDbOpens` (который оба ревьюера отмечали как low-value) удалён, остальные тесты покрывают открытие БД содержательно.
