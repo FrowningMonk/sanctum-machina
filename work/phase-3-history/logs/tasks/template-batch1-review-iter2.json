@@ -1,0 +1,98 @@
+{
+  "validator": "task-validator",
+  "batch": [0, 1, 2, 3, 4],
+  "iteration": 2,
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 0,
+      "section": "TDD Anchor",
+      "issue": "Not fixed from round 1. TDD Anchor still contains prose narrative and compile commands (./gradlew :app:compileDebugKotlin) instead of the required `tests/path::test_name` — description format. For a design-system task with no unit-testable logic, the section should be removed entirely rather than left as a misleading compile-gate stub.",
+      "fix": "Remove TDD Anchor section entirely. This is a visual design task with no unit tests. The compile gate belongs in Verification Steps (Automated subsection), which already covers it correctly."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 0,
+      "section": "Context Files",
+      "issue": "Not fixed from round 1. gradle/libs.versions.toml is still missing from Context Files. What to do step 10 explicitly modifies both gradle/libs.versions.toml and app/build.gradle.kts. Only app/build.gradle.kts is listed under Modify.",
+      "fix": "Add `- [gradle/libs.versions.toml](../../../gradle/libs.versions.toml)` to the Modify subsection of Context Files."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 1,
+      "section": "Context Files",
+      "issue": "Not fixed from round 1. PK paths still use wrong relative depth: `../../.claude/skills/project-knowledge/references/...`. From work/phase-3-history/tasks/, the correct depth is ../../../.claude/... (three levels up: tasks/ → phase-3-history/ → work/ → repo root). Same bug was fixed in Tasks 3 and 4 but not in Task 1.",
+      "fix": "Change lines 92-94: replace `../../.claude/` with `../../../.claude/` for all three PK entries (project.md, architecture.md, patterns.md)."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 2,
+      "section": "Required Skills",
+      "issue": "Not fixed from round 1. Required Skills still uses absolute path `C:/Users/Vladimir/.claude/skills/code-writing/SKILL.md` instead of the portable `~/.claude/skills/code-writing/SKILL.md` used in all other tasks.",
+      "fix": "Replace `C:/Users/Vladimir/.claude/skills/code-writing/SKILL.md` with `~/.claude/skills/code-writing/SKILL.md`."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 2,
+      "section": "Context Files",
+      "issue": "Not fixed from round 1. Context Files still use absolute paths for all PK entries (`C:/AI-WORK/PhoneWrap/.claude/skills/...`) and all code files to modify (`C:/AI-WORK/PhoneWrap/core-settings/...`, `C:/AI-WORK/PhoneWrap/core-runtime/...`, etc.). All other tasks use relative paths.",
+      "fix": "Replace absolute PK paths with `../../../.claude/skills/project-knowledge/references/...`. Replace absolute code file paths with relative paths, e.g. `[app_settings.proto](../../../core-settings/src/main/proto/app_settings.proto)`."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 2,
+      "section": "Post-completion",
+      "issue": "Not fixed from round 1. Post-completion section is still written in English ('Write report to decisions.md', 'If deviated from spec', 'Update user-spec/tech-spec') while all other tasks (0, 3, 4) use Russian.",
+      "fix": "Translate to Russian: 'Записать краткий отчёт в decisions.md по шаблону', 'Если отклонились от спека — описать отклонение и причину', 'Обновить user-spec/tech-spec если что-то изменилось'."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 4,
+      "section": "Context Files",
+      "issue": "Not fixed from round 1. 'Новые файлы (создать в этой задаче)' block still lists 5 raw file paths as bullets in the Context Files section. Files-to-create cannot be linked (they don't exist yet), so this block should be moved to the Details section where raw paths are acceptable.",
+      "fix": "Remove the 'Новые файлы' block from Context Files and relocate it to the Details → Files subsection, which already describes what to create."
+    }
+  ],
+  "fixed_since_round1": [
+    {
+      "task": 1,
+      "section": "Context Files",
+      "was": "user-spec.md missing (critical)",
+      "now": "user-spec.md present at line 87"
+    },
+    {
+      "task": 2,
+      "section": "Context Files",
+      "was": "user-spec.md missing (critical)",
+      "now": "user-spec.md present at line 82"
+    },
+    {
+      "task": 3,
+      "section": "Context Files",
+      "was": "PK paths used wrong depth ../../.claude/ (critical)",
+      "now": "PK paths correctly use ../../../.claude/ at lines 75-77"
+    },
+    {
+      "task": 4,
+      "section": "Context Files",
+      "was": "PK paths used wrong depth ../../.claude/ (critical) + code file entries not markdown links (minor)",
+      "now": "PK paths correctly use ../../../.claude/ at lines 106-108; code files (ChatDao.kt, MessageDao.kt, ChatEntity.kt, MessageEntity.kt) are now proper markdown links at lines 111-114"
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 7,
+    "critical": 0,
+    "major": 0,
+    "minor": 7,
+    "fixed_from_round1": 4
+  }
+}

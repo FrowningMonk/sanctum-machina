@@ -1,0 +1,104 @@
+{
+  "validator": "reality-checker",
+  "batch": [0, 1, 2, 3, 4, 5],
+  "iteration": 2,
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 4,
+      "issue": "Task 4 Details (line 161) explicitly states: 'The @Transaction method DAO for commitDraftChat must be defined in ChatDao (Task 1), accepting both ChatEntity and MessageEntity, performing both INSERTs in one transaction, returning Long (chatId).' However, Task 1's ChatDao definition (steps 5-6) only specifies basic CRUD: insert(chat), update(chat), deleteById, getById, observeAll. No @Transaction combined-insert method for chat+message is defined in Task 1. Task 4 expects this method to exist as a dependency but it is not specified as a deliverable of Task 1. The code will not compile: DefaultChatRepository.commitDraftChat calls a DAO method that was never created.",
+      "fix": "Add a @Transaction method to Task 1's ChatDao step 5: 'suspend fun insertChatWithMessage(chat: ChatEntity, message: MessageEntity): Long' — annotated @Transaction, inserts both entities atomically, returns the chatId. Document this method in both Task 1 (as a deliverable) and Task 4 (as a dependency)."
+    },
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 2,
+      "issue": "Task 2 Details (line 143) states: 'Implement downloadedModels(): filter registry?.models?.value by downloadStatus.status == ModelDownloadStatusType.SUCCEEDED, map to it.model.name to it.model.sizeInBytes.' The return type is List<Pair<String, Long>> and DeviceInfoCollector.buildHeader() outputs each entry as the model id (first pair element). Using model.name instead of model.modelId means the diagnostic header shows the human-readable display name, not the stable HF repo id. AC-D1 expects 'active_model: gemma-4-E4B-it-litert-lm' (stable HF id), not the name. After Task 2 adds Model.modelId, the correct implementation is to map to it.model.modelId.",
+      "fix": "Change Task 2 Details line 143 to map to 'it.model.modelId to it.model.sizeInBytes' instead of 'it.model.name to it.model.sizeInBytes'. The first pair element is the id shown in the diagnostic export."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 2,
+      "issue": "Task 2 Details section for SettingsMigrationHelper.kt (lines 146-154) still contains a prescriptive 6-step algorithm with explicit numbered steps describing exact logic flow: check sentinel, read map, build name→modelId lookup, iterate/remap/log, single updateData call, markSettingsMigrated. This is full implementation prescription, not a hint pointing to patterns and approaches. This finding was flagged as major in iteration 1 and was NOT fixed.",
+      "fix": "Replace the 6-step numbered algorithm with a high-level description referencing Decision 8 and pointing to DefaultAppSettingsRepository.updateData as the pattern. Remove numbered sub-steps."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 2,
+      "issue": "Task 2 Details section for DeviceInfoCollector.kt (lines 138-145) still contains a 6-step prescriptive implementation guide for AndroidDeviceInfoProvider changes, including exact constructor signatures, specific import statements, and numbered method implementations. Although the activeModelId() return value was corrected (now returns .model?.modelId), the overall structure remains implementation code masquerading as hints. This finding was flagged as major in iteration 1 and was only partially fixed.",
+      "fix": "Reduce to an approach-level hint: 'Add nullable ModelRegistry to primary @Inject constructor. Secondary constructor for crash path remains unchanged. activeModelId() reads from registry?.models?.value — find first entry with ModelInitStatus.Ready, return its model.modelId. downloadedModels() filters by ModelDownloadStatusType.SUCCEEDED, returns List<Pair<modelId, sizeInBytes>>. See Decision 10.'"
+    },
+    {
+      "severity": "minor",
+      "category": "missing_file",
+      "task": 0,
+      "issue": "Task 0 lists app/src/main/kotlin/app/sanctum/machina/ui/theme/Color.kt as a file to modify and Details says 'Файл существует в пакете ui/theme'. Glob search of the actual codebase confirms there is NO Color.kt in that directory — only Theme.kt exists. The task instruction 'modify Color.kt' is incorrect; the step to 'delete Gallery stubs (Purple80, Purple40)' references content that doesn't exist. This finding was flagged as minor in iteration 1 and was NOT fixed.",
+      "fix": "Change the instruction from 'modify Color.kt' to 'create Color.kt'. Remove the step about deleting Gallery stubs since the file does not exist. Update Details section to say 'Color.kt does not exist yet — create it'."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 0,
+      "issue": "Task 0 Details states 'Версия через BOM — явный version.ref не нужен при использовании platform(libs.androidx.compose.bom)' for the androidx.compose.ui:ui-text-google-fonts library. The Compose BOM (composeBom = \"2026.03.00\") does not guarantee this artifact is included. As of Compose BOM 2025.x, ui-text-google-fonts is not always part of the BOM. If it is absent from the BOM, the build will fail with a version resolution error. This finding was flagged as minor in iteration 1 and was NOT fixed.",
+      "fix": "Add a verification note: check the BOM mapping at developer.android.com/jetpack/compose/bom/bom-mapping for composeBom 2026.03.00. If ui-text-google-fonts is not listed, add an explicit version.ref (e.g., 'googleFonts = \"1.8.x\"') to libs.versions.toml."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "Task 3 Details states 'Current state: interface with 8 members'. The actual ModelRegistry interface has 9 members: models, refreshAllowlist, download, cancelDownload, delete, initialize, cleanup, resetConversation, getModel. This is a minor documentation inaccuracy that could cause confusion when an implementer counts the members expecting 8.",
+      "fix": "Update Task 3 Details to state 'interface with 9 members' and list them correctly."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 5,
+      "issue": "Task 5 header declares 'wave: 3' but the tech-spec Implementation Tasks table lists Task 5 (WarmupCoordinator + AppModule) under Wave 2. The task's depends_on: [1, 2, 3, 4] is correct — Task 5 depends on Task 4 (ChatRepository), which means it logically belongs to a later wave than Task 4. This is an internal tech-spec vs task-file inconsistency in wave numbering; the task's wave: 3 appears correct given the dependency on Task 4, but the tech-spec should be updated to reflect this.",
+      "fix": "Either update the tech-spec to show Task 5 in Wave 3 (not Wave 2), or verify that the wave numbering in task files is authoritative. No action needed on the task file itself since the depends_on is correct."
+    }
+  ],
+  "fixes_verified": [
+    {
+      "finding_from_iter1": "critical — activeModelId() returned model.name instead of model.modelId",
+      "status": "fixed",
+      "note": "Task 2 step 8 and Details now correctly return registry?.models?.value?.firstOrNull { it.initStatus === ModelInitStatus.Ready }?.model?.modelId"
+    },
+    {
+      "finding_from_iter1": "critical — ModelEntry.isDownloaded hallucination in Task 2 implementation hints",
+      "status": "fixed",
+      "note": "Task 2 no longer references ModelEntry.isDownloaded. Task 5 Details explicitly clarifies: 'ModelEntry does not have an isDownloaded field; the download state is represented by entry.downloadStatus: ModelDownloadStatus'. Note: tech-spec still uses isDownloaded terminology in Architecture section (lines 59, 60, 81) — this is a tech-spec documentation debt, not a task file issue"
+    },
+    {
+      "finding_from_iter1": "critical — KSP 2.3.6 incompatibility claim",
+      "status": "downgraded to non-issue",
+      "note": "ksp = 2.3.6 is already in libs.versions.toml and currently used for Hilt compilation in the existing build. The project compiles with this version. Task 1 reuses the existing entry. No new issue."
+    },
+    {
+      "finding_from_iter1": "major — androidx-test-runner version mismatch (reusing androidxTestCore version)",
+      "status": "fixed",
+      "note": "Task 1 Details now says 'add androidx-test-runner with the version resolved from the AndroidX test BOM (do not reuse an unrelated version ref)'. The prescriptive incorrect version suggestion was removed."
+    },
+    {
+      "finding_from_iter1": "major — Task 1 SanctumDatabase.kt hint contained full RoomDatabase.Callback code block",
+      "status": "fixed",
+      "note": "Details section now says 'See the Room DAOs pattern in patterns.md for the standard addCallback approach'. Code block removed."
+    },
+    {
+      "finding_from_iter1": "major — SettingsMigrationHelper DataStore injection ambiguity",
+      "status": "fixed",
+      "note": "Task 2 Details now explicitly prescribes direct DataStore<AppSettings> injection and rules out the alternative atomicReplacePerModelOverrides approach."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 6,
+    "claims_verified": 68,
+    "issues_found": 8,
+    "issues_fixed_from_iter1": 6,
+    "issues_remaining_from_iter1": 3,
+    "new_issues_found": 2
+  }
+}
