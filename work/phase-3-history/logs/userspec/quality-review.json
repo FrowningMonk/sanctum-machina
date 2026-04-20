@@ -1,0 +1,79 @@
+{
+  "status": "approved",
+  "checks": {
+    "completeness": "pass",
+    "edge_cases": "pass",
+    "acceptance_criteria": "pass",
+    "contradictions": "pass",
+    "template_compliance": "pass",
+    "size_check": "warning"
+  },
+  "findings": [
+    {
+      "check": "contradictions",
+      "severity": "major",
+      "issue": "US-4 step 4 describes the cross-model reinit state as 'spinner + text «Модель перезагружается…»' in TopAppBar. US-2-bis and AC-U6 describe any 'warmup идёт' state as showing a «Загрузить» button instead. Cross-model reinit is explicitly a 'warmup идёт' case, so both descriptions claim to govern the same UI state with contradictory outputs. An implementer cannot know whether the in-progress reinit after the user pressed «Переключить» shows a spinner+text (US-4) or a «Загрузить» clickable button (AC-U6).",
+      "location": "US-4 шаг 4 vs US-2-bis vs AC-U6",
+      "fix": "Clarify that US-2-bis / AC-U6 «Загрузить» state applies only to unexpected/failed warmup (engine not ready without a user-initiated reinit in progress). User-initiated reinit (cross-model dialog «Переключить» path — US-4) keeps the spinner + «Модель перезагружается…» label. Add a distinguishing phrase to AC-U6: 'Загрузить' applies when движок не готов по причине failure (warmup упал / init упал / не запускался); в случае user-initiated reinit (US-4) — spinner + текст «Модель перезагружается…»."
+    },
+    {
+      "check": "acceptance_criteria",
+      "severity": "minor",
+      "issue": "AC-E7 and AC-U7 are identical in content: both specify that the draft chat TopAppBar shows a model-picker that becomes read-only after first Send. This is full duplication across two criteria.",
+      "location": "AC-E7 (Движок и warmup) vs AC-U7 (UX affordances)",
+      "fix": "Remove one of the two. AC-U7 is more naturally placed in UX affordances; AC-E7 can be deleted or reduced to a reference ('see AC-U7'). Alternatively keep both but differentiate: AC-E7 focuses on the engine-lifecycle aspect (model switch triggers reinit), AC-U7 on the visual affordance (tappable vs. read-only label)."
+    },
+    {
+      "check": "completeness",
+      "severity": "minor",
+      "issue": "Rotation during an active stream (ViewModel survives, StateFlow unaffected, Room observe unchanged) is explicitly confirmed as an edge case in interview.yml but is absent from the spec — not in 'Как должно работать', acceptance criteria, or 'Пользователь проверяет'. This was a minor finding in round 1 and remains unaddressed.",
+      "location": "Раздел 'Как должно работать' / Критерии приёмки — rotation edge case отсутствует",
+      "fix": "Add one sentence to 'Ограничения' or a manual smoke step in 'Пользователь проверяет': rotate device mid-stream → streaming continues, message list intact. Or add AC covering ViewModel survival on rotation."
+    },
+    {
+      "check": "acceptance_criteria",
+      "severity": "minor",
+      "issue": "Step 8 in 'Агент проверяет' grep command lists only the 6 new Phase 3 ErrorLog components but omits 'settings-io'. AC-D4 text correctly explains that 'settings-io' is an existing component (not new). The grep omission is consistent with the intent but could mislead a reviewer expecting the grep to validate the full whitelist state required by AC-R8.",
+      "location": "Как проверить — Агент проверяет — шаг 8",
+      "fix": "Either add 'settings-io' to the grep in step 8 with a comment 'existing — verify still present', or add a note to step 8 explaining that 'settings-io' pre-exists and is not validated here. Minor documentation gap, not a functional defect."
+    }
+  ],
+  "interview_coverage": {
+    "covered": [
+      "quick chat (ephemeral, session-scoped, US-1, AC-P2)",
+      "persistent chat without project (chats.project_id nullable, AC-R4)",
+      "single-model-in-memory invariant (Ограничения, Риски)",
+      "drawer wireframe / ModalNavigationDrawer pattern (Как должно работать)",
+      "warmup in SanctumApplication.onCreate after CrashHandler (AC-E1, Ограничения)",
+      "engine lifecycle: no cleanup on onCleared (AC-E6, Риски)",
+      "cross-model dialog before navigation (US-4, AC-E3)",
+      "Room write pattern: USER on Send, ASSISTANT on done=true (AC-R1, AC-R2, Риски)",
+      "auto-title 20 chars (AC-U2)",
+      "delete chat: swipe-left + confirmation + CASCADE (US-7, AC-U3, AC-A2)",
+      "rename chat: long-press + dialog + 60-char limit (US-6, AC-U1)",
+      "empty states: no model / no chats (US-8, AC-F2)",
+      "error logging wrap around model initialize: try/catch + ErrorLog.e('model', ...) (US-9, AC-D2, AC-D3)",
+      "keyboard Send UX fix: imePadding (US-11, AC-U4)",
+      "DeviceInfoCollector real data wiring (US-10, AC-D1)",
+      "attachment atomic save: all-or-nothing on IOException / disk full (AC-A4, AC-A6)",
+      "Room DB corruption recovery: rename + fresh DB + one-time banner (US-14, AC-D5)",
+      "delete while streaming: stopResponse + CASCADE + popBackStack (US-7 step 4)",
+      "process kill mid-stream: USER persists, ASSISTANT lost (AC-R3)",
+      "PerModelSettings DataStore key migration Model.name → Model.modelId (AC-R8, Риски)",
+      "project_files table NOT in v1 schema (AC-R7, Ограничения, Технические решения)",
+      "Model Manager 'Загрузить' opens quick chat (US-12, AC-F4)",
+      "draft chat state: no Room row until first Send (AC-P6)",
+      "model picker in draft chat: active before first Send, read-only after (AC-E7/AC-U7, US-2)",
+      "ErrorLog meta-rule: all Phase 3 failure paths must call ErrorLog.e (AC-D4)",
+      "Room schema JSON committed to git (AC-R5)",
+      "instrumented DAO tests on device (Тестирование)",
+      "no E2E / Compose UI tests (Тестирование)",
+      "Phase 2.5 integration constraints: CrashHandler first, process-name guard (AC-E1, Ограничения)",
+      "foreground service explicitly rejected (Ограничения, Технические решения)",
+      "Q16: model file missing externally — dialog flow (US-13, AC-M1, AC-M2)",
+      "Q25: TopAppBar load/recovery path — recovery-load button when engine not ready (US-2-bis, AC-U6)"
+    ],
+    "missing": []
+  },
+  "summary": "Все три критических блокера раунда 1 устранены: Q16 (model file missing) закрыт US-13 + AC-M1/M2; Q25 (TopAppBar load path) закрыт US-2-bis + AC-U6/U7; AC-G4 снабжён конкретным тестовым промптом, порогом 500 ms и методом верификации. Новых критических проблем нет. Одно major-замечание: US-4 и AC-U6 противоречат друг другу в описании TopAppBar при активном reinit-е — нужно разграничить user-initiated reinit (spinner + текст) от failure-recovery (кнопка «Загрузить»). Три minor: дублирование AC-E7/AC-U7, отсутствие покрытия rotation edge case, неполный grep в шаге 8 для settings-io. Спек пригоден для работы — major-замечание не блокирует разработку при совместном понимании намерения."
+}

@@ -1,0 +1,43 @@
+{
+  "status": "approved",
+  "round": 2,
+  "findings": [
+    {
+      "category": "underengineering",
+      "severity": "major",
+      "issue": "Staging→rename pattern (AC-A6, US-2 step 4) leaves a zombie-chat-row gap on hard crash. Sequence is (a) write to staging, (b) Room INSERT chats, (c) rename staging → {chatId}/, (d) Room INSERT messages, (e) popUpTo nav. Rollback in step 5 covers exceptions. Hard kill (power-off, LMK, SIGKILL) between (b) and (c) leaves chats row in Room pointing to a chatId whose attachments/{chatId}/ directory does not exist, and with zero messages. On next boot this row appears in drawer with auto-title unset (no first message to derive from), no messages, and tapping it opens an empty persistent chat whose attachments path is empty. AC-A5 handles missing-attachment rendering at message level but does not sweep zombie chat rows. Orphan staging-dir cleanup in onCreate is specified, but orphan chat-row cleanup is not.",
+      "why_matters": "Hard kills are rare but non-zero, especially on low-RAM devices (Honor 200 Pro / realme RMX3085 target) during LLM inference when RAM pressure peaks. One zombie row per lifetime of install is cosmetic; accumulation over months with users who power-off aggressively becomes a real UX paper-cut. Also pollutes the drawer sorted by last_message_at — zombie row floats to top as 'most recent'.",
+      "fix": "Add onCreate sweep: query chats where message_count == 0 AND created_at > some-threshold (or: where no corresponding attachments/{chatId}/ dir exists AND message_count == 0), DELETE them. Acceptance: 'AC-P8. Zombie chat rows (INSERT'ed but never got a message due to hard kill between Room INSERT and rename) очищаются в SanctumApplication.onCreate вместе с orphan .staging-* директориями.' Alternatively reorder steps: (a) write to staging, (b) Room transaction INSERTs BOTH chat and messages together, (c) rename staging → final — then Room's own transaction atomicity covers the gap, and rename-failure rolls back the transaction in (b) via explicit delete. This inverts the current order but closes the window. Either is fine; spec should pick one."
+    },
+    {
+      "category": "underengineering",
+      "severity": "major",
+      "issue": "TopAppBar model-label state machine has an unresolved three-way conflict. AC-U6 (recovery-load): engine-not-ready → «Загрузить» button. AC-U7 (draft): draft chat → model-picker dropdown. US-2-bis: draft + engine-not-ready is an extremely common state on cold start (user opens drawer → Новый чат while default warmup still in flight). Which affordance wins? Both are valid interpretations of the spec as written. If model-picker wins, user cannot manually retry warmup from draft — has to commit to a model first. If «Загрузить» wins, user cannot pick a different model while waiting.",
+      "why_matters": "This exact state (draft + warmup-not-ready) is the first-time UX on every cold start where user goes Новый чат before warmup completes — a common path given the spec's own US-5 pitch (drawer-first is ≤ warmup time). Leaving this under-specified forces tech-spec to guess and QA to discover the UX ambiguity on Honor 200.",
+      "fix": "Resolve explicitly, e.g.: 'AC-U8. В draft-state: если engine не готов → label остаётся model-picker-ом (тап открывает dropdown), но dropdown-header содержит строку «Загрузить {modelName}» с индикатором прогресса рядом. Выбор той же модели из picker = жест Загрузить. Выбор другой модели = cross-model switch с cancel running warmup per Риск.' Or conversely: «Загрузить» wins, model-picker appears только когда engine ready. Pick one."
+    },
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "US-13 dialog-before-navigation is correct treatment, but drawer does not visually forewarn which chats have missing models. Every tap on affected chat triggers the dialog cold. User with 5 chats on a deleted model hits 5 separate dialogs as they try each.",
+      "why_matters": "Not a blocker — the dialog is idempotent and informative — but an ergonomics hit. A strike-through or grey-out + small 'missing' badge would let users see state at a glance.",
+      "fix": "Add to US-13 or drawer spec: 'Строки чатов с model_id, отсутствующим в downloaded-models, отображаются с визуальным признаком (greyed text + small strike or «недоступна» subtitle). Тап всё равно показывает диалог AC-M1.' Deferrable to Phase 5 if accepted as UX debt, but then should be in Ограничения."
+    },
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "US-2 step 5 rollback semantics leave VM-state retention implicit. After rollback of a partial Send (staging written, Room INSERT failed OR staging rename failed), spec says 'Пользователь остаётся на chat/draft с вложениями в _attachments (можно попробовать убрать их и отправить снова)'. This requires VM to NOT clear _attachments on failure AND draft route composition to survive. Since the Room INSERT may have transiently succeeded and been rolled back, navController may have already navigated-away-and-back is unclear.",
+      "why_matters": "Retry-after-rollback is a stated requirement. If VM clears _attachments on failure as part of default send-flow cleanup, retry has nothing to send. Either VM explicitly preserves _attachments on rollback, or the 'retry' promise breaks silently.",
+      "fix": "Add one-liner to US-2 step 5: '_attachments в VM не очищается при rollback — только при успешном завершении полной последовательности (а)–(д).' Or add AC-A7: 'Retry after partial-write failure: _attachments list в VM preserved; повторный Send запускает последовательность заново с новым staging-uuid.'"
+    },
+    {
+      "category": "sizing",
+      "severity": "minor",
+      "issue": "Size declared L, scope is XL by any conventional yardstick (Room integration + engine lifecycle refactor + nav-graph redesign + attachment I/O subsystem + DataStore migration + DB-corruption recovery + 30 ACs across 8 categories). Orchestrator's rationale for not splitting ('persistence + warmup + nav are one organic feature') is defensible — partial deliveries would each regress UX or fail to deliver the SC-6 latency win — but the declared L creates a downstream expectation mismatch for tech-spec decomposition and QA scheduling.",
+      "why_matters": "Not a quality issue with the spec itself, but L sized feature typically maps to ~10–15 atomic tasks, while this spec's scope implies ~20–25. Downstream skills that branch on size (task-decomposition, pre-deploy-qa breadth) may under-allocate.",
+      "fix": "Accept as documented trade-off — but note in user-spec frontmatter or a one-liner in Ограничения: 'Size: L по составу (одна организационная фича), по объёму ближе к XL — 30 AC, 6 подсистем; tech-spec ожидаемо даст 20+ атомарных задач.' Alternatively bump to XL with no scope change; label hygiene only."
+    }
+  ],
+  "worst_category": "underengineering",
+  "summary": "Round-1 fixes resolve both critical blockers and 5 of 6 majors. Multi-attachment staging pattern is mostly airtight for soft-failure scenarios but leaves a zombie-chat-row window on hard kill between Room INSERT and rename (major, easy fix). TopAppBar label state machine has an unresolved conflict between AC-U6 (recovery-load) and AC-U7 (model-picker in draft) when both apply (common on cold start — major, needs one-line decision). Three minor findings (drawer missing-model indicator, VM-state preservation on rollback, L-vs-XL labelling). No new feasibility concerns. activeModelName accessor correctly scoped as Phase 3 deliverable. Streaming handover, warmup-vs-cross-model cancel, DataStore atomic migration, and arch/patterns.md updates all adequately addressed. Approvable for tech-spec descent; the two majors can be resolved in tech-spec with no user-spec churn required, but should be explicitly decided before decomposition."
+}
