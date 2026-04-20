@@ -1,0 +1,95 @@
+{
+  "validator": "reality-checker",
+  "batch": [0, 1, 2],
+  "iteration": 1,
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 2,
+      "issue": "Task 2 (step 8) references `ModelEntry.isDownloaded` field in the description of DeviceInfoCollector's `downloadedModels()`. That field does not exist on `ModelEntry`. The actual struct is `ModelEntry(model, downloadStatus: ModelDownloadStatus, initStatus: ModelInitStatus)`. To check if a model is downloaded, the correct pattern is `entry.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED`. The hint code `registry?.models?.value?.firstOrNull { it.initStatus === ModelInitStatus.Ready }?.model?.name` is correct for `activeModelId()`, but `downloadedModels()` hint says 'filter by `downloadStatus.status == ModelDownloadStatusType.SUCCEEDED`' which is fine — but an earlier paragraph says 'determines `ModelEntry.isDownloaded`', which is a hallucinated field name. Also referenced in tech-spec section AC-M1 / cross-task (drawer checks `ModelEntry.isDownloaded`) — the same hallucinated field name appears there. Tasks 9 and 2 both need correction to use the actual `downloadStatus.status == SUCCEEDED` check.",
+      "fix": "Replace all references to `ModelEntry.isDownloaded` with `entry.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED`. Applies in Task 2 step 8 implementation hint, and in tech-spec description for DrawerContent (Task 9). The inline hint code in Task 2 step 5 already uses the correct pattern."
+    },
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 2,
+      "issue": "Task 2 step 8 instructs: `activeModelId()` returns `registry?.models?.value?.firstOrNull { it.initStatus === ModelInitStatus.Ready }?.model?.name`. However, the tech-spec and AC-D1 require `activeModelId()` to return the stable HF model id (i.e., `model.modelId`, not `model.name`). After Task 2 adds `Model.modelId`, `model.name` is the human-readable display name, not the stable id. Returning `model.name` from `activeModelId()` produces the wrong value in the diagnostic export.",
+      "fix": "Change the implementation of `activeModelId()` to return `?.model?.modelId` (not `.model?.name`). Requires the `Model.modelId` field to be populated first (same task adds it, so ordering is fine within the task)."
+    },
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 1,
+      "issue": "Task 1 Details section references `ksp = \"2.3.6\"` in `libs.versions.toml` as the current KSP version and claims it is compatible with `kotlin = \"2.2.0\"` and Room 2.7.x. The actual `ksp` entry in `gradle/libs.versions.toml` is `ksp = \"2.3.6\"` — however, the KSP compatibility matrix requires the KSP version to match the Kotlin version prefix (2.2.x). The format for KSP is `{kotlin-version}-{ksp-release}`, e.g. `2.2.0-1.0.25`. The entry `2.3.6` looks like it may be a standalone version that does not follow the KSP versioning convention. If this is actually a valid standalone version used by a custom setup, the claim is accurate; if it is supposed to be a Kotlin-prefixed KSP version, `2.3.6` is mismatched with `kotlin = \"2.2.0\"`. The build may fail silently or produce wrong KSP output. This needs to be verified against the actual KSP release being used.",
+      "fix": "Verify that `ksp = \"2.3.6\"` in `libs.versions.toml` works with `kotlin = \"2.2.0\"`. If it is an older Google-prefixed format that predates the versioning change, confirm it works for Room 2.7.x annotation processing. If it needs updating, use the correct KSP release for Kotlin 2.2.0 (e.g. `2.2.0-1.0.25` or latest compatible)."
+    },
+    {
+      "severity": "major",
+      "category": "missing_function",
+      "task": 1,
+      "issue": "Task 1 Details section says: 'Also check whether `androidx-test-runner` is already present; if not, add `androidx-test-runner = { group = \"androidx.test\", name = \"runner\", version.ref = \"androidxTestCore\" }` (reuse the existing `androidxTestCore = \"1.6.1\"` version).' The `libs.versions.toml` file has `androidxTestCore = \"1.6.1\"` for `androidx-test-core`, but `androidx-test-runner` uses a different artifact (`androidx.test:runner`) with its own version. Binding it to `androidxTestCore` may introduce a version mismatch — the test runner `1.6.1` may not exist or may not be the same as `core 1.6.1`. This is a pattern mismatch risk.",
+      "fix": "Add a dedicated version for the test runner, e.g. `androidxTestRunner = \"1.6.2\"` in `[versions]`, and define `androidx-test-runner = { group = \"androidx.test\", name = \"runner\", version.ref = \"androidxTestRunner\" }` in `[libraries]`. Do not reuse `androidxTestCore` for a different artifact."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 2,
+      "issue": "Task 2 step 5 and the Details section describe `SettingsMigrationHelper` injecting `DataStore<AppSettings>` directly (or via a new `internal suspend fun atomicReplacePerModelOverrides(...)` on `DefaultAppSettingsRepository`). The task also says SettingsMigrationHelper lives in `:app`, but it would inject `DataStore<AppSettings>` which is provided by `CoreSettingsModule` in `:core-settings`. Cross-module direct DataStore injection from `:app` into a helper that also calls `AppSettingsRepository` is feasible but architecturally messy. The task hints say 'pick whichever avoids leaking DataStore outside :core-settings' but does not resolve the choice — leaving ambiguity that could result in inconsistent implementation. Neither option is clearly prescribed.",
+      "fix": "Make the task prescribe one pattern explicitly. The cleaner option is to add `internal suspend fun atomicReplacePerModelOverrides(newMap: Map<String, PerModelSettings>)` to `DefaultAppSettingsRepository` and expose it as a new method in the `AppSettingsRepository` interface (or keep it internal to `:core-settings` and call it from a new interface method). This avoids the `:app` module directly depending on `DataStore<AppSettings>`. Prescribe this in the task."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 2,
+      "issue": "The Details section for `SettingsMigrationHelper.kt` contains a full step-by-step algorithm with 6 numbered sub-steps describing the exact logic flow (check sentinel, read map, build lookup, iterate, write, mark). This crosses the line from hint to implementation prescription. Per validation rules, hints should point to patterns and approaches, not prescribe the solution.",
+      "fix": "Replace the 6-step algorithm with a high-level hint: reference Decision 8 and the `DefaultAppSettingsRepository.updateData` pattern. Remove the prescriptive sub-steps."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 1,
+      "issue": "The Details section for `SanctumDatabase.kt` contains a full Kotlin code block for the `RoomDatabase.Callback.onOpen` pattern including the exact method signature, lambda body, and SQL statement. This is implementation code, not a hint.",
+      "fix": "Replace the code block with a reference to the pattern: 'Enable FK enforcement via RoomDatabase.Callback.onOpen executing PRAGMA foreign_keys = ON — see patterns.md.' Remove the code block."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 2,
+      "issue": "Task 2 step 8 provides a verbatim Kotlin implementation for `AndroidDeviceInfoProvider` changes including exact constructor signatures, parameter types, and full method bodies for both `activeModelId()` and `downloadedModels()`. Implementation hints should not contain complete code.",
+      "fix": "Replace with approach-level hints: 'Add nullable ModelRegistry to primary constructor, keep secondary constructor for crash path unchanged, implement methods from registry.models.value using ModelDownloadStatusType.SUCCEEDED filter. See Decision 10.'"
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 0,
+      "issue": "Task 0 step 10 says to add `androidx.compose.ui:ui-text-google-fonts` to `app/build.gradle.kts` and `gradle/libs.versions.toml`. The Details section shows the library entry without a `version.ref`, relying on the Compose BOM. However, `ui-text-google-fonts` may not be part of the Compose BOM and may require an explicit version. The BOM (`composeBom = \"2026.03.00\"`) may or may not include it.",
+      "fix": "Verify whether `androidx.compose.ui:ui-text-google-fonts` is in the `2026.03.00` Compose BOM. If not, add an explicit `version.ref` or `version` in the library entry. Check https://developer.android.com/jetpack/compose/bom/bom-mapping."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_file",
+      "task": 0,
+      "issue": "Task 0 lists `app/src/main/kotlin/app/sanctum/machina/ui/theme/Color.kt` as a file to modify. Glob search found no `Color.kt` in the theme directory — only `Theme.kt` exists. The task Description and Details section reference Gallery-era `Purple80`/`Purple40` stubs that would exist in a default `Color.kt`, but the file may have been removed or never added. If `Color.kt` does not exist, the 'modify' instruction is wrong — it should be 'create'.",
+      "fix": "Verify whether `Color.kt` exists in `app/src/main/kotlin/app/sanctum/machina/ui/theme/`. If absent, change the task instruction from 'modify' to 'create' and remove the Gallery-stub removal step."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 0,
+      "issue": "Task 0 TDD Anchor states 'Задача создаёт дизайн-систему — автоматических тестов для визуальных токенов нет, проверка визуальная.' This is acceptable for a design-system task, but the Acceptance Criteria include 'APK устанавливается и запускается на Honor 200 без крэша' which is a manual verification step, not automatable. This is fine per tech-spec (Compose UI tests out of scope) but the TDD anchor should explicitly note this. No action needed if reviewer accepts manual-only gate."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 2,
+      "issue": "Task 2 Acceptance Criteria and TDD Anchor reference `ErrorLogTest.knownComponents_accepted` asserting `assertEquals(allowed.size, logFile.readLines().size)` with `allowed.size = 14`. However the existing test at `core-runtime/src/test/kotlin/.../ErrorLogTest.kt` has `allowed.size = 8` (current 8 Phase-1/2 components). The task correctly says to update the list, but the specific assertion `assertEquals(allowed.size, logFile.readLines().size)` will fail if any pre-existing test state leaks between tests (the `@Before` deletes the log file, so this is fine). Just confirming the arithmetic: 8 existing + 6 new = 14 total. Matches tech-spec AC criteria."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 47,
+    "issues_found": 12
+  }
+}
