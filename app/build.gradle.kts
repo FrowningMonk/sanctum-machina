@@ -85,11 +85,17 @@ dependencies {
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
 
+    // Needed by SettingsMigrationHelper for atomic DataStore<AppSettings>
+    // updateData — :core-settings exposes DataStore only as `implementation`,
+    // so :app must depend on it directly.
+    implementation(libs.androidx.datastore)
+
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.litertlm)
+    testImplementation(libs.androidx.datastore)
 
     androidTestImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.runner)

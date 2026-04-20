@@ -155,6 +155,32 @@ class AppSettingsRepositoryTest {
   }
 
   @Test
+  fun observeDefaultModelId_emitsEmptyString_whenUnset() = testScope.runTest {
+    assertEquals("", repository.observeDefaultModelId().first())
+  }
+
+  @Test
+  fun observeDefaultModelId_emitsCurrentValue() = testScope.runTest {
+    repository.setDefaultModelId("foo")
+    assertEquals("foo", repository.observeDefaultModelId().first())
+    assertEquals("foo", repository.getDefaultModelId())
+  }
+
+  @Test
+  fun observeLastUsedModelId_emitsCurrentValue() = testScope.runTest {
+    repository.setLastUsedModelId("bar")
+    assertEquals("bar", repository.observeLastUsedModelId().first())
+    assertEquals("bar", repository.getLastUsedModelId())
+  }
+
+  @Test
+  fun settingsMigrated_flagFalseByDefault_trueAfterMark() = testScope.runTest {
+    assertFalse("fresh DataStore must report not migrated", repository.isSettingsMigrated())
+    repository.markSettingsMigrated()
+    assertTrue("after mark, sentinel must be true", repository.isSettingsMigrated())
+  }
+
+  @Test
   fun ioException_observeDoesNotCrash() = testScope.runTest {
     // Corrupt file BEFORE any DataStore interaction on a fresh instance so the
     // first read hits InvalidProtocolBufferException → CorruptionException path.

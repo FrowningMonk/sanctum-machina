@@ -50,6 +50,7 @@ enum class AICoreModelPreference {
 
 data class Model(
   val name: String,
+  val modelId: String = "",
   val displayName: String = "",
   val info: String = "",
   var configs: List<Config> = listOf(),

@@ -5,6 +5,10 @@ import android.content.Context
 import android.content.pm.PackageInfo
 import android.os.Build
 import app.sanctum.machina.BuildConfig
+import app.sanctum.machina.core.data.ModelDownloadStatusType
+import app.sanctum.machina.core.registry.ModelEntry
+import app.sanctum.machina.core.registry.ModelInitStatus
+import app.sanctum.machina.core.registry.ModelRegistry
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
@@ -87,18 +91,37 @@ interface DeviceInfoProvider {
 
 /**
  * Production [DeviceInfoProvider]. Reads from `PackageManager`, `Build`, and
- * `ActivityManager.MemoryInfo` — all through the injected [context] so the
- * class stays directly constructable without Hilt (the non-Hilt path used by
- * `:crash`'s [LogExportManager] secondary constructor).
+ * `ActivityManager.MemoryInfo` — all through the injected [context].
  *
- * `activeModelId` and `downloadedModels` are deliberately stubbed to `null` /
- * empty list for Phase 2.5 — the real model registry integration lands in a
- * later phase and is tracked in `NOTES.md`. The export falls back to
- * `active model: none` and `downloaded models:\n  (none)` in the header.
+ * Two construction paths:
+ *
+ *  * **Hilt primary** — `@Inject constructor(Context, ModelRegistry)`. In the
+ *    main process, [ModelRegistry] drives [activeModelId] and
+ *    [downloadedModels] from `registry.models.value`.
+ *  * **Non-Hilt secondary** — `AndroidDeviceInfoProvider(Context)` passes
+ *    `registry = null`. Used by the `:crash` process (Decision 10): the crash
+ *    process has no running engine, so model data is genuinely unavailable.
+ *    The export falls back to `active model: none` and
+ *    `downloaded models:\n  (none)` in the header.
  */
-class AndroidDeviceInfoProvider @Inject constructor(
+class AndroidDeviceInfoProvider private constructor(
     @ApplicationContext private val context: Context,
+    // Kotlin-nullable parameters collide with non-null at the JVM signature
+    // level, so the registry is captured as a thunk — empty list in the crash
+    // path, live `registry.models.value` lookup in the Hilt path.
+    private val entriesProvider: () -> List<ModelEntry>,
 ) : DeviceInfoProvider {
+
+    // Hilt-injected path (main process) — ModelRegistry provides real state.
+    @Inject constructor(
+        @ApplicationContext context: Context,
+        registry: ModelRegistry,
+    ) : this(context, { registry.models.value })
+
+    // Non-Hilt path (:crash process, per Decision 10). Registry is genuinely
+    // unavailable — the crashed app has no engine; stubs fall back to null /
+    // empty so the header reads `active model: none`.
+    constructor(@ApplicationContext context: Context) : this(context, { emptyList() })
 
     override fun applicationId(): String = context.packageName
 
@@ -124,12 +147,22 @@ class AndroidDeviceInfoProvider @Inject constructor(
     override fun totalMemoryBytes(): Long = memoryInfo().totalMem
     override fun availableMemoryBytes(): Long = memoryInfo().availMem
 
-    // TODO(Phase 3+): wire to ModelRegistry — tracked in NOTES.md backlog
-    //  ("Phase 2.5 follow-up: wire DeviceInfoCollector.activeModelId/downloadedModels").
-    override fun activeModelId(): String? = null
+    // Stable HF repo id of the single model whose engine is Ready (single-active-engine
+    // invariant). `null` when no engine is loaded OR when the registry is unavailable
+    // (:crash path).
+    override fun activeModelId(): String? =
+        entriesProvider()
+            .firstOrNull { it.initStatus === ModelInitStatus.Ready }
+            ?.model
+            ?.modelId
+            ?.takeIf { it.isNotEmpty() }
 
-    // TODO(Phase 3+): wire to ModelRegistry — see activeModelId().
-    override fun downloadedModels(): List<Pair<String, Long>> = emptyList()
+    // List of (modelId, sizeInBytes) for every registry entry marked SUCCEEDED.
+    // `modelId` is the stable HF repo id; size comes from the allowlist entry.
+    override fun downloadedModels(): List<Pair<String, Long>> =
+        entriesProvider()
+            .filter { it.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED }
+            .map { it.model.modelId to it.model.sizeInBytes }
 
     override fun nowIso(): String =
         OffsetDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)

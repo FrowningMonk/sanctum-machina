@@ -75,6 +75,7 @@ data class AllowedModel(
 
     return Model(
       name = name,
+      modelId = modelId,
       version = version.takeUnless { it.isNullOrEmpty() } ?: commitHash,
       info = description.orEmpty(),
       url = downloadUrl,

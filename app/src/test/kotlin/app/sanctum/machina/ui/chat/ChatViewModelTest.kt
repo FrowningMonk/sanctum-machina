@@ -723,6 +723,9 @@ private class FakeImageDecoder : ImageDecoder {
 
 private class FakeAppSettingsRepository : AppSettingsRepository {
     private val store = MutableStateFlow<PerModelSettings?>(null)
+    private val defaultModelId = MutableStateFlow("")
+    private val lastUsedModelId = MutableStateFlow("")
+    private var migrated = false
 
     fun save(modelId: String, settings: PerModelSettings) {
         store.value = settings
@@ -737,6 +740,15 @@ private class FakeAppSettingsRepository : AppSettingsRepository {
     override suspend fun resetPerModelSettings(modelId: String) {
         store.value = null
     }
+
+    override suspend fun getDefaultModelId(): String = defaultModelId.value
+    override suspend fun setDefaultModelId(id: String) { defaultModelId.value = id }
+    override fun observeDefaultModelId(): Flow<String> = defaultModelId
+    override suspend fun getLastUsedModelId(): String = lastUsedModelId.value
+    override suspend fun setLastUsedModelId(id: String) { lastUsedModelId.value = id }
+    override fun observeLastUsedModelId(): Flow<String> = lastUsedModelId
+    override suspend fun isSettingsMigrated(): Boolean = migrated
+    override suspend fun markSettingsMigrated() { migrated = true }
 }
 
 private class FakeModelRegistry(

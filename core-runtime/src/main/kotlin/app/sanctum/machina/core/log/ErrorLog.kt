@@ -40,6 +40,13 @@ internal val ALLOWED_COMPONENTS: Set<String> = setOf(
   "camera",
   "audio",
   "attachment-decode",
+  // Phase 3
+  "model",
+  "engine-warmup",
+  "history-read",
+  "history-write",
+  "attachment-save",
+  "attachment-read",
 )
 
 /**
