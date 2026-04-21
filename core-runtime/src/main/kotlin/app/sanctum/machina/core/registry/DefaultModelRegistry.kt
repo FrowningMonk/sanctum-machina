@@ -25,10 +25,13 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -49,6 +52,22 @@ private const val LOG_TAG_INIT = "inference-init"
  * Extracted as an internal top-level function so Task 10's TDD anchor tests
  * can drive the mapping without standing up the full registry graph.
  */
+/**
+ * D7: extract the `activeModelName` derivation so it can be exercised in isolation by Task-3 TDD
+ * anchor tests. The production code path wires this in [DefaultModelRegistry] as the sole call
+ * site, which means a regression in either the expression or the field it reads surfaces through
+ * the helper's tests. `model.modelId` (stable HF id) — not `model.name` — is intentional: Room
+ * `chat.model_id` stores the HF id, and same-model fast-path equality in DrawerContent /
+ * ChatViewModel depends on the types matching.
+ */
+internal fun deriveActiveModelName(
+  models: StateFlow<List<ModelEntry>>,
+  scope: CoroutineScope,
+): StateFlow<String?> =
+  models
+    .map { list -> list.firstOrNull { it.initStatus === ModelInitStatus.Ready }?.model?.modelId }
+    .stateIn(scope, SharingStarted.Eagerly, null)
+
 internal fun buildSystemInstruction(configValues: Map<String, Any>): Contents? {
   val raw = configValues[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label] as? String
   // Name clarifies that `takeIf { isNotBlank() }` filters rather than trims —
@@ -87,6 +106,11 @@ constructor(
 
   private val _models = MutableStateFlow<List<ModelEntry>>(emptyList())
   override val models: StateFlow<List<ModelEntry>> = _models.asStateFlow()
+
+  // D7: derived StateFlow projecting the currently-Ready ModelEntry onto its stable HF modelId
+  // (or null if none). Derivation lives in `deriveActiveModelName` to be directly testable; this
+  // is the only production call site, so helper-level tests cover wiring.
+  override val activeModelName: StateFlow<String?> = deriveActiveModelName(models, scope)
 
   init {
     scope.launch {

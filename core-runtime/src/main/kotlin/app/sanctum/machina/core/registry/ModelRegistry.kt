@@ -22,6 +22,21 @@ interface ModelRegistry {
   val models: StateFlow<List<ModelEntry>>
 
   /**
+   * Stable HF [Model.modelId] (e.g. `"litert-community/gemma-4-E4B-it-litert-lm"`) of the single
+   * [ModelEntry] currently in [ModelInitStatus.Ready], or `null` if no model is Ready.
+   *
+   * Note: the name is `activeModelName` for API compatibility with Phase-3 consumers (DrawerContent,
+   * ChatViewModel, WarmupCoordinator), but the emitted value is [Model.modelId] — the stable HF
+   * identifier stored in Room as `chat.model_id` — NOT [Model.name] (the display-adjacent storage
+   * filename). Equality with `chat.model_id` is what drives the same-model fast path and the
+   * TopAppBar "Загрузить" button decision.
+   *
+   * Single-engine invariant (Phase-1, Decision T9): only one entry can be [ModelInitStatus.Ready]
+   * at a time; the derived flow exploits this and uses `firstOrNull { ... Ready }`.
+   */
+  val activeModelName: StateFlow<String?>
+
+  /**
    * Load the bundled allowlist JSON via [AllowlistLoader] and republish [models].
    *
    * On I/O or schema error: logs to `"download"` (allowlist parsing is part of download-discovery)
