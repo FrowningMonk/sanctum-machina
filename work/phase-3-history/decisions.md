@@ -228,3 +228,36 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `./gradlew :app:compileDebugAndroidTestKotlin` → BUILD SUCCESSFUL (`AppModuleCorruptionTest` скомпилирован; 2 instrumented-теста — `testCorruptDbRenamedAndFreshDbCreated`, `testNormalDbOpenNoCorruptionFlag`)
 - `./gradlew build` → BUILD SUCCESSFUL (full project, включая lint)
 - `./gradlew :app:connectedDebugAndroidTest` → **отложено** (нет подключённого устройства/эмулятора в текущей сессии; юзеру прогнать перед merge к main — покрывает AC "All new instrumented tests pass")
+
+## Task 7: Navigation + HomeScreen
+
+**Status:** Done
+**Commit:** b3ba3f6 (impl), 6f4e8d9 (review round 1 fixes)
+**Agent:** main agent
+**Summary:** `SanctumApp.kt` переведён на новую навигацию Phase 3: `startDestination = "home"`, `NavHost` обёрнут в `ModalNavigationDrawer` (stub content — Task 9 заполнит), зарегистрированы типизированные chat-роуты `chat/quick?modelId={String?}`, `chat/draft`, `chat/{chatId:Long}`; старый `chat/{modelName}` оставлен как tombstone-редирект на `home` (комментарий `// TOMBSTONE: deprecated in Task 7, removed in Task 8`). Созданы `HomeScreen` (центрированная идентификация — SmSigil + "Sanctum Machina" + подзаголовок — в `HomeIdentity()`, primary `FilledTonalButton` "Новый быстрый чат" / secondary `TextButton` "Открыть историю" когда `hasDownloadedModels=true`, placeholder "Для начала работы скачайте модель." + "Открыть Model Manager" когда `false`; bottom status bar показывает `activeModelName` или "Модель не прогрета") и `HomeViewModel` (`hasDownloadedModels: StateFlow<Boolean>` через `registry.models.map { any { it.downloadStatus.status == SUCCEEDED } }.stateIn(viewModelScope, WhileSubscribed(5_000), false)` + pass-through `activeModelName: StateFlow<String?>`). Все пользовательские строки вынесены в `strings.xml`.
+**Deviations:**
+- **Tombstone вместо удаления `chat/{modelName}`.** AC указывает "Old route `chat/{modelName}` removed from the NavHost", но What-to-do / Details явно предписывают оставить tombstone с `LaunchedEffect` редиректом на `home`. Следую What-to-do: иначе deep-link в текущей сессии между Task 7 и Task 8 (которые идут подряд) вызвал бы route-not-found crash. Task 8 удалит tombstone.
+- **`ModelManagerScreen.onLoad` обновлён на `navController.navigate("chat/quick?modelId=$modelId")` без `Uri.encode`.** Полная wiring (обработка modelId в ChatViewModel, preload, обратная связь) — Task 11; `Uri.encode` добавится вместе с ним (код-ревью `c3`).
+- **HomeStatusBar — plain text, не chip+dot.** Design говорит "warmup state dot + model chip" — это Task 10 (TopAppBar state machine + incognito indicator + corruption banner); здесь оставлен TODO(Task 10) с примечанием про display-name resolution для сырого HF modelId.
+- **Settings IconButton — `enabled = false`.** SettingsScreen появится в Phase 5; до тех пор кнопка не должна выглядеть кликабельной (no-op tap target). После round-1 code-review.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: APPROVED_WITH_SUGGESTIONS, 0 critical / 0 major / 7 minor → [logs/working/task-7/code-reviewer-1.json](logs/working/task-7/code-reviewer-1.json)
+- test-reviewer: PASSED, 0 critical / 0 major / 3 minor → [logs/working/task-7/test-reviewer-1.json](logs/working/task-7/test-reviewer-1.json)
+
+*Fixes applied after round 1:*
+- 4-space indent в HomeScreen.kt / HomeViewModel.kt (совпадает с `ui/modelmanager` соседями)
+- Settings `IconButton(enabled = false)` — no-op до Phase 5
+- Общий `HomeIdentity()` — дедуплицирован SmSigil + product name + kicker между ready / no-models ветками
+- TODO(Task 10) на HomeStatusBar (dot+chip + display-name lookup)
+- `subscribe` свёрнут в `createSubscribedViewModel()` фабрику — нельзя забыть коллектор для `WhileSubscribed` StateFlow
+- Добавлен `hasDownloadedModels_initialSeedIsFalse_beforeAnyCollection` — пинит AC-F2 против случайного flip на `initialValue = true`
+- `activeModelName_isPassedThrough` усилен до реактивного теста (null → "model-a" → "model-b")
+
+**Verification:**
+- `./gradlew :app:testDebugUnitTest --tests "app.sanctum.machina.ui.home.HomeViewModelTest"` → BUILD SUCCESSFUL (6 тестов, 0 failures — 4 TDD-anchor + initial-seed + reactive activeModelName)
+- `./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL (полный `:app` unit-test, без регрессий)
+- `./gradlew build` → BUILD SUCCESSFUL (full project, включая lint)
+- User: установить APK на устройство и проверить: (1) приложение открывается на HomeScreen (не Model Manager); (2) hamburger открывает drawer слева; (3) с хотя бы одной скачанной моделью виден `FilledTonalButton` "Новый быстрый чат" (таппается → лендит на placeholder `chat/quick`); (4) без скачанных моделей виден placeholder "Для начала работы скачайте модель." + "Открыть Model Manager" (таппается → Model Manager).
