@@ -220,8 +220,9 @@ constructor(
         registry.models,
         _chatModelId,
         warmupCoordinator.isWarmupInProgress,
-    ) { models, modelId, warmupInFlight ->
-        deriveTopAppBarState(models, modelId, warmupInFlight, registry.activeModelName.value)
+        registry.activeModelName,
+    ) { models, modelId, warmupInFlight, activeModelId ->
+        deriveTopAppBarState(models, modelId, warmupInFlight, activeModelId)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.Eagerly,

@@ -94,12 +94,13 @@ class ChatViewModelTest {
         fakeMessageDao = FakeMessageDao()
         fakeChatDao = FakeChatDao()
         fakeChatRepository = FakeChatRepository()
-        fakeWarmupCoordinator = FakeWarmupCoordinator()
+        fakeWarmupCoordinator = FakeWarmupCoordinator(kotlinx.coroutines.SupervisorJob())
     }
 
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+        fakeWarmupCoordinator.shutdown()
     }
 
     // ------------------------------------------------------------------
@@ -1282,6 +1283,13 @@ class ChatViewModelTest {
             listOf("id-a", "id-b"),
             draft.models.map { it.model.modelId },
         )
+        // Test-reviewer-1 minor: pin currentModelId so a regression that hard-coded it to "" in
+        // the Draft branch would flip the dropdown check-mark off the active model (AC-U7).
+        assertEquals(
+            "currentModelId must track the Ready entry's id for the dropdown check-mark",
+            "id-a",
+            draft.currentModelId,
+        )
     }
 
     @Test
@@ -1312,6 +1320,23 @@ class ChatViewModelTest {
 
         assertEquals(
             TopAppBarState.Failed(modelId = "id-m"),
+            vm.topAppBarState.value,
+        )
+    }
+
+    @Test
+    fun topAppBarState_persistentInitializing_returnsLoading() = runTest(dispatcher) {
+        // Exercises the entry-driven Initializing branch (distinct from the warmupInFlight
+        // short-circuit). test-reviewer-1 minor: without this, removing the
+        // ModelInitStatus.Initializing arm would only be caught indirectly.
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeRegistry.publishEntry(model, ModelInitStatus.Initializing)
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        assertEquals(
+            TopAppBarState.Loading(modelId = "id-m"),
             vm.topAppBarState.value,
         )
     }
@@ -1382,8 +1407,11 @@ class ChatViewModelTest {
         advanceUntilIdle()
 
         vm.loadModel("id-b")
+        vm.loadModel("id-c")
 
-        assertEquals(listOf("id-b"), fakeWarmupCoordinator.cancelAndRestartCalls)
+        // Each call must record one entry with the caller-supplied id — idempotence collapsing
+        // (which a coalescing bug could introduce) would leave only "id-b" or "id-c".
+        assertEquals(listOf("id-b", "id-c"), fakeWarmupCoordinator.cancelAndRestartCalls)
     }
 
     // ---- helpers -------------------------------------------------------
@@ -1786,11 +1814,15 @@ private class FakeChatRepository : ChatRepository {
  * construction has no side effect relevant to the tests. Tests drive state through
  * [isWarmupInProgressState] and record [cancelAndRestartCalls].
  */
-private class FakeWarmupCoordinator : WarmupCoordinator(
+private class FakeWarmupCoordinator(
+    private val ownJob: kotlinx.coroutines.CompletableJob,
+) : WarmupCoordinator(
     registry = FakeModelRegistry(mutableListOf()),
     appSettings = FakeAppSettingsRepository(),
     errorLog = ErrorLog(ApplicationProvider.getApplicationContext<Application>()),
-    scope = CoroutineScope(Dispatchers.Unconfined),
+    // Parent init launches `startDefaultModelObserver`; give it a dedicated cancellable scope
+    // so each test tears the collector down in @After (test-reviewer-1 minor on resource leak).
+    scope = CoroutineScope(ownJob + Dispatchers.Unconfined),
 ) {
     val isWarmupInProgressState = MutableStateFlow(false)
     val cancelAndRestartCalls = mutableListOf<String>()
@@ -1800,6 +1832,8 @@ private class FakeWarmupCoordinator : WarmupCoordinator(
     override fun cancelAndRestart(modelId: String) {
         cancelAndRestartCalls += modelId
     }
+
+    fun shutdown() { ownJob.cancel() }
 }
 
 private object ViewModelReflection {

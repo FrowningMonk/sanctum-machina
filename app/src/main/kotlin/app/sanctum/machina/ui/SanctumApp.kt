@@ -116,6 +116,10 @@ fun SanctumApp() {
                         },
                     )
                 }
+                // Registration order matters: `chat/{chatId}` must be declared BEFORE the
+                // `chat/{modelName}` tombstone below. Navigation matches routes in registration
+                // order; a non-numeric segment like `chat/some-model` fails `NavType.LongType`
+                // parsing and falls through to the StringType tombstone → redirect to home.
                 composable(
                     route = "chat/{chatId}",
                     arguments = listOf(

@@ -487,6 +487,13 @@ private fun LoadingTitle() {
     }
 }
 
+/**
+ * «Загрузить» button for the Failed state (AC-U6, AC-E3). `modelId` should never be empty by
+ * construction — [ChatViewModel.deriveTopAppBarState] only emits Failed for Quick/Persistent
+ * chats that have a pinned `_chatModelId` or a resolvable `activeModelId`. The `enabled` guard
+ * is a defensive no-op to prevent an unclickable button if a future refactor ever routes an
+ * empty-id Failed through here.
+ */
 @Composable
 private fun FailedLoadButton(modelId: String, onLoadClicked: (String) -> Unit) {
     OutlinedButton(

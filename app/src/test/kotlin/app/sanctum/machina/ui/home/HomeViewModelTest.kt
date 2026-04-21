@@ -9,7 +9,9 @@ import app.sanctum.machina.core.registry.ModelEntry
 import app.sanctum.machina.core.registry.ModelInitStatus
 import app.sanctum.machina.core.registry.ModelRegistry
 import app.sanctum.machina.engine.AppCorruptionState
+import app.sanctum.machina.logexport.ExportSource
 import app.sanctum.machina.logexport.LogExportManager
+import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -158,6 +160,59 @@ class HomeViewModelTest {
     assertEquals("model-b", viewModel.activeModelName.value)
   }
 
+  // ---- Task 10 — corruption banner seed (AC-D5 / US-14) -----------------
+
+  @Test
+  fun corruptionOccurred_reflectsFalse_byDefault() = runTest {
+    val vm = HomeViewModel(registry, AppCorruptionState(), logExport)
+    assertFalse(vm.corruptionOccurred)
+  }
+
+  @Test
+  fun corruptionOccurred_reflectsTrue_whenFlagSet() = runTest {
+    val corrupted = AppCorruptionState().apply { corruptionOccurred = true }
+    val vm = HomeViewModel(registry, corrupted, logExport)
+    assertTrue(vm.corruptionOccurred)
+  }
+
+  // ---- Task 10 — buildAndWrite SAF export contract ----------------------
+
+  @Test
+  fun buildAndWrite_success_delegatesThroughLogExportManager() = runTest {
+    val recorder = RecordingLogExport(
+      ApplicationProvider.getApplicationContext<Application>(),
+    )
+    val vm = HomeViewModel(registry, corruption, recorder)
+    val target = android.net.Uri.parse("content://unit-test/save")
+
+    val result = vm.buildAndWrite(target)
+
+    assertTrue("success path must yield Result.success", result.isSuccess)
+    assertEquals(ExportSource.About, recorder.lastSource)
+    assertEquals(target, recorder.lastUri)
+    assertEquals(
+      "writeTo must receive the buildExport output",
+      recorder.builtContent,
+      recorder.writtenContent,
+    )
+  }
+
+  @Test
+  fun buildAndWrite_ioException_returnsFailure() = runTest {
+    val recorder = RecordingLogExport(
+      ApplicationProvider.getApplicationContext<Application>(),
+    ).apply { writeThrows = IOException("disk full") }
+    val vm = HomeViewModel(registry, corruption, recorder)
+
+    val result = vm.buildAndWrite(android.net.Uri.parse("content://unit-test/fail"))
+
+    assertTrue("IOException must be captured as Result.failure", result.isFailure)
+    assertTrue(
+      "the original IOException must propagate through Result.failure",
+      result.exceptionOrNull() is IOException,
+    )
+  }
+
   // ---- helpers ----
 
   // Single factory used by every `hasDownloadedModels` test so the `WhileSubscribed` collector
@@ -175,6 +230,30 @@ class HomeViewModelTest {
       downloadStatus = ModelDownloadStatus(status = status),
       initStatus = ModelInitStatus.Idle,
     )
+}
+
+/**
+ * Test double for [LogExportManager] that records export calls and can throw on demand.
+ * Extends the production class (opened in Task 10) rather than implementing an interface, so
+ * the Hilt-style ctor of [HomeViewModel] accepts it without a separate seam.
+ */
+private class RecordingLogExport(context: android.content.Context) : LogExportManager(context) {
+  var lastSource: ExportSource? = null
+  var lastUri: android.net.Uri? = null
+  var builtContent: String = "unit-test-log-payload"
+  var writtenContent: String? = null
+  var writeThrows: IOException? = null
+
+  override suspend fun buildExport(source: ExportSource): String {
+    lastSource = source
+    return builtContent
+  }
+
+  override suspend fun writeTo(uri: android.net.Uri, content: String) {
+    lastUri = uri
+    writeThrows?.let { throw it }
+    writtenContent = content
+  }
 }
 
 // ---------- Fake (hand-rolled; no MockK/Mockito per patterns.md) ----------

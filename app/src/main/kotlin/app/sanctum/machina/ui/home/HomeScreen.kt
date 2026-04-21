@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Settings
@@ -189,7 +190,9 @@ private fun CorruptionBanner(
                 TextButton(onClick = onDismiss) {
                     Text(stringResource(R.string.corruption_banner_dismiss))
                 }
-                Spacer(Modifier.padding(start = 8.dp))
+                // `Modifier.padding` on an empty Spacer collapses to zero size — use `width` so
+                // the gap actually renders (code-reviewer-1 minor).
+                Spacer(Modifier.width(8.dp))
                 TextButton(onClick = onSaveLog, enabled = !launching) {
                     Text(stringResource(R.string.corruption_banner_save_log))
                 }
