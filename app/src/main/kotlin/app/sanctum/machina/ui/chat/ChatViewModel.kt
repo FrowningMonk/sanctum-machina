@@ -35,6 +35,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -163,9 +164,6 @@ constructor(
     init {
         viewModelScope.launch { bootstrapChatModelId() }
         viewModelScope.launch { observeEngineState() }
-        if (identity is ChatIdentity.Persistent) {
-            viewModelScope.launch { observePersistedForHandover(identity.id) }
-        }
     }
 
     fun send(text: String) {
@@ -304,10 +302,7 @@ constructor(
         viewModelScope.launch {
             _reinitInProgress.value = true
             try {
-                val modelId = _chatModelId.value ?: run {
-                    _reinitInProgress.value = false
-                    return@launch
-                }
+                val modelId = _chatModelId.value ?: return@launch
                 val priorModel = currentReadyModel()
                 val state = _uiState.value
                 if (priorModel != null && state is ChatUiState.Ready && state.isGenerating) {
@@ -322,11 +317,7 @@ constructor(
                     }
                     _uiState.value = ChatUiState.Ready(isGenerating = false)
                 }
-                val rawModel = preInitModel()
-                if (rawModel == null) {
-                    _reinitInProgress.value = false
-                    return@launch
-                }
+                val rawModel = preInitModel() ?: return@launch
                 val overrides = settingsRepository.observePerModelSettings(modelId).first()
                 val defaults = computeDefaults(rawModel)
                 rawModel.configValues = EffectiveConfig.merge(defaults, overrides)
@@ -478,7 +469,10 @@ constructor(
                     // VM keeps observing the same modelId and surfaces the
                     // transition via the engine observer (not by switching
                     // models). Cross-model reinit goes through `applyHeavySetting`.
-                    ?: registry.activeModelName.first { it != null }!!
+                    // Suspend until WarmupCoordinator publishes a Ready model.
+                    // `mapNotNull` drops nulls on the fly so `first()` always
+                    // returns a non-null modelId without an explicit `!!`.
+                    ?: registry.activeModelName.mapNotNull { it }.first()
                 _chatModelId.value = pinned
                 applyEffectiveConfigToModel()
             }
@@ -508,21 +502,6 @@ constructor(
             if (modelId == null) null else list.firstOrNull { it.model.modelId == modelId }
         }.collect { entry ->
             updateUiStateFromEntry(entry)
-        }
-    }
-
-    /**
-     * Side-effect half of the atomic double-bubble handover (D4). On every
-     * Room emission ending in an ASSISTANT row we null out `_streamingMessage`
-     * so subsequent UI state observers see a clean in-memory state — the
-     * display-visibility invariant is already guaranteed by the combine in
-     * [buildMessagesFlow].
-     */
-    private suspend fun observePersistedForHandover(chatId: Long) {
-        messageDao.observeByChat(chatId).collect { persisted ->
-            if (persisted.lastOrNull()?.role == ROLE_ASSISTANT) {
-                _streamingMessage.value = null
-            }
         }
     }
 
@@ -563,6 +542,10 @@ constructor(
         // decisions.md for the deferral.
         if (currentReadyModel() == null) return
         @Suppress("UNUSED_PARAMETER") val attachmentsPlaceholder = pending
+        // Flip the Send-gate synchronously so a rapid double-tap can't slip a
+        // second commit past `state.isGenerating` before the first one
+        // finishes (code-reviewer-1 M1). Reverted on commit failure below.
+        _uiState.value = ChatUiState.Ready(isGenerating = true)
         val now = System.currentTimeMillis()
         val firstMessage = MessageEntity(
             chatId = 0L,
@@ -588,6 +571,10 @@ constructor(
                 onFailure = { cause ->
                     errorLog.e("history-write", "commitDraftChat failed", cause)
                     _snackbar.tryEmit(R.string.chat_load_failed_title)
+                    // Let the user retry — restore the Send gate to its prior
+                    // Ready-idle state (without recomputing the engine status,
+                    // which is still Ready by construction of this path).
+                    _uiState.value = ChatUiState.Ready(isGenerating = false)
                 },
             )
         }
@@ -634,9 +621,16 @@ constructor(
                 text = text,
                 createdAt = userTs,
             )
-            runCatching { chatRepository.savePersistentMessage(userMsg) }
+            // Only bump `last_message_at` if the save actually landed. A
+            // failed INSERT with an updated timestamp would weaken AC-R3's
+            // invariant: the chat would appear "active" in the drawer while
+            // carrying no new row (security-auditor-1 s2).
+            val savedOk = runCatching { chatRepository.savePersistentMessage(userMsg) }
                 .onFailure { errorLog.e("history-write", "savePersistentMessage USER failed", it) }
-            chatRepository.updateChatLastMessage(identity.id, userTs)
+                .isSuccess
+            if (savedOk) {
+                chatRepository.updateChatLastMessage(identity.id, userTs)
+            }
 
             dispatchInferencePersistent(identity, text, pending, model, accumulateThinking)
         }
@@ -700,9 +694,12 @@ constructor(
                             thinkingText = thinkingText,
                             createdAt = createdAt,
                         )
-                        runCatching { chatRepository.savePersistentMessage(assistantMsg) }
+                        val savedOk = runCatching { chatRepository.savePersistentMessage(assistantMsg) }
                             .onFailure { errorLog.e("history-write", "savePersistentMessage ASSISTANT failed", it) }
-                        chatRepository.updateChatLastMessage(identity.id, createdAt)
+                            .isSuccess
+                        if (savedOk) {
+                            chatRepository.updateChatLastMessage(identity.id, createdAt)
+                        }
                     }
                     // Update the in-memory bubble to carry footer/streaming=false
                     // in case the Room write is slow — the combine guarantees

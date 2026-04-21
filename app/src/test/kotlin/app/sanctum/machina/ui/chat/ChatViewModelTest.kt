@@ -200,17 +200,32 @@ class ChatViewModelTest {
 
     @Test
     fun engineStateTransition_readyDrivesReady() = runTest(dispatcher) {
+        // Seed Ready first so the VM pins `_chatModelId` (Quick/Draft pin to
+        // the first non-null `activeModelName`); then transition through
+        // Initializing and back to Ready so we exercise the Initializing→Ready
+        // branch of the observer — not the trivial initial Loading state.
         val model = Model(name = "m", modelId = "id-m")
-        fakeRegistry.publishEntry(model, ModelInitStatus.Initializing)
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
         val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
-        assertEquals(ChatUiState.Loading, vm.uiState.value)
+        assertEquals(
+            "initial seed must surface Ready so activeModelName pins",
+            ChatUiState.Ready(isGenerating = false),
+            vm.uiState.value,
+        )
+
+        fakeRegistry.publishEntry(model, ModelInitStatus.Initializing)
+        advanceUntilIdle()
+        assertEquals(
+            "Initializing must drive Loading",
+            ChatUiState.Loading,
+            vm.uiState.value,
+        )
 
         fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
         advanceUntilIdle()
-
         assertEquals(
-            "Ready must surface Ready(isGenerating=false)",
+            "transition back to Ready must reset isGenerating to false",
             ChatUiState.Ready(isGenerating = false),
             vm.uiState.value,
         )
@@ -241,11 +256,7 @@ class ChatViewModelTest {
 
         // Seed Room with the USER row that corresponds to the streaming turn.
         val userRow = MessageEntity(
-            id = 1L,
-            chatId = 7L,
-            role = "user",
-            text = "hi",
-            createdAt = 10L,
+            id = 1L, chatId = 7L, role = "user", text = "hi", createdAt = 10L,
         )
         fakeMessageDao.emit(listOf(userRow))
         advanceUntilIdle()
@@ -259,43 +270,134 @@ class ChatViewModelTest {
         val listener = fakeHelper.lastResultListener
             ?: error("Persistent send must call runInference")
 
-        // Stream a token — display should show USER + streaming ASSISTANT.
+        // Stream a token — the in-memory bubble must be observable.
         listener.invoke("partial", false, null)
         advanceUntilIdle()
         assertTrue(
             "during streaming, the in-memory bubble must be visible",
-            emissions.any { it.any { m -> m.role == MessageRole.ASSISTANT && m.streaming } },
+            emissions.any { snap -> snap.any { m -> m.role == MessageRole.ASSISTANT && m.streaming } },
         )
 
-        // Engine signals done. The VM persists ASSISTANT; simulate the Room
-        // flow re-emitting with the new row. The atomic handover must ensure
-        // no displayMessages emission carries both representations.
+        // Engine signals done — VM persists ASSISTANT; simulate Room re-emitting.
         listener.invoke("", true, null)
         advanceUntilIdle()
         val assistantRow = MessageEntity(
-            id = 2L,
-            chatId = 7L,
-            role = "assistant",
-            text = "partial",
-            createdAt = 20L,
+            id = 2L, chatId = 7L, role = "assistant", text = "partial", createdAt = 20L,
         )
         fakeMessageDao.emit(listOf(userRow, assistantRow))
         advanceUntilIdle()
 
-        for (snapshot in emissions) {
-            val persistedEndsWithAssistant = snapshot.count { it.role == MessageRole.ASSISTANT } >= 1 &&
-                snapshot.last().role == MessageRole.ASSISTANT
-            // A "streaming-only" bubble is a non-streaming assistant next to
-            // a persisted assistant — we key the invariant on `streaming=true`
-            // since that is the in-memory flag exclusive to `_streamingMessage`.
-            val hasInMemoryStreaming = snapshot.any { it.role == MessageRole.ASSISTANT && it.streaming }
-            val bothPresent = persistedEndsWithAssistant && hasInMemoryStreaming &&
-                snapshot.count { it.role == MessageRole.ASSISTANT } > 1
-            assertFalse(
-                "atomic handover broken: both persisted ASSISTANT and streaming bubble present",
-                bothPresent,
+        // Load-bearing invariant: across every emission, total ASSISTANT count
+        // must not exceed 1. This catches the bug regardless of the streaming
+        // flag — a failure here proves either the combine suppression or the
+        // persistence ordering is broken (test-reviewer-1 T1).
+        for ((i, snap) in emissions.withIndex()) {
+            val assistantCount = snap.count { it.role == MessageRole.ASSISTANT }
+            assertTrue(
+                "emission #$i has $assistantCount ASSISTANT entries: $snap",
+                assistantCount <= 1,
             )
         }
+        // Final state must contain exactly one ASSISTANT (the persisted row).
+        val last = emissions.last()
+        assertEquals(1, last.count { it.role == MessageRole.ASSISTANT })
+        assertEquals("partial", last.single { it.role == MessageRole.ASSISTANT }.text)
+        // And that final ASSISTANT must NOT be the streaming bubble — it is the
+        // persisted row projected by `toDomainMessage` (streaming=false).
+        assertFalse(
+            "the final ASSISTANT must be the Room-backed row, not the in-memory bubble",
+            last.single { it.role == MessageRole.ASSISTANT }.streaming,
+        )
+    }
+
+    @Test
+    fun persistentMode_userRowWrittenBeforeRunInference_AC_R1() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        fakeChatRepository.eventLog = sharedCalls
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        sharedCalls.clear()
+        vm.send("hello")
+        advanceUntilIdle()
+
+        val savePos = sharedCalls.indexOf("savePersistentMessage")
+        val inferPos = sharedCalls.indexOf("runInference")
+        assertTrue("savePersistentMessage must have been invoked", savePos >= 0)
+        assertTrue("runInference must have been invoked", inferPos >= 0)
+        assertTrue(
+            "AC-R1: USER must persist BEFORE runInference fires (save=$savePos, run=$inferPos)",
+            savePos < inferPos,
+        )
+        val firstSaved = fakeChatRepository.insertedMessages.first()
+        assertEquals("user", firstSaved.role)
+        assertEquals("hello", firstSaved.text)
+    }
+
+    @Test
+    fun persistentMode_assistantWrittenOnlyOnDone_AC_R2() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        vm.send("hi")
+        advanceUntilIdle()
+        val listener = fakeHelper.lastResultListener ?: error("send must invoke runInference")
+        val beforeDone = fakeChatRepository.insertedMessages.count { it.role == "assistant" }
+        assertEquals("no ASSISTANT row must exist before done=true", 0, beforeDone)
+
+        listener.invoke("hel", false, null)
+        listener.invoke("lo", false, null)
+        advanceUntilIdle()
+        assertEquals(
+            "AC-R2: streaming tokens must not trigger intermediate ASSISTANT writes",
+            0,
+            fakeChatRepository.insertedMessages.count { it.role == "assistant" },
+        )
+
+        listener.invoke("", true, null)
+        advanceUntilIdle()
+        assertEquals(
+            "AC-R2: exactly one ASSISTANT write on done=true",
+            1,
+            fakeChatRepository.insertedMessages.count { it.role == "assistant" },
+        )
+        val saved = fakeChatRepository.insertedMessages.single { it.role == "assistant" }
+        assertEquals("hello", saved.text)
+    }
+
+    @Test
+    fun persistentMode_stopBeforeDone_doesNotPersistAssistant_AC_R3() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        vm.send("hi")
+        advanceUntilIdle()
+        val listener = fakeHelper.lastResultListener ?: error("send must invoke runInference")
+        listener.invoke("partial", false, null)
+        advanceUntilIdle()
+
+        vm.stop()
+        advanceUntilIdle()
+
+        assertEquals(
+            "AC-R3: stop() must not synthesise a persisted ASSISTANT row",
+            0,
+            fakeChatRepository.insertedMessages.count { it.role == "assistant" },
+        )
+        // USER row must still be present (the user sent the message — only the
+        // answer was interrupted).
+        assertEquals(
+            1,
+            fakeChatRepository.insertedMessages.count { it.role == "user" },
+        )
     }
 
     // ------------------------------------------------------------------
@@ -990,17 +1092,26 @@ private class FakeChatRepository : ChatRepository {
     val insertedMessages = mutableListOf<MessageEntity>()
     var nextChatId: Long = 1L
 
+    /**
+     * Optional cross-fake ordering log. Wiring this to the same list used by
+     * `FakeLlmHelper.runInference` lets tests assert AC-R1 — the USER row is
+     * persisted BEFORE the engine starts streaming.
+     */
+    var eventLog: MutableList<String>? = null
+
     override suspend fun commitDraftChat(
         modelId: String,
         firstMessage: MessageEntity,
         stagingDir: File?,
         filesDir: File,
     ): Long {
+        eventLog?.add("commitDraftChat")
         commitCalls += CommitCall(modelId, firstMessage, stagingDir)
         return nextChatId
     }
 
     override suspend fun savePersistentMessage(message: MessageEntity) {
+        eventLog?.add("savePersistentMessage")
         insertedMessages += message
     }
 
