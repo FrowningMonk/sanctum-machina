@@ -368,3 +368,30 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL (204 тестов, 0 failures — без регрессий в Phase 1/2/2.5/3 unit tests)
 - `./gradlew :core-runtime:testDebugUnitTest :core-settings:testDebugUnitTest` → BUILD SUCCESSFUL (UP-TO-DATE, Task 17 не касается этих модулей)
 - User device smoke — **deferred to phase-level QA**. Task 17 меняет только ChatRepository + ChatViewModel + unit-тесты; smoke-шаги из `tasks/17.md` → Verification Steps → User (Draft+картинка → Send → история; kill-and-reopen; cancel удаляет staging; orphan cleanup; Persistent+картинка) требуют UI-цепочки, которой сейчас нет: drawer stub без содержимого (ждёт Task 10), ChatScreen/TopAppBar ещё в Phase-2 виде (ждёт Task 9). Прогон выполнится когда UI-waves Phase 3 будут сделаны — как часть общей приёмки фазы.
+
+## Task 10: ChatScreen + HomeScreen updates
+
+**Status:** Done
+**Commit:** 55dcd7a (impl), 4105365 (review round 1 fixes)
+**Agent:** main agent
+**Summary:** `ChatViewModel` получил `TopAppBarState` sealed (Draft/Loading/Failed/Ready) и реактивный `topAppBarState: StateFlow` через `combine(registry.models, _chatModelId, warmupCoordinator.isWarmupInProgress, registry.activeModelName)`; инъекция `WarmupCoordinator`, метод `loadModel(modelId)` делегирует в `cancelAndRestart`. `ChatScreen` переписан: новый stateless `ChatTopAppBarTitle` с dropdown скачанных моделей (Draft + cross-model `AlertDialog`), `OutlinedButton "Загрузить"` (Failed), spinner+label (Loading), ReadyTitle c SmDot+name; Quick identity оборачивает экран в `SanctumIncognitoTheme` с `SanctumIcons.IconEyeOff` + subtitle «Быстрый чат». `Modifier.imePadding()` на контейнере с `MultimodalInputBar` (AC-U4). Settings IconButton gate (Phase-3 debt 1) — `enabled = !isGenerating && !reinitInProgress`. `SanctumApp.kt` подключил `ChatScreen` ко всем трём chat-роутам (placeholder'ы удалены), Draft→Persistent коллектит `ChatNavigationEvent`. `HomeScreen` получил corruption banner (`Card` в `errorContainer` тоне + SAF-launcher для `LogExportManager` + in-memory remember-флаг); `HomeViewModel` расширен `corruptionOccurred` + `buildAndWrite(uri)`. `WarmupCoordinator` получил `open val isWarmupInProgress` и `open fun cancelAndRestart` для тестового seam; `LogExportManager` — `open class` + `open suspend fun buildExport/writeTo` для fake'а в HomeViewModelTest.
+**Deviations:**
+- **`SanctumIncognitoTheme` оборачивает весь `ChatScreen` в Quick (не только Ready-branch).** Task edge-case говорит «не применять incognito-тему к loading/failed состояниям независимо от identity», но What-to-do предписывает «обернуть содержимое ChatScreen в SanctumIncognitoTheme». Выбрал второе — иначе тема мигала бы между warmup и первым Ready (bad UX), а edge-case явно адресует кросс-identity сценарии (Persistent во время warmup не должен быть incognito), а не внутри-Quick Loading. Code-reviewer-1 пометил как spec ambiguity; зафиксировано здесь.
+- **Навигация wired up в рамках этой задачи.** Task говорит «не трогает навигацию» (это про NavHost-структуру, которую Task 7 уже создал), но `SanctumApp.kt` держал placeholder'ы с `TODO(Task 10)` — подключил `ChatScreen` ко всем трём маршрутам, это необходимо для работы самой фичи и для user-verification шагов.
+- **Тесты для TopAppBarState в существующем `ChatViewModelTest.kt`**, не в отдельном `ChatTopAppBarStateTest.kt` (как предписывает TDD Anchor). Причина: все hand-rolled fakes (`FakeModelRegistry`, `FakeChatRepository`, `FakeMessageDao`, `FakeChatDao`, `FakeAppSettingsRepository`, `FakeLlmHelper`, `FakeImageDecoder`) живут в ChatViewModelTest как `private class`; отдельный test-файл потребовал бы либо дублирования этих fakes, либо вынесения их в shared utility (выход за рамки задачи). Покрытие TDD-anchor'а идентичное — 7 тестов `topAppBarState_*` + `loadModel_delegatesToWarmupCoordinator`.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved_with_suggestions, 0 critical / 0 major / 5 optional minor → [logs/working/task-10/code-reviewer-1.json](logs/working/task-10/code-reviewer-1.json)
+- test-reviewer: needs_improvement, 2 major (corruptionOccurred / buildAndWrite без тестов) + 4 minor → [logs/working/task-10/test-reviewer-1.json](logs/working/task-10/test-reviewer-1.json)
+
+*Round 2 (after fixes):*
+- code-reviewer: approved, все round-1 findings закрыты, 1 optional stylistic nit (inline `kotlinx.coroutines.SupervisorJob()`) → [logs/working/task-10/code-reviewer-2.json](logs/working/task-10/code-reviewer-2.json)
+- test-reviewer: passed, оба major закрыты honestly (4 новых HomeViewModelTest + 2 дополнительных ChatViewModelTest + FakeWarmupCoordinator dedicated-scope) → [logs/working/task-10/test-reviewer-2.json](logs/working/task-10/test-reviewer-2.json)
+
+**Verification:**
+- `./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL (0 failures — 8 новых ChatViewModelTest + 4 новых HomeViewModelTest + без регрессий Phase 1/2/2.5/3)
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL (APK собран)
+- `./gradlew :app:compileDebugKotlin` → BUILD SUCCESSFUL (Hilt-граф резолвит новый `WarmupCoordinator` параметр в `ChatViewModel` и `AppCorruptionState` + `LogExportManager` в `HomeViewModel`)
+- User device smoke — **deferred to phase-level QA** (memory: `Verify UI chain before device smoke`). Wave 5 Phase 3 ещё не закрыта; `tasks/10.md` → Verification Steps → User (imePadding, Draft model picker, «Загрузить», incognito indicator) требуют прогона на Honor 200 в составе общей приёмки фазы вместе с Task 11.
