@@ -26,6 +26,22 @@ private const val ERROR_COMPONENT = "history-write"
 private const val ROLE_USER = "user"
 
 /**
+ * Production payload serialiser — PNG for images, RIFF/WAVE for audio.
+ * Extracted to a top-level function so it can serve as the default value of
+ * the `payloadWriter` constructor seam.
+ */
+private fun defaultPayloadWriter(attachment: Attachment, target: File) {
+  when (attachment) {
+    is Attachment.Image -> target.outputStream().use { out ->
+      if (!attachment.bitmap.compress(Bitmap.CompressFormat.PNG, /* quality = */ 100, out)) {
+        throw IOException("Bitmap.compress returned false: ${target.absolutePath}")
+      }
+    }
+    is Attachment.Audio -> target.writeBytes(pcmToWav(attachment.pcm, SAMPLE_RATE))
+  }
+}
+
+/**
  * Default [ChatRepository]. Hilt-bound via `AppModule` (Task 5) as `@Singleton`.
  *
  * `commitDraftChat` atomicity (Decision 6, hardened after Task-4 review):
@@ -55,6 +71,14 @@ internal constructor(
   private val ioDispatcher: CoroutineDispatcher,
   private val rename: (File, File) -> Boolean,
   private val transactionRunner: suspend (suspend () -> Long) -> Long,
+  /**
+   * Payload-serialisation seam. Production wraps Bitmap.compress / pcmToWav
+   * below; tests can inject a failing writer (e.g. create a partial file
+   * then throw) to pin the rollback branch in [writeAttachmentPayload]
+   * without relying on Robolectric's filesystem fidelity
+   * (test-reviewer-2 T17-T2).
+   */
+  private val payloadWriter: (Attachment, File) -> Unit = ::defaultPayloadWriter,
 ) : ChatRepository {
 
   @Inject
@@ -232,14 +256,7 @@ internal constructor(
    */
   private suspend fun writeAttachmentPayload(attachment: Attachment, target: File) {
     try {
-      when (attachment) {
-        is Attachment.Image -> target.outputStream().use { out ->
-          if (!attachment.bitmap.compress(Bitmap.CompressFormat.PNG, /* quality = */ 100, out)) {
-            throw IOException("Bitmap.compress returned false: ${target.absolutePath}")
-          }
-        }
-        is Attachment.Audio -> target.writeBytes(pcmToWav(attachment.pcm, SAMPLE_RATE))
-      }
+      payloadWriter(attachment, target)
     } catch (t: Throwable) {
       // Clean up the partial file so the next write does not see a half
       // payload. UUID-based filenames make collisions a non-issue, but a

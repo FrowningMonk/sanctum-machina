@@ -674,9 +674,11 @@ class ChatViewModelTest {
     @Test
     fun draftMode_multipleImages_warnAndPruneExtrasBeforeCommit() = runTest(dispatcher) {
         // code-reviewer-1 T17-R2 / security T17-S4: MAX_IMAGES=10 but only the
-        // first is persisted. Ensure the user is warned and the extras are
-        // pruned from the staging dir before commit so they don't become
-        // orphans inside the final `attachments/{chatId}/` directory.
+        // first is persisted. Ensure the user is warned, the commit references
+        // only the first filename, AND `pruneStagingDir` was invoked with
+        // exactly that filename in the retain set — without the prune call
+        // the extras would survive the rename into `attachments/{chatId}/`
+        // as permanent orphans.
         fakeRegistry.setModel(Model(name = "m", modelId = "id-m", llmSupportImage = true))
         val vm = buildViewModel(ChatIdentityArg.Draft)
         advanceUntilIdle()
@@ -698,15 +700,22 @@ class ChatViewModelTest {
             "img_0.png",
             commit.stagedImageFilename,
         )
+        assertEquals(
+            "pruneStagingDir called once with exactly the retain set",
+            listOf(setOf("img_0.png")),
+            fakeChatRepository.pruneRetainLog,
+        )
     }
 
     @Test
-    fun draftMode_successfulCommit_nullsDraftStagingDirForFollowUpSends() = runTest(dispatcher) {
-        // test-reviewer-1 minor: pin that `draftStagingDir` is reset after a
-        // successful commit. If the VM retained the stale File handle, a
-        // later `deleteStagedFileIfAny` could target the final chat dir.
-        // Observable via: a second commit (in a contrived flow) must NOT
-        // carry a stagingDir since `_attachments` is cleared post-commit.
+    fun draftMode_successfulCommit_allocatesFreshDraftStagingDir() = runTest(dispatcher) {
+        // test-reviewer-2: the previous version of this test was vacuous.
+        // Real invariant: after a successful commit the VM must drop its
+        // reference to the old staging dir, so the NEXT addImageBitmap on
+        // the same VM creates a fresh `.staging-{uuid}/` File with a
+        // different path. In production the VM is usually destroyed after
+        // navigation — this test keeps it alive and uses `stop()` to reset
+        // the Send gate between commits so the contract is observable.
         fakeRegistry.setModel(Model(name = "m", modelId = "id-m", llmSupportImage = true))
         val vm = buildViewModel(ChatIdentityArg.Draft)
         advanceUntilIdle()
@@ -714,21 +723,28 @@ class ChatViewModelTest {
         advanceUntilIdle()
         vm.send("first")
         advanceUntilIdle()
-        val firstCommit = fakeChatRepository.commitCalls.single()
-        assertNotNull("first send carried staging dir", firstCommit.stagingDir)
+        val firstStaging = fakeChatRepository.commitCalls.single().stagingDir
+        assertNotNull("first send carried staging dir", firstStaging)
 
-        // After commit the VM should have no draftStagingDir to carry. Simulate
-        // a retry attempt (even though UI normally navigates away): a second
-        // send with no attachments must not reference any staging dir.
+        // Post-commit: reset the Send gate (isGenerating=false) so a second
+        // send can proceed, then attach + commit again. `stop()` intentionally
+        // resets uiState without teardown of the model registry.
+        vm.stop()
+        advanceUntilIdle()
         fakeChatRepository.commitCalls.clear()
+        fakeChatRepository.pruneRetainLog.clear()
+
+        vm.addImageBitmap(stubBitmap())
+        advanceUntilIdle()
         vm.send("second")
         advanceUntilIdle()
-        // Either commit is rejected (no attachments, no text-only send-gate
-        // behaviour depending on mode) — we simply assert there is no
-        // dangling staging reference on the new commit call if one lands.
-        fakeChatRepository.commitCalls.forEach {
-            assertNull("no stale staging dir leaked into next send", it.stagingDir)
-        }
+        val secondStaging = fakeChatRepository.commitCalls.single().stagingDir
+        assertNotNull("second send carried staging dir", secondStaging)
+        assertNotEquals(
+            "draftStagingDir reset: second send must use a fresh .staging-{uuid}/ path",
+            firstStaging,
+            secondStaging,
+        )
     }
 
     @Test

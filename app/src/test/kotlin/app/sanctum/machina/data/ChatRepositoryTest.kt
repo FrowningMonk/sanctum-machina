@@ -423,25 +423,19 @@ class ChatRepositoryTest {
   }
 
   @Test
-  fun savePersistentAttachment_chatDirOutsideRoot_throws() = runTest {
-    // Test-reviewer T17-T3: parity with `writeAttachmentStaging` containment.
-    // Construct a filesDir whose `attachments/` resolves outside the actual
-    // app private storage — i.e. pass in a pathological `filesDir` and
-    // ensure the defence-in-depth check triggers.
+  fun savePersistentAttachment_badFilesDir_throwsAndWritesNothing() = runTest {
+    // Test-reviewer-2 T17-T3 honest rename: `savePersistentAttachment`'s
+    // containment check is genuinely defence-in-depth — with `chatId: Long`
+    // and a hardcoded `ATTACHMENTS_DIR` constant, the `chatDir` is always
+    // within `filesDir/attachments/` by construction. Triggering the check
+    // via canonical-path divergence would need a symlink, which Robolectric
+    // doesn't model. What this test DOES pin: a misconfigured filesDir
+    // whose `attachments/` is a regular file (imagine external tampering
+    // between app sessions) must not produce any write — either mkdirs
+    // throws or the containment check does, but the on-disk state is
+    // unchanged in both cases.
     val outsideFilesDir = tempFolder.newFolder("other-files-dir")
-    val attackerControlled = File(outsideFilesDir, "attachments").apply { mkdirs() }
-    // The chat dir would end up under `outsideFilesDir/attachments/1/` — that
-    // IS under its own `filesDir/attachments/` root, so the check passes.
-    // Negative path: point `filesDir` at one tree and `attachments/` at a
-    // symlink target in another. Robolectric does not support symlinks, so
-    // we exercise the containment path by crafting a mismatched `filesDir`
-    // via a nested override on File.canonicalPath semantics: passing a
-    // `filesDir` that does NOT actually contain an `attachments/` sub-path
-    // forces the check against a mismatched root. The minimal repro: make
-    // `attachments/` a non-directory file so `File(outsideFilesDir, "attachments/1")`
-    // resolves canonical-path-wise differently from its name-resolved form.
-    attackerControlled.deleteRecursively()
-    attackerControlled.writeText("not a directory")
+    val attackerControlled = File(outsideFilesDir, "attachments").apply { writeText("tamper") }
     val repo = newRepository()
     val bmp = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
 
@@ -449,42 +443,35 @@ class ChatRepositoryTest {
       repo.savePersistentAttachment(chatId = 1L, filesDir = outsideFilesDir, Attachment.Image(bmp))
     }.exceptionOrNull()
 
-    // Either the containment check OR the mkdirs failure throws IOException;
-    // both signal refusal to write. The invariant under test is "no write
-    // lands in an unexpected location" — we verify no file was produced.
     assertTrue("IOException expected, got $thrown", thrown is IOException)
-    assertTrue("attacker-controlled file untouched (still a non-dir)", attackerControlled.isFile)
+    assertTrue("attacker-controlled file untouched", attackerControlled.isFile)
+    assertEquals("tamper", attackerControlled.readText())
   }
 
   @Test
   fun writeAttachmentStaging_failedWrite_rollsBackPartialFile() = runTest {
-    // Test-reviewer T17-T2: if the payload write throws, the half-written
-    // file must be deleted so the staging dir doesn't accumulate orphans.
-    // Robolectric's Bitmap.compress is too permissive to fail on a recycled
-    // bitmap, so we force an IOException by making the staging path a
-    // regular file — `File(stagingDir, filename).outputStream()` then fails
-    // because its parent is not a directory.
-    val staging = File(attachmentsRoot, "staging-fail-as-file").apply {
-      parentFile?.mkdirs()
-      writeText("not a directory")
-    }
+    // Test-reviewer-2 T17-T2: actually exercise the rollback path. The
+    // `payloadWriter` seam creates a partial file on disk (simulating a
+    // half-successful Bitmap.compress) and then throws. The production
+    // catch block in `writeAttachmentPayload` must delete the partial file
+    // — verified by asserting the staging directory is empty afterwards.
+    val staging = File(attachmentsRoot, ".staging-rollback")
+    val repo = newRepository(
+      payloadWriter = { _, target ->
+        target.writeBytes(byteArrayOf(0x01, 0x02, 0x03)) // "partial" PNG
+        throw IOException("synthetic payload write failure")
+      },
+    )
     val bmp = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
-    val repo = newRepository()
 
     val thrown = runCatching {
       repo.writeAttachmentStaging(staging, filesDir, Attachment.Image(bmp))
     }.exceptionOrNull()
 
-    assertNotNull("write on non-directory staging path must throw", thrown)
-    // Load-bearing invariant: the file we wrote BEFORE attempting the image
-    // write must still exist unchanged, proving no partial write lingered
-    // in the same location. With a non-directory staging path there is no
-    // second file to clean up — the assertion is that nothing additional
-    // was created under attachmentsRoot.
-    val attachmentsEntries = attachmentsRoot.listFiles()?.map { it.name }?.toSet().orEmpty()
+    assertTrue("IOException expected, got $thrown", thrown is IOException)
     assertTrue(
-      "no partial file created under attachments root: $attachmentsEntries",
-      attachmentsEntries == setOf("staging-fail-as-file"),
+      "partial file deleted by writeAttachmentPayload catch: ${staging.listFiles()?.map { it.name }}",
+      (staging.listFiles()?.isEmpty() ?: true),
     )
   }
 
@@ -562,6 +549,17 @@ class ChatRepositoryTest {
   private fun newRepository(
     rename: (File, File) -> Boolean = { src, dst -> src.renameTo(dst) },
     transactionRunner: suspend (suspend () -> Long) -> Long = { it() },
+    payloadWriter: (Attachment, File) -> Unit = { att, target ->
+      when (att) {
+        is Attachment.Image -> target.outputStream().use { out ->
+          if (!att.bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
+            throw IOException("Bitmap.compress returned false: ${target.absolutePath}")
+          }
+        }
+        is Attachment.Audio ->
+          target.writeBytes(app.sanctum.machina.core.common.pcmToWav(att.pcm, app.sanctum.machina.core.data.SAMPLE_RATE))
+      }
+    },
   ): DefaultChatRepository =
     DefaultChatRepository(
       chatDao = chatDao,
@@ -570,6 +568,7 @@ class ChatRepositoryTest {
       ioDispatcher = UnconfinedTestDispatcher(),
       rename = rename,
       transactionRunner = transactionRunner,
+      payloadWriter = payloadWriter,
     )
 
   private fun userMessage(text: String, createdAt: Long): MessageEntity =
