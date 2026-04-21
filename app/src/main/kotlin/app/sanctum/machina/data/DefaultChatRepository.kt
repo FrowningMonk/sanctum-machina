@@ -1,12 +1,16 @@
 package app.sanctum.machina.data
 
+import android.graphics.Bitmap
 import androidx.annotation.VisibleForTesting
 import androidx.room.withTransaction
+import app.sanctum.machina.core.common.pcmToWav
+import app.sanctum.machina.core.data.SAMPLE_RATE
 import app.sanctum.machina.core.log.ErrorLog
 import app.sanctum.machina.data.dao.ChatDao
 import app.sanctum.machina.data.dao.MessageDao
 import app.sanctum.machina.data.model.ChatEntity
 import app.sanctum.machina.data.model.MessageEntity
+import app.sanctum.machina.ui.chat.Attachment
 import java.io.File
 import java.io.IOException
 import javax.inject.Inject
@@ -72,6 +76,8 @@ internal constructor(
     firstMessage: MessageEntity,
     stagingDir: File?,
     filesDir: File,
+    stagedImageFilename: String?,
+    stagedAudioFilename: String?,
   ): Long = withContext(ioDispatcher) {
     val attachmentsRoot = File(filesDir, ATTACHMENTS_DIR)
 
@@ -80,13 +86,7 @@ internal constructor(
       // `filesDir/attachments/`. Rejecting outside-tree paths before the
       // Room INSERT prevents an internal-API misuse from creating directories
       // outside the app's attachments root.
-      val rootCanonical = attachmentsRoot.canonicalPath
-      val stagingCanonical = stagingDir.canonicalPath
-      if (!stagingCanonical.startsWith(rootCanonical + File.separator)) {
-        throw IOException(
-          "staging dir must live under attachments root: $stagingCanonical",
-        )
-      }
+      requireInsideAttachmentsRoot(stagingDir, filesDir)
       if (!stagingDir.exists()) {
         throw IOException("staging dir missing: ${stagingDir.absolutePath}")
       }
@@ -110,7 +110,18 @@ internal constructor(
     try {
       transactionRunner {
         val id = chatDao.insert(chat)
-        messageDao.insert(firstMessage.copy(chatId = id))
+        // Rewrite relative paths from "staging" to final `{chatId}` inside the
+        // transaction — the chat id is only known here, and we want Room row
+        // and on-disk state agreed at commit time (Decision 6).
+        val imagePath = stagedImageFilename?.let { "$ATTACHMENTS_DIR/$id/$it" }
+        val audioPath = stagedAudioFilename?.let { "$ATTACHMENTS_DIR/$id/$it" }
+        messageDao.insert(
+          firstMessage.copy(
+            chatId = id,
+            imagePath = imagePath ?: firstMessage.imagePath,
+            audioPath = audioPath ?: firstMessage.audioPath,
+          ),
+        )
         if (stagingDir != null) {
           val finalDir = File(attachmentsRoot, id.toString())
           if (!rename(stagingDir, finalDir)) {
@@ -127,6 +138,105 @@ internal constructor(
       // path is a no-op.
       stagingDir?.deleteRecursively()
       throw t
+    }
+  }
+
+  override suspend fun writeAttachmentStaging(
+    stagingDir: File,
+    attachment: Attachment,
+  ): String = withContext(ioDispatcher) {
+    // Share the containment guarantee with `commitDraftChat` — any caller with
+    // a reference to this method could otherwise write payload bytes outside
+    // the app's attachments root. `filesDir` is the parent of the
+    // `attachments/` directory that must contain `stagingDir`; we derive it
+    // from `stagingDir.parentFile?.parentFile` after resolving canonical paths.
+    val filesDir = attachmentsRootFor(stagingDir).parentFile
+      ?: throw IOException("cannot derive filesDir from stagingDir: ${stagingDir.absolutePath}")
+    requireInsideAttachmentsRoot(stagingDir, filesDir)
+
+    if (!stagingDir.exists() && !stagingDir.mkdirs()) {
+      throw IOException("failed to create staging dir: ${stagingDir.absolutePath}")
+    }
+    val filename = nextAttachmentFilename(stagingDir, attachment)
+    val target = File(stagingDir, filename)
+    writeAttachmentPayload(attachment, target)
+    filename
+  }
+
+  override suspend fun savePersistentAttachment(
+    chatId: Long,
+    filesDir: File,
+    attachment: Attachment,
+  ): PersistedAttachment = withContext(ioDispatcher) {
+    val chatDir = File(filesDir, "$ATTACHMENTS_DIR/$chatId")
+    if (!chatDir.exists() && !chatDir.mkdirs()) {
+      throw IOException("failed to create attachments dir: ${chatDir.absolutePath}")
+    }
+    val filename = nextAttachmentFilename(chatDir, attachment)
+    val target = File(chatDir, filename)
+    writeAttachmentPayload(attachment, target)
+    val relative = "$ATTACHMENTS_DIR/$chatId/$filename"
+    when (attachment) {
+      is Attachment.Image -> PersistedAttachment(imagePath = relative)
+      is Attachment.Audio -> PersistedAttachment(audioPath = relative)
+    }
+  }
+
+  /**
+   * Common write: PNG for Image (lossless — Phase 3 prioritises fidelity over
+   * size; cf. user-spec Risk #5), RIFF/WAVE for Audio (via [pcmToWav] so the
+   * file is self-contained and playable). Partial files are deleted on write
+   * failure — the caller sees a clean `IOException` without an orphan stub.
+   */
+  private fun writeAttachmentPayload(attachment: Attachment, target: File) {
+    try {
+      when (attachment) {
+        is Attachment.Image -> target.outputStream().use { out ->
+          if (!attachment.bitmap.compress(Bitmap.CompressFormat.PNG, /* quality = */ 100, out)) {
+            throw IOException("Bitmap.compress returned false: ${target.absolutePath}")
+          }
+        }
+        is Attachment.Audio -> target.writeBytes(pcmToWav(attachment.pcm, SAMPLE_RATE))
+      }
+    } catch (t: Throwable) {
+      // Clean up the partial file so the next nextAttachmentFilename() call
+      // does not pick up a half-written payload as "N=0".
+      target.delete()
+      throw t
+    }
+  }
+
+  private fun nextAttachmentFilename(dir: File, attachment: Attachment): String {
+    val count = dir.listFiles()?.size ?: 0
+    val prefix = when (attachment) {
+      is Attachment.Image -> "img"
+      is Attachment.Audio -> "audio"
+    }
+    val ext = when (attachment) {
+      is Attachment.Image -> "png"
+      is Attachment.Audio -> "wav"
+    }
+    return "${prefix}_${count}.${ext}"
+  }
+
+  private fun attachmentsRootFor(stagingDir: File): File {
+    val parent = stagingDir.parentFile
+      ?: throw IOException("staging dir has no parent: ${stagingDir.absolutePath}")
+    if (parent.name != ATTACHMENTS_DIR) {
+      throw IOException(
+        "staging dir must live directly under attachments/: ${stagingDir.absolutePath}",
+      )
+    }
+    return parent
+  }
+
+  private fun requireInsideAttachmentsRoot(candidate: File, filesDir: File) {
+    val attachmentsRoot = File(filesDir, ATTACHMENTS_DIR).canonicalPath
+    val candidateCanonical = candidate.canonicalPath
+    if (!candidateCanonical.startsWith(attachmentsRoot + File.separator)) {
+      throw IOException(
+        "path must live under attachments root: $candidateCanonical",
+      )
     }
   }
 

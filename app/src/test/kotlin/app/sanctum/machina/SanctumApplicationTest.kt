@@ -253,7 +253,19 @@ class SanctumApplicationTest {
             firstMessage: MessageEntity,
             stagingDir: java.io.File?,
             filesDir: java.io.File,
+            stagedImageFilename: String?,
+            stagedAudioFilename: String?,
         ): Long = 0L
+        override suspend fun writeAttachmentStaging(
+            stagingDir: java.io.File,
+            attachment: app.sanctum.machina.ui.chat.Attachment,
+        ): String = ""
+        override suspend fun savePersistentAttachment(
+            chatId: Long,
+            filesDir: java.io.File,
+            attachment: app.sanctum.machina.ui.chat.Attachment,
+        ): app.sanctum.machina.data.PersistedAttachment =
+            app.sanctum.machina.data.PersistedAttachment()
         override suspend fun savePersistentMessage(message: MessageEntity) = Unit
         override suspend fun updateChatLastMessage(chatId: Long, timestampMs: Long) = Unit
         override suspend fun updateChatTitle(chatId: Long, title: String, isManuallyTitled: Boolean) = Unit

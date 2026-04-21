@@ -22,6 +22,8 @@ import app.sanctum.machina.data.ChatRepository
 import app.sanctum.machina.data.dao.ChatDao
 import app.sanctum.machina.data.dao.MessageDao
 import app.sanctum.machina.data.model.MessageEntity
+import java.io.File
+import java.util.UUID
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -132,6 +134,18 @@ constructor(
     private val _attachments = MutableStateFlow<List<Attachment>>(emptyList())
     val attachments: StateFlow<List<Attachment>> = _attachments.asStateFlow()
 
+    /**
+     * Lazy Draft-mode staging directory. Created on the first addImage* /
+     * addAudio call, so a Draft VM that sees no attachments leaves no
+     * `.staging-*` orphans
+     * behind — the startup sweep (Task 6 AC-A3) has nothing to clean up.
+     *
+     * Null in Quick / Persistent modes. Reset to null on successful commit in
+     * [commitDraft] (the directory is renamed into `attachments/{chatId}/`
+     * inside the transaction, so the old File handle is stale).
+     */
+    private var draftStagingDir: File? = null
+
     private val _modelCaps = MutableStateFlow(ModelCapabilities())
     val modelCaps: StateFlow<ModelCapabilities> = _modelCaps.asStateFlow()
 
@@ -176,11 +190,26 @@ constructor(
         if (state !is ChatUiState.Ready || state.isGenerating) return
         if (_reinitInProgress.value) return
 
+        // Task 17 send-gate: a Draft-mode attachment may still be mid-flight to
+        // the staging directory when the user taps Send. We must not commit a
+        // chat referencing a file that does not exist yet — the rename inside
+        // the Room transaction would either miss it (silent data loss) or the
+        // caller would supply a stagedFilename that was never written.
+        if (identity is ChatIdentity.Draft && pending.any { it.isStagingPending() }) {
+            _snackbar.tryEmit(R.string.attachment_still_saving)
+            return
+        }
+
         when (val id = identity) {
             ChatIdentity.Draft -> commitDraft(normalized, pending)
             ChatIdentity.Quick -> runInferenceQuick(normalized, pending)
             is ChatIdentity.Persistent -> runInferencePersistent(id, normalized, pending)
         }
+    }
+
+    private fun Attachment.isStagingPending(): Boolean = when (this) {
+        is Attachment.Image -> stagedFilename == null
+        is Attachment.Audio -> stagedFilename == null
     }
 
     fun stop() {
@@ -363,16 +392,25 @@ constructor(
                 if (bmp != null) decoded += Attachment.Image(bmp) else failed += uri
             }
 
+            val admitted: List<Attachment.Image>
             var droppedByRace = false
             if (decoded.isNotEmpty()) {
+                val accepted = mutableListOf<Attachment.Image>()
                 _attachments.update { current ->
                     val room = (MAX_IMAGES - current.count { it is Attachment.Image })
                         .coerceAtLeast(0)
                     val taken = decoded.take(room)
                     droppedByRace = decoded.size > taken.size
+                    accepted.clear()
+                    accepted.addAll(taken)
                     current + taken
                 }
+                admitted = accepted.toList()
+            } else {
+                admitted = emptyList()
             }
+
+            admitted.forEach { stageDraftAttachmentIfNeeded(it) }
 
             if (droppedPreDecode || droppedByRace) {
                 _snackbar.tryEmit(R.string.attachment_max_images_reached)
@@ -391,21 +429,114 @@ constructor(
             _snackbar.tryEmit(R.string.attachment_max_images_reached)
             return
         }
-        _attachments.update { it + Attachment.Image(downscaleIfOversized(bitmap)) }
+        val image = Attachment.Image(downscaleIfOversized(bitmap))
+        _attachments.update { it + image }
+        stageDraftAttachmentIfNeeded(image)
     }
 
     fun removeAttachment(idx: Int) {
+        val removed: Attachment? = run {
+            val snapshot = _attachments.value
+            if (idx < 0 || idx >= snapshot.size) null else snapshot[idx]
+        }
         _attachments.update { list ->
             if (idx < 0 || idx >= list.size) list
             else list.toMutableList().also { it.removeAt(idx) }
         }
+        if (removed != null) deleteStagedFileIfAny(removed)
     }
 
     fun addAudio(pcm: ByteArray, durationMs: Long) {
+        val alreadyHasAudio = _attachments.value.any { it is Attachment.Audio }
+        if (alreadyHasAudio) return
+        val audio = Attachment.Audio(pcm, durationMs)
         _attachments.update { current ->
-            if (current.any { it is Attachment.Audio }) current
-            else current + Attachment.Audio(pcm, durationMs)
+            if (current.any { it is Attachment.Audio }) current else current + audio
         }
+        // Only stage if the new audio was admitted to the list (races above).
+        if (_attachments.value.any { it.id == audio.id }) {
+            stageDraftAttachmentIfNeeded(audio)
+        }
+    }
+
+    /**
+     * Draft-only: launch an IO coroutine to write [attachment] into
+     * [draftStagingDir], then replace the in-memory instance with a copy
+     * that carries the returned `stagedFilename`. In Quick / Persistent modes
+     * this is a no-op — those paths never touch the staging area.
+     *
+     * On failure the attachment is removed from `_attachments` (so the user
+     * can retry), an `attachment_save_failed` snackbar is emitted, and the
+     * cause is logged under the `attachment-save` component.
+     */
+    private fun stageDraftAttachmentIfNeeded(attachment: Attachment) {
+        if (identity !is ChatIdentity.Draft) return
+        val dir = ensureDraftStagingDir()
+        viewModelScope.launch {
+            val result = runCatching { chatRepository.writeAttachmentStaging(dir, attachment) }
+            result.fold(
+                onSuccess = { filename ->
+                    _attachments.update { current ->
+                        current.map { existing ->
+                            if (existing.id != attachment.id) existing
+                            else when (existing) {
+                                is Attachment.Image -> Attachment.Image(
+                                    bitmap = existing.bitmap,
+                                    id = existing.id,
+                                    stagedFilename = filename,
+                                )
+                                is Attachment.Audio -> Attachment.Audio(
+                                    pcm = existing.pcm,
+                                    durationMs = existing.durationMs,
+                                    id = existing.id,
+                                    stagedFilename = filename,
+                                )
+                            }
+                        }
+                    }
+                },
+                onFailure = { cause ->
+                    _attachments.update { current -> current.filterNot { it.id == attachment.id } }
+                    _snackbar.tryEmit(R.string.attachment_save_failed)
+                    viewModelScope.launch {
+                        errorLog.e(
+                            "attachment-save",
+                            "writeAttachmentStaging failed for id=${attachment.id}",
+                            cause,
+                        )
+                    }
+                },
+            )
+        }
+    }
+
+    private fun deleteStagedFileIfAny(attachment: Attachment) {
+        if (identity !is ChatIdentity.Draft) return
+        val dir = draftStagingDir ?: return
+        val filename = when (attachment) {
+            is Attachment.Image -> attachment.stagedFilename
+            is Attachment.Audio -> attachment.stagedFilename
+        } ?: return
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val target = File(dir, filename)
+            if (target.exists() && !target.delete()) {
+                errorLog.e(
+                    "attachment-save",
+                    "removeAttachment delete failed: ${target.absolutePath}",
+                )
+            }
+        }
+    }
+
+    private fun ensureDraftStagingDir(): File {
+        val existing = draftStagingDir
+        if (existing != null) return existing
+        val created = File(
+            context.filesDir,
+            "attachments/.staging-${UUID.randomUUID()}",
+        )
+        draftStagingDir = created
+        return created
     }
 
     fun reportCameraError(description: String, cause: Throwable?) {
@@ -539,17 +670,24 @@ constructor(
             return
         }
         // Require a Ready engine for the first send — matches the Send-gate
-        // check in the outer `send()` (uiState must be Ready there). Attachments
-        // are accepted for future task wiring; Task 8 does not persist them
-        // (no ChatRepository.writeAttachmentsStaging hook yet). See
-        // decisions.md for the deferral.
+        // check in the outer `send()` (uiState must be Ready there).
         if (currentReadyModel() == null) return
-        @Suppress("UNUSED_PARAMETER") val attachmentsPlaceholder = pending
         // Flip the Send-gate synchronously so a rapid double-tap can't slip a
         // second commit past `state.isGenerating` before the first one
         // finishes (code-reviewer-1 M1). Reverted on commit failure below.
         _uiState.value = ChatUiState.Ready(isGenerating = true)
         val now = System.currentTimeMillis()
+        // MVP: one image + one audio per message row (mirrors the
+        // MessageEntity schema — single `image_path` / `audio_path`). The
+        // staged-file contract ensures these filenames point at already-
+        // written payloads inside `draftStagingDir`.
+        val stagedImage = pending.firstNotNullOfOrNull { att ->
+            (att as? Attachment.Image)?.stagedFilename
+        }
+        val stagedAudio = pending.firstNotNullOfOrNull { att ->
+            (att as? Attachment.Audio)?.stagedFilename
+        }
+        val stagingDir = draftStagingDir?.takeIf { stagedImage != null || stagedAudio != null }
         val firstMessage = MessageEntity(
             chatId = 0L,
             role = ROLE_USER,
@@ -562,13 +700,19 @@ constructor(
                 chatRepository.commitDraftChat(
                     modelId = modelId,
                     firstMessage = firstMessage,
-                    stagingDir = null,
+                    stagingDir = stagingDir,
                     filesDir = filesDir,
+                    stagedImageFilename = stagedImage,
+                    stagedAudioFilename = stagedAudio,
                 )
             }
             result.fold(
                 onSuccess = { chatId ->
                     _attachments.value = emptyList()
+                    // Staging dir is now renamed to `attachments/{chatId}/` — the
+                    // old File handle is stale, so drop it to prevent any late
+                    // `deleteStagedFileIfAny` from targeting the final chat dir.
+                    draftStagingDir = null
                     _navigation.tryEmit(ChatNavigationEvent.NavigateToPersistent(chatId))
                 },
                 onFailure = { cause ->
@@ -618,10 +762,47 @@ constructor(
         // inside the repository.
         val userTs = System.currentTimeMillis()
         viewModelScope.launch {
+            val persistedImage = pending.firstOrNull { it is Attachment.Image }
+            val persistedAudio = pending.firstOrNull { it is Attachment.Audio }
+            // MVP: single image + single audio per USER row (mirrors the
+            // Phase-2 send contract and the MessageEntity schema). Any
+            // additional images are still forwarded to inference via the
+            // bitmap list below — they just aren't persisted.
+            val imagePath: String?
+            val audioPath: String?
+            try {
+                imagePath = persistedImage?.let {
+                    chatRepository.savePersistentAttachment(identity.id, context.filesDir, it)
+                        .imagePath
+                }
+                audioPath = persistedAudio?.let {
+                    chatRepository.savePersistentAttachment(identity.id, context.filesDir, it)
+                        .audioPath
+                }
+            } catch (cause: Throwable) {
+                // Hard-gate (mirrors the USER-persist failure guard below): if
+                // the attachment write fails we must not start inference or
+                // write a USER row referencing a file that does not exist.
+                viewModelScope.launch {
+                    errorLog.e(
+                        "attachment-save",
+                        "savePersistentAttachment failed for chatId=${identity.id}",
+                        cause,
+                    )
+                }
+                _streamingMessage.value = null
+                _attachments.value = pending
+                _uiState.value = ChatUiState.Ready(isGenerating = false)
+                _snackbar.tryEmit(R.string.attachment_save_failed)
+                return@launch
+            }
+
             val userMsg = MessageEntity(
                 chatId = identity.id,
                 role = ROLE_USER,
                 text = text,
+                imagePath = imagePath,
+                audioPath = audioPath,
                 createdAt = userTs,
             )
             // Only bump `last_message_at` if the save actually landed. A

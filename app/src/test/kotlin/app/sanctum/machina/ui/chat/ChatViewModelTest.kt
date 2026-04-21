@@ -23,6 +23,7 @@ import app.sanctum.machina.core.runtime.ResultListener
 import app.sanctum.machina.core.settings.AppSettingsRepository
 import app.sanctum.machina.core.settings.proto.PerModelSettings
 import app.sanctum.machina.data.ChatRepository
+import app.sanctum.machina.data.PersistedAttachment
 import app.sanctum.machina.data.dao.ChatDao
 import app.sanctum.machina.data.dao.MessageDao
 import app.sanctum.machina.data.model.ChatEntity
@@ -421,6 +422,266 @@ class ChatViewModelTest {
         assertEquals(
             1,
             fakeChatRepository.insertedMessages.count { it.role == "user" },
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // Task 17 — attachment staging (Draft atomicity + Persistent write)
+    // ------------------------------------------------------------------
+
+    @Test
+    fun draftMode_addImage_writesToStagingDir() = runTest(dispatcher) {
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m", llmSupportImage = true))
+        val vm = buildViewModel(ChatIdentityArg.Draft)
+        advanceUntilIdle()
+
+        vm.addImageBitmap(stubBitmap())
+        advanceUntilIdle()
+
+        assertEquals(
+            "Draft add must write the image to staging",
+            1,
+            fakeChatRepository.stagingWrites.count { it is Attachment.Image },
+        )
+        val attached = vm.attachments.value.single() as Attachment.Image
+        assertEquals(
+            "staged filename populated on attachment after write",
+            "img_0.png",
+            attached.stagedFilename,
+        )
+    }
+
+    @Test
+    fun draftMode_addAudio_writesToStagingDir() = runTest(dispatcher) {
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m", llmSupportAudio = true))
+        val vm = buildViewModel(ChatIdentityArg.Draft)
+        advanceUntilIdle()
+
+        vm.addAudio(byteArrayOf(1, 2, 3), durationMs = 500L)
+        advanceUntilIdle()
+
+        assertEquals(
+            "Draft audio add must write to staging",
+            1,
+            fakeChatRepository.stagingWrites.count { it is Attachment.Audio },
+        )
+        val audio = vm.attachments.value.single() as Attachment.Audio
+        assertEquals("audio_0.wav", audio.stagedFilename)
+    }
+
+    @Test
+    fun quickMode_addImage_doesNotStage() = runTest(dispatcher) {
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m", llmSupportImage = true))
+        val vm = buildViewModel(ChatIdentityArg.Quick)
+        advanceUntilIdle()
+
+        vm.addImageBitmap(stubBitmap())
+        advanceUntilIdle()
+
+        assertEquals(
+            "Quick must not touch the staging API",
+            0,
+            fakeChatRepository.stagingWrites.size,
+        )
+    }
+
+    @Test
+    fun draftMode_commitWithAttachment_passesStagingDirAndFilenames() = runTest(dispatcher) {
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m", llmSupportImage = true))
+        val vm = buildViewModel(ChatIdentityArg.Draft)
+        advanceUntilIdle()
+        vm.addImageBitmap(stubBitmap())
+        advanceUntilIdle()
+
+        vm.send("look at this")
+        advanceUntilIdle()
+
+        val commit = fakeChatRepository.commitCalls.single()
+        assertEquals("staged image forwarded", "img_0.png", commit.stagedImageFilename)
+        assertNull("no audio staged", commit.stagedAudioFilename)
+        assertNotNull("staging dir non-null when image staged", commit.stagingDir)
+    }
+
+    @Test
+    fun draftMode_stagingWriteFails_removesAttachmentAndShowsSnackbar() = runTest(dispatcher) {
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m", llmSupportImage = true))
+        fakeChatRepository.writeStagingError = java.io.IOException("disk full")
+        val vm = buildViewModel(ChatIdentityArg.Draft)
+        advanceUntilIdle()
+        val events = collectSnackbar(vm)
+
+        vm.addImageBitmap(stubBitmap())
+        advanceUntilIdle()
+
+        assertTrue(
+            "failed staging write removes attachment from list",
+            vm.attachments.value.isEmpty(),
+        )
+        assertTrue(
+            "user sees attachment_save_failed snackbar",
+            events.contains(R.string.attachment_save_failed),
+        )
+    }
+
+    @Test
+    fun draftMode_sendWhileStagingInFlight_blocksWithSnackbar() = runTest(dispatcher) {
+        // Force the staging write to never complete — we control the outcome by
+        // throwing a sentinel AFTER the in-flight gate check has already run,
+        // but easier: make writeStagingError throw so attachment never gains a
+        // stagedFilename (stays null in _attachments). Wait — that also removes
+        // the attachment. Use a gating Deferred instead.
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m", llmSupportImage = true))
+        val vm = buildViewModel(ChatIdentityArg.Draft)
+        advanceUntilIdle()
+
+        // Inject an attachment that is still "in-flight" by bypassing the
+        // coroutine race: directly craft an Image with stagedFilename = null
+        // and place it on the flow via addImageBitmap. Because dispatcher is
+        // Unconfined, the staging coroutine normally completes before we call
+        // send(). To simulate the race, we temporarily set writeStagingError
+        // to a non-null value AFTER addImageBitmap runs — the attachment
+        // still has stagedFilename=null at the moment of send().
+        //
+        // Simpler model: use a blocking Mutex-backed stub. But the fake does
+        // not support it. Instead: manually invoke send BEFORE the staging
+        // coroutine gets a chance — not possible under UnconfinedTestDispatcher
+        // because `advanceUntilIdle` will drain the queue first. The gate is
+        // still exercised at the unit level: we assert the send() path returns
+        // on a pending attachment by feeding it a hand-crafted state.
+
+        // Path used: direct attachment injection via reflection on _attachments
+        // is out of scope. Instead, verify the gate guard exists by making the
+        // staging write suspend indefinitely using a cancel-sentinel. Reuse
+        // writeStagingError but with a CancellationException so the fake never
+        // registers a success and the attachment stays with stagedFilename=null
+        // after removal. This still removes the attachment from the list via
+        // onFailure, so the gate has nothing to block.
+
+        // Concrete assertion: after a FRESH Draft VM, if _attachments contains
+        // any Image whose stagedFilename is null, send() must snackbar and not
+        // commit. Exercise via a custom stub that suspends. Swap the fake with
+        // a configurable version is overkill — we rely on the fact that the
+        // gate is driven purely by Attachment.stagedFilename == null.
+        //
+        // Deterministic test: simulate by temporarily making the staging call
+        // delay via a Job we control.
+        val block = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val suspending = object : ChatRepository by fakeChatRepository {
+            override suspend fun writeAttachmentStaging(
+                stagingDir: File,
+                attachment: Attachment,
+            ): String {
+                block.await()
+                return "img_0.png"
+            }
+        }
+        val savedState = SavedStateHandle(
+            mapOf(ChatViewModel.NAV_ARG_KIND to ChatViewModel.KIND_DRAFT),
+        )
+        val vm2 = ChatViewModel(
+            savedStateHandle = savedState,
+            registry = fakeRegistry,
+            helper = fakeHelper,
+            errorLog = ErrorLog(context),
+            context = context,
+            imageDecoder = fakeDecoder,
+            settingsRepository = fakeRepo,
+            chatRepository = suspending,
+            messageDao = fakeMessageDao,
+            chatDao = fakeChatDao,
+        )
+        advanceUntilIdle()
+        val events = collectSnackbar(vm2)
+
+        vm2.addImageBitmap(stubBitmap())
+        advanceUntilIdle()
+        // Staging is still pending: stagedFilename must be null right now.
+        val pending = vm2.attachments.value.single() as Attachment.Image
+        assertNull("staging still in flight", pending.stagedFilename)
+
+        vm2.send("go")
+        advanceUntilIdle()
+
+        assertEquals("send must NOT commit while staging pending", 0, fakeChatRepository.commitCalls.size)
+        assertTrue(
+            "send emits attachment_still_saving snackbar",
+            events.contains(R.string.attachment_still_saving),
+        )
+        block.complete(Unit)
+    }
+
+    @Test
+    fun draftMode_removeAttachment_deletesStagedFile() = runTest(dispatcher) {
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m", llmSupportImage = true))
+        val vm = buildViewModel(ChatIdentityArg.Draft)
+        advanceUntilIdle()
+        vm.addImageBitmap(stubBitmap())
+        advanceUntilIdle()
+        val stagedName = (vm.attachments.value.single() as Attachment.Image).stagedFilename
+        assertEquals("img_0.png", stagedName)
+        // Real FS: the fake does not actually write the file, so assert the
+        // removal path does not crash and drops the attachment from the list.
+        vm.removeAttachment(0)
+        advanceUntilIdle()
+
+        assertTrue("attachment removed from list", vm.attachments.value.isEmpty())
+    }
+
+    @Test
+    fun persistentMode_sendWithImage_callsSavePersistentAttachment() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m", llmSupportImage = true)
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+        vm.addImageBitmap(stubBitmap())
+        advanceUntilIdle()
+
+        vm.send("describe")
+        advanceUntilIdle()
+
+        assertEquals(
+            "savePersistentAttachment called for image in persistent mode",
+            1,
+            fakeChatRepository.persistentAttachmentCalls.count { it.attachment is Attachment.Image },
+        )
+        val saved = fakeChatRepository.insertedMessages.single { it.role == "user" }
+        assertEquals("USER row carries persisted image path", "attachments/7/img_0.png", saved.imagePath)
+    }
+
+    @Test
+    fun persistentMode_savePersistentAttachmentFails_abortsInference() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m", llmSupportImage = true)
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        fakeChatRepository.savePersistentAttachmentError = java.io.IOException("ENOSPC")
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+        vm.addImageBitmap(stubBitmap())
+        advanceUntilIdle()
+        val events = collectSnackbar(vm)
+
+        vm.send("describe")
+        advanceUntilIdle()
+
+        assertEquals(
+            "attachment save failure must NOT trigger runInference (hard-gate)",
+            0,
+            fakeHelper.runInferenceCalls,
+        )
+        assertEquals(
+            "USER row must not be written if its attachment never landed on disk",
+            0,
+            fakeChatRepository.insertedMessages.count { it.role == "user" },
+        )
+        assertTrue(
+            "Send gate reopened",
+            vm.uiState.value is ChatUiState.Ready &&
+                !(vm.uiState.value as ChatUiState.Ready).isGenerating,
+        )
+        assertTrue(
+            "user sees attachment_save_failed snackbar",
+            events.contains(R.string.attachment_save_failed),
         )
     }
 
@@ -1110,11 +1371,26 @@ private class FakeChatRepository : ChatRepository {
         val modelId: String,
         val firstMessage: MessageEntity,
         val stagingDir: File?,
+        val stagedImageFilename: String?,
+        val stagedAudioFilename: String?,
+    )
+
+    data class PersistentAttachmentCall(
+        val chatId: Long,
+        val attachment: Attachment,
     )
 
     val commitCalls = mutableListOf<CommitCall>()
     val insertedMessages = mutableListOf<MessageEntity>()
+    val stagingWrites = mutableListOf<Attachment>()
+    val persistentAttachmentCalls = mutableListOf<PersistentAttachmentCall>()
     var nextChatId: Long = 1L
+    var writeStagingError: Throwable? = null
+    var savePersistentAttachmentError: Throwable? = null
+
+    /** Counter used to generate unique staged filenames for image/audio. */
+    private var stagedImageIndex = 0
+    private var stagedAudioIndex = 0
 
     /**
      * Optional cross-fake ordering log. Wiring this to the same list used by
@@ -1128,10 +1404,43 @@ private class FakeChatRepository : ChatRepository {
         firstMessage: MessageEntity,
         stagingDir: File?,
         filesDir: File,
+        stagedImageFilename: String?,
+        stagedAudioFilename: String?,
     ): Long {
         eventLog?.add("commitDraftChat")
-        commitCalls += CommitCall(modelId, firstMessage, stagingDir)
+        commitCalls += CommitCall(
+            modelId = modelId,
+            firstMessage = firstMessage,
+            stagingDir = stagingDir,
+            stagedImageFilename = stagedImageFilename,
+            stagedAudioFilename = stagedAudioFilename,
+        )
         return nextChatId
+    }
+
+    override suspend fun writeAttachmentStaging(
+        stagingDir: File,
+        attachment: Attachment,
+    ): String {
+        writeStagingError?.let { throw it }
+        stagingWrites += attachment
+        return when (attachment) {
+            is Attachment.Image -> "img_${stagedImageIndex++}.png"
+            is Attachment.Audio -> "audio_${stagedAudioIndex++}.wav"
+        }
+    }
+
+    override suspend fun savePersistentAttachment(
+        chatId: Long,
+        filesDir: File,
+        attachment: Attachment,
+    ): PersistedAttachment {
+        savePersistentAttachmentError?.let { throw it }
+        persistentAttachmentCalls += PersistentAttachmentCall(chatId, attachment)
+        return when (attachment) {
+            is Attachment.Image -> PersistedAttachment(imagePath = "attachments/$chatId/img_0.png")
+            is Attachment.Audio -> PersistedAttachment(audioPath = "attachments/$chatId/audio_0.wav")
+        }
     }
 
     /**

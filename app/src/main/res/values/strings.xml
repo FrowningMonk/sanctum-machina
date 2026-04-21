@@ -77,6 +77,8 @@
   <string name="attachment_max_images_reached">Максимум 10 фото в одном сообщении.</string>
   <string name="attachment_audio_disabled">Максимум один аудио-клип на сообщение</string>
   <string name="attachment_image_decode_failed">Не удалось обработать фото.</string>
+  <string name="attachment_save_failed">Не удалось сохранить вложение.</string>
+  <string name="attachment_still_saving">Вложение ещё сохраняется…</string>
 
   <!-- Camera bottom sheet -->
   <string name="camera_capture">Снять</string>

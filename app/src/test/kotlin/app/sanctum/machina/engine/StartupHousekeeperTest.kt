@@ -192,7 +192,21 @@ class StartupHousekeeperTest {
             firstMessage: MessageEntity,
             stagingDir: File?,
             filesDir: File,
+            stagedImageFilename: String?,
+            stagedAudioFilename: String?,
         ): Long = 0L
+
+        override suspend fun writeAttachmentStaging(
+            stagingDir: File,
+            attachment: app.sanctum.machina.ui.chat.Attachment,
+        ): String = ""
+
+        override suspend fun savePersistentAttachment(
+            chatId: Long,
+            filesDir: File,
+            attachment: app.sanctum.machina.ui.chat.Attachment,
+        ): app.sanctum.machina.data.PersistedAttachment =
+            app.sanctum.machina.data.PersistedAttachment()
 
         override suspend fun savePersistentMessage(message: MessageEntity) = Unit
         override suspend fun updateChatLastMessage(chatId: Long, timestampMs: Long) = Unit

@@ -2,8 +2,19 @@ package app.sanctum.machina.data
 
 import app.sanctum.machina.data.model.ChatEntity
 import app.sanctum.machina.data.model.MessageEntity
+import app.sanctum.machina.ui.chat.Attachment
 import java.io.File
 import kotlinx.coroutines.flow.Flow
+
+/**
+ * Result of [ChatRepository.savePersistentAttachment]. Exactly one of
+ * [imagePath] / [audioPath] is non-null, mirroring the [MessageEntity] schema
+ * (a single `messages` row carries at most one image path and one audio path).
+ */
+data class PersistedAttachment(
+  val imagePath: String? = null,
+  val audioPath: String? = null,
+)
 
 /**
  * Data-layer facade over `chats` / `messages` Room tables and the on-disk
@@ -41,7 +52,47 @@ interface ChatRepository {
     firstMessage: MessageEntity,
     stagingDir: File?,
     filesDir: File,
+    stagedImageFilename: String? = null,
+    stagedAudioFilename: String? = null,
   ): Long
+
+  /**
+   * Serialize [attachment] into [stagingDir], creating the directory lazily
+   * if missing. Returns the filename (relative to [stagingDir]) under which
+   * the payload was stored. Caller must remember [stagingDir] so it can be
+   * promoted to `filesDir/attachments/{chatId}/` by [commitDraftChat].
+   *
+   * [stagingDir] MUST live under `filesDir/attachments/` — the same
+   * containment check that [commitDraftChat] enforces (Decision 6, T4-S1).
+   * Partial writes on failure are rolled back (the half-written file is
+   * deleted) before the `IOException` is rethrown.
+   *
+   * Filenames are `img_{N}.png` / `audio_{N}.wav` where N is the next index
+   * in the directory — predictable for log/diagnostic reading.
+   */
+  suspend fun writeAttachmentStaging(
+    stagingDir: File,
+    attachment: Attachment,
+  ): String
+
+  /**
+   * Direct write for already-committed Persistent chats. Writes into
+   * `filesDir/attachments/{chatId}/` (creating the directory if needed) on
+   * `Dispatchers.IO` and returns the relative path in [PersistedAttachment].
+   * Exactly one of [PersistedAttachment.imagePath] / [PersistedAttachment.audioPath]
+   * is populated per call — callers place the value on [MessageEntity.imagePath]
+   * or [MessageEntity.audioPath] accordingly.
+   *
+   * Partial-fail is not critical here: `chatId` is stable, orphan files are
+   * cleaned up by [deleteChat] when the row is removed. Callers still
+   * surface write failure to the user (hard-gate the USER persist on
+   * `IOException` — same pattern as [savePersistentMessage]).
+   */
+  suspend fun savePersistentAttachment(
+    chatId: Long,
+    filesDir: File,
+    attachment: Attachment,
+  ): PersistedAttachment
 
   /** Insert a single message (USER on send, ASSISTANT on `done=true`). */
   suspend fun savePersistentMessage(message: MessageEntity)

@@ -5,8 +5,10 @@ import androidx.test.core.app.ApplicationProvider
 import app.sanctum.machina.core.log.ErrorLog
 import app.sanctum.machina.data.dao.ChatDao
 import app.sanctum.machina.data.dao.MessageDao
+import android.graphics.Bitmap
 import app.sanctum.machina.data.model.ChatEntity
 import app.sanctum.machina.data.model.MessageEntity
+import app.sanctum.machina.ui.chat.Attachment
 import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -19,6 +21,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -298,6 +301,130 @@ class ChatRepositoryTest {
       "chat with messages but no dir must NOT be deleted",
       chatDao.deleteByIdCalls.contains(keepId),
     )
+  }
+
+  // ---- writeAttachmentStaging ----
+
+  @Test
+  fun writeAttachmentStaging_image_writesPngFile() = runTest {
+    val staging = File(attachmentsRoot, ".staging-img")
+    val bmp = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888)
+    val repo = newRepository()
+
+    val filename = repo.writeAttachmentStaging(staging, Attachment.Image(bmp))
+
+    assertEquals("img_0.png", filename)
+    val written = File(staging, filename)
+    assertTrue("file exists", written.exists())
+    assertTrue("png payload non-empty", written.length() > 0L)
+    val decoded = android.graphics.BitmapFactory.decodeFile(written.absolutePath)
+    assertNotNull("file must decode back to a bitmap", decoded)
+  }
+
+  @Test
+  fun writeAttachmentStaging_audio_writesWavFile() = runTest {
+    val staging = File(attachmentsRoot, ".staging-aud")
+    val pcm = ByteArray(128) { it.toByte() }
+    val repo = newRepository()
+
+    val filename = repo.writeAttachmentStaging(staging, Attachment.Audio(pcm, 1_000L))
+
+    assertEquals("audio_0.wav", filename)
+    val written = File(staging, filename)
+    assertTrue("file exists", written.exists())
+    val header = written.readBytes().copyOfRange(0, 4)
+    assertEquals("RIFF header byte 0", 'R'.code.toByte(), header[0])
+    assertEquals("RIFF header byte 1", 'I'.code.toByte(), header[1])
+    assertEquals("RIFF header byte 2", 'F'.code.toByte(), header[2])
+    assertEquals("RIFF header byte 3", 'F'.code.toByte(), header[3])
+  }
+
+  @Test
+  fun writeAttachmentStaging_sequentialWrites_appendIndices() = runTest {
+    val staging = File(attachmentsRoot, ".staging-multi")
+    val repo = newRepository()
+    val bmp = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+
+    val first = repo.writeAttachmentStaging(staging, Attachment.Image(bmp))
+    val second = repo.writeAttachmentStaging(staging, Attachment.Image(bmp))
+
+    assertEquals("img_0.png", first)
+    assertEquals("img_1.png", second)
+  }
+
+  @Test
+  fun writeAttachmentStaging_stagingDirOutsideRoot_throws() = runTest {
+    val outside = tempFolder.newFolder("not-attachments")
+    val repo = newRepository()
+    val bmp = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+
+    val thrown = runCatching {
+      repo.writeAttachmentStaging(outside, Attachment.Image(bmp))
+    }.exceptionOrNull()
+
+    assertTrue("IOException expected, got $thrown", thrown is IOException)
+  }
+
+  // ---- savePersistentAttachment ----
+
+  @Test
+  fun savePersistentAttachment_image_writesUnderChatDir() = runTest {
+    val repo = newRepository()
+    val bmp = Bitmap.createBitmap(3, 3, Bitmap.Config.ARGB_8888)
+
+    val result = repo.savePersistentAttachment(chatId = 42L, filesDir = filesDir, Attachment.Image(bmp))
+
+    assertEquals("attachments/42/img_0.png", result.imagePath)
+    assertNull(result.audioPath)
+    assertTrue(File(filesDir, "attachments/42/img_0.png").exists())
+  }
+
+  @Test
+  fun savePersistentAttachment_audio_writesUnderChatDir() = runTest {
+    val repo = newRepository()
+    val pcm = ByteArray(16)
+
+    val result = repo.savePersistentAttachment(chatId = 7L, filesDir = filesDir, Attachment.Audio(pcm, 500L))
+
+    assertEquals("attachments/7/audio_0.wav", result.audioPath)
+    assertNull(result.imagePath)
+    assertTrue(File(filesDir, "attachments/7/audio_0.wav").exists())
+  }
+
+  @Test
+  fun savePersistentAttachment_sequentialCalls_nextIndex() = runTest {
+    val repo = newRepository()
+    val bmp = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+
+    val a = repo.savePersistentAttachment(chatId = 9L, filesDir = filesDir, Attachment.Image(bmp))
+    val b = repo.savePersistentAttachment(chatId = 9L, filesDir = filesDir, Attachment.Image(bmp))
+
+    assertEquals("attachments/9/img_0.png", a.imagePath)
+    assertEquals("attachments/9/img_1.png", b.imagePath)
+  }
+
+  // ---- commitDraftChat with staged filenames ----
+
+  @Test
+  fun commitDraftChat_withStagedFilenames_writesFinalPathsOnMessage() = runTest {
+    val staging = File(attachmentsRoot, ".staging-final").apply { mkdirs() }
+    File(staging, "img_0.png").writeBytes(byteArrayOf(1))
+    val repo = newRepository()
+
+    val chatId = repo.commitDraftChat(
+      modelId = "m/x",
+      firstMessage = userMessage("hi", 1L),
+      stagingDir = staging,
+      filesDir = filesDir,
+      stagedImageFilename = "img_0.png",
+      stagedAudioFilename = null,
+    )
+
+    val stored = messageDao.byChat[chatId]!!.single()
+    assertEquals("attachments/$chatId/img_0.png", stored.imagePath)
+    assertNull("no audio staged → no audio path", stored.audioPath)
+    assertTrue("final file under chat dir", File(filesDir, "attachments/$chatId/img_0.png").exists())
+    assertFalse("staging dir was renamed", staging.exists())
   }
 
   // ---- auto-title trigger on commit ----
