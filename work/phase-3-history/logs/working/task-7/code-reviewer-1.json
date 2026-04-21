@@ -1,0 +1,77 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "Task 7 cleanly lands the Phase-3 navigation rework. Start destination is switched to `home`, ModalNavigationDrawer is wired with DrawerState/CoroutineScope hoisted in SanctumApp, all four new routes (`chat/quick?modelId=`, `chat/draft`, `chat/{chatId}`, plus tombstone redirect) are registered with correct NavType/nullability, and the HomeScreen/HomeViewModel pair correctly follow the stateIn/WhileSubscribed(5_000) pattern with the tech-spec-mandated `ModelDownloadStatusType.SUCCEEDED` predicate. Cross-file signatures (ModelRegistry.activeModelName, ModelEntry.downloadStatus.status, SmSigil, ModelManagerScreen) all match. No critical findings; a few minor concerns around a latent route-ambiguity between the tombstone and the new Long-typed chat/{chatId} route, modelId URL-encoding, and a TopAppBar accessibility stub worth noting for Task 8/Task 10.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/SanctumApp.kt",
+      "line": 85,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "Two composable destinations share the path template `chat/{...}`: the new `chat/{chatId}` (NavType.LongType, line 73) and the tombstone `chat/{modelName}` (NavType.StringType, line 86). In Navigation-Compose both templates will be considered for `navigate(\"chat/<something>\")`; the registration order + NavType parse outcome decides which one wins. Today no in-app call site navigates to the old name-based route (the old `onLoad` string-encoded call was replaced with `chat/quick?modelId=...`), so the tombstone is effectively dead code — but a stray `navigate(\"chat/not-a-long\")` from future code would be parsed as `chat/{chatId}` first, fail the Long cast, and either crash or silently fall through. Task 7 is fine as-is because the tombstone exists only to survive the Task 7 → Task 8 window per the task description; just make sure Task 8 deletes it rather than leaves it registered, and that the tombstone comment (`// TOMBSTONE: ... removed in Task 8`) is load-bearing for that reviewer.",
+      "benefit": "Prevents a confusing latent routing bug after Task 8 lands.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/SanctumApp.kt",
+      "line": 101,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "`navController.navigate(\"chat/quick?modelId=$modelId\")` interpolates `modelId` directly into the URL. HF-style model ids contain `/` (e.g. `litert-community/gemma-4-E4B-it-litert-lm`) which is a path separator in a nav route — the query value would be parsed with embedded slashes. Task 7 ships this as a stub anyway (Task 11 is the real wiring per the task description and the inline comment), and Task 8 may route this differently, but Task 11 should use `Uri.encode(modelId)` around the value before concatenation to guarantee correct decoding in the destination lambda.",
+      "benefit": "Avoids silent corruption of modelId for any id containing `/`, `?`, `&`, or `#` when the real wiring lands in Task 11.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/home/HomeScreen.kt",
+      "line": 69,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "The settings IconButton uses `onClick = {}` with a visible icon and `contentDescription = stringResource(R.string.home_settings_open)`. Talkback will announce the button as a real target but nothing happens on activation. The task explicitly allows a no-op stub (`// TODO(Phase 5): SettingsScreen`), so this is minor, but consider either `enabled = false` (greys the icon, signals inactive to a11y) or hiding it entirely until Phase 5. Leaving it as an active-looking no-op creates a small usability trap on first-run.",
+      "benefit": "Clearer accessibility and user expectation signalling for the placeholder settings icon.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/home/HomeScreen.kt",
+      "line": 79,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "`HomeStatusBar` always renders a bottom bar with either the active model name or the cold-state label. The tech-spec (task.md \"Bottom status bar showing activeModelName\") and sanctum-screen-home.jsx design both describe a \"warmup state dot + model chip\" — a visual affordance indicating warm/cold state, not just text. The current rendering is semantically correct but visually sparse. Task 10 explicitly covers TopAppBar state-machine and the corruption banner, but the home status chip seems to belong to Task 7 per the scope. Consider whether Task 10 or a follow-up should add the accent dot + chip styling, and leave a `// TODO(Task 10 or follow-up): visual chip + warmup dot per design` comment so it doesn't silently fall between tasks.",
+      "benefit": "Prevents the status-bar visual from being forgotten between tasks.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/home/HomeScreen.kt",
+      "line": 51,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "The file uses 2-space indentation (HomeScreen.kt, HomeViewModel.kt) while SanctumApp.kt uses 4-space indentation (matching the existing Google/Gallery-derived code in ModelManagerScreen, ChatScreen, SmSigil, etc.). This looks like an inconsistency introduced by the new files. `patterns.md` does not mandate one formatter, but the rest of the `app/` module is consistently 4-space. Align HomeScreen.kt and HomeViewModel.kt to 4-space indentation for cross-file consistency, or run whatever formatter is agreed on the project.",
+      "benefit": "Consistent formatting across `:app` makes diffs cleaner and reduces cognitive overhead.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/home/HomeViewModel.kt",
+      "line": 43,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The KDoc mentions `activeModelName` as \"pass-through of ModelRegistry.activeModelName\" — correct — but `ModelRegistry.activeModelName` actually emits `Model.modelId` (the stable HF id like `litert-community/gemma-4-E4B-it-litert-lm`), per the ModelRegistry KDoc (lines 18–37). The HomeScreen status bar (`HomeStatusBar`, HomeScreen.kt:154) renders this directly as display text. Showing a raw HF id in the bottom chip is not ideal UX — users will see `litert-community/gemma-4-E4B-it-litert-lm` instead of `Gemma-4 E4B-it`. This is technically out of Task 7's responsibility (Task 0/Task 10 own the UX polish) but worth calling out so Task 10's \"display name resolution\" follow-up does not miss the home status bar.",
+      "benefit": "Avoids the bottom status bar showing raw HF ids in production.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/home/HomeScreen.kt",
+      "line": 95,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "`HomeReadyBody` and `HomeNoModelsBody` duplicate the sigil+product-name header block (4 lines each: `SmSigil`, `Spacer`, product-name `Text`, kicker/body `Text`). Consider extracting a shared `HomeIdentityHeader` composable to avoid drift — Task 10's corruption banner work will add a third surface that might want the same header. Minor, not a blocker.",
+      "benefit": "Single place to change the product-identity header going forward.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 7,
+    "testCoverageAssessment": "adequate"
+  }
+}

@@ -44,125 +44,129 @@ import app.sanctum.machina.ui.components.SmSigil
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
-  onNewQuickChat: () -> Unit,
-  onOpenModelManager: () -> Unit,
-  onOpenDrawer: () -> Unit,
-  viewModel: HomeViewModel = hiltViewModel(),
+    onNewQuickChat: () -> Unit,
+    onOpenModelManager: () -> Unit,
+    onOpenDrawer: () -> Unit,
+    viewModel: HomeViewModel = hiltViewModel(),
 ) {
-  val hasDownloadedModels by viewModel.hasDownloadedModels.collectAsStateWithLifecycle()
-  val activeModelName by viewModel.activeModelName.collectAsStateWithLifecycle()
+    val hasDownloadedModels by viewModel.hasDownloadedModels.collectAsStateWithLifecycle()
+    val activeModelName by viewModel.activeModelName.collectAsStateWithLifecycle()
 
-  Scaffold(
-    topBar = {
-      TopAppBar(
-        navigationIcon = {
-          IconButton(onClick = onOpenDrawer) {
-            Icon(
-              imageVector = Icons.Outlined.Menu,
-              contentDescription = stringResource(R.string.home_menu_open),
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                navigationIcon = {
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(
+                            imageVector = Icons.Outlined.Menu,
+                            contentDescription = stringResource(R.string.home_menu_open),
+                        )
+                    }
+                },
+                title = { Text(stringResource(R.string.home_title)) },
+                actions = {
+                    // TODO(Phase 5): wire to SettingsScreen; keep disabled until it exists so
+                    // the icon is not a silent no-op tap target.
+                    IconButton(onClick = {}, enabled = false) {
+                        Icon(
+                            imageVector = Icons.Outlined.Settings,
+                            contentDescription = stringResource(R.string.home_settings_open),
+                        )
+                    }
+                },
             )
-          }
         },
-        title = { Text(stringResource(R.string.home_title)) },
-        actions = {
-          // TODO(Phase 5): SettingsScreen — no-op until then.
-          IconButton(onClick = {}) {
-            Icon(
-              imageVector = Icons.Outlined.Settings,
-              contentDescription = stringResource(R.string.home_settings_open),
-            )
-          }
+        bottomBar = {
+            HomeStatusBar(activeModelName = activeModelName)
         },
-      )
-    },
-    bottomBar = {
-      HomeStatusBar(activeModelName = activeModelName)
-    },
-  ) { innerPadding ->
-    Box(
-      modifier = Modifier.fillMaxSize().padding(innerPadding),
-      contentAlignment = Alignment.Center,
-    ) {
-      if (hasDownloadedModels) {
-        HomeReadyBody(
-          onNewQuickChat = onNewQuickChat,
-          onOpenDrawer = onOpenDrawer,
-        )
-      } else {
-        HomeNoModelsBody(onOpenModelManager = onOpenModelManager)
-      }
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier.fillMaxSize().padding(innerPadding),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (hasDownloadedModels) {
+                HomeReadyBody(
+                    onNewQuickChat = onNewQuickChat,
+                    onOpenDrawer = onOpenDrawer,
+                )
+            } else {
+                HomeNoModelsBody(onOpenModelManager = onOpenModelManager)
+            }
+        }
     }
-  }
+}
+
+@Composable
+private fun HomeIdentity() {
+    SmSigil(size = 40.dp)
+    Spacer(Modifier.height(4.dp))
+    Text(
+        text = stringResource(R.string.home_product_name),
+        style = MaterialTheme.typography.headlineMedium,
+    )
+    Text(
+        text = stringResource(R.string.home_kicker),
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable
 private fun HomeReadyBody(
-  onNewQuickChat: () -> Unit,
-  onOpenDrawer: () -> Unit,
+    onNewQuickChat: () -> Unit,
+    onOpenDrawer: () -> Unit,
 ) {
-  Column(
-    modifier = Modifier.padding(horizontal = 24.dp),
-    horizontalAlignment = Alignment.CenterHorizontally,
-    verticalArrangement = Arrangement.spacedBy(12.dp),
-  ) {
-    SmSigil(size = 40.dp)
-    Spacer(Modifier.height(4.dp))
-    Text(
-      text = stringResource(R.string.home_product_name),
-      style = MaterialTheme.typography.headlineMedium,
-    )
-    Text(
-      text = stringResource(R.string.home_kicker),
-      style = MaterialTheme.typography.bodyMedium,
-      color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    Spacer(Modifier.height(8.dp))
-    FilledTonalButton(onClick = onNewQuickChat) {
-      Text(stringResource(R.string.home_action_new_quick_chat))
+    Column(
+        modifier = Modifier.padding(horizontal = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        HomeIdentity()
+        Spacer(Modifier.height(8.dp))
+        FilledTonalButton(onClick = onNewQuickChat) {
+            Text(stringResource(R.string.home_action_new_quick_chat))
+        }
+        TextButton(onClick = onOpenDrawer) {
+            Text(stringResource(R.string.home_action_open_history))
+        }
     }
-    TextButton(onClick = onOpenDrawer) {
-      Text(stringResource(R.string.home_action_open_history))
-    }
-  }
 }
 
 @Composable
 private fun HomeNoModelsBody(onOpenModelManager: () -> Unit) {
-  Column(
-    modifier = Modifier.padding(horizontal = 24.dp),
-    horizontalAlignment = Alignment.CenterHorizontally,
-    verticalArrangement = Arrangement.spacedBy(12.dp),
-  ) {
-    SmSigil(size = 40.dp)
-    Spacer(Modifier.height(4.dp))
-    Text(
-      text = stringResource(R.string.home_product_name),
-      style = MaterialTheme.typography.headlineMedium,
-    )
-    Text(
-      text = stringResource(R.string.home_no_models_body),
-      style = MaterialTheme.typography.bodyMedium,
-      color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    TextButton(onClick = onOpenModelManager) {
-      Text(stringResource(R.string.home_action_open_model_manager))
+    Column(
+        modifier = Modifier.padding(horizontal = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        HomeIdentity()
+        Text(
+            text = stringResource(R.string.home_no_models_body),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        TextButton(onClick = onOpenModelManager) {
+            Text(stringResource(R.string.home_action_open_model_manager))
+        }
     }
-  }
 }
 
 @Composable
 private fun HomeStatusBar(activeModelName: String?) {
-  val text = activeModelName ?: stringResource(R.string.home_status_model_cold)
-  Box(
-    modifier = Modifier
-      .fillMaxWidth()
-      .padding(horizontal = 16.dp, vertical = 12.dp),
-    contentAlignment = Alignment.Center,
-  ) {
-    Text(
-      text = text,
-      style = MaterialTheme.typography.labelMedium,
-      color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-  }
+    // TODO(Task 10): replace plain text with "warmup state dot + model chip" (design file
+    // `sanctum-screen-home.jsx` bottom bar). Also resolve `activeModelName` (raw HF modelId)
+    // through a display-name lookup so the chip doesn't show e.g. `litert-community/...`.
+    val text = activeModelName ?: stringResource(R.string.home_status_model_cold)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }

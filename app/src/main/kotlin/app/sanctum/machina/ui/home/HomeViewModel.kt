@@ -27,18 +27,18 @@ import kotlinx.coroutines.flow.stateIn
 class HomeViewModel
 @Inject
 constructor(
-  registry: ModelRegistry,
+    registry: ModelRegistry,
 ) : ViewModel() {
 
-  val hasDownloadedModels: StateFlow<Boolean> = registry.models
-    .map { entries ->
-      entries.any { it.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED }
-    }
-    .stateIn(
-      scope = viewModelScope,
-      started = SharingStarted.WhileSubscribed(5_000L),
-      initialValue = false,
-    )
+    val hasDownloadedModels: StateFlow<Boolean> = registry.models
+        .map { entries ->
+            entries.any { it.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED }
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000L),
+            initialValue = false,
+        )
 
-  val activeModelName: StateFlow<String?> = registry.activeModelName
+    val activeModelName: StateFlow<String?> = registry.activeModelName
 }

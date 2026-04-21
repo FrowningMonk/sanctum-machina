@@ -65,8 +65,7 @@ class HomeViewModelTest {
       ),
     )
 
-    val viewModel = HomeViewModel(registry)
-    subscribe(viewModel)
+    val viewModel = createSubscribedViewModel()
     advanceUntilIdle()
 
     assertFalse(viewModel.hasDownloadedModels.value)
@@ -81,8 +80,7 @@ class HomeViewModelTest {
       ),
     )
 
-    val viewModel = HomeViewModel(registry)
-    subscribe(viewModel)
+    val viewModel = createSubscribedViewModel()
     advanceUntilIdle()
 
     assertTrue(viewModel.hasDownloadedModels.value)
@@ -92,8 +90,7 @@ class HomeViewModelTest {
   fun hasDownloadedModels_emitsFalse_onEmptyList() = runTest {
     registry.emit(emptyList())
 
-    val viewModel = HomeViewModel(registry)
-    subscribe(viewModel)
+    val viewModel = createSubscribedViewModel()
     advanceUntilIdle()
 
     assertFalse(viewModel.hasDownloadedModels.value)
@@ -103,8 +100,7 @@ class HomeViewModelTest {
   fun hasDownloadedModels_updatesReactively() = runTest {
     registry.emit(listOf(entry("a", ModelDownloadStatusType.NOT_DOWNLOADED)))
 
-    val viewModel = HomeViewModel(registry)
-    subscribe(viewModel)
+    val viewModel = createSubscribedViewModel()
     advanceUntilIdle()
     assertFalse(viewModel.hasDownloadedModels.value)
 
@@ -120,24 +116,40 @@ class HomeViewModelTest {
   }
 
   @Test
-  fun activeModelName_isPassedThrough_fromRegistry() = runTest {
-    registry.setActiveModelName("model-b")
+  fun hasDownloadedModels_initialSeedIsFalse_beforeAnyCollection() = runTest {
+    // AC-F2: no-models placeholder must render on cold start before the allowlist loads.
+    // A regression flipping `initialValue` to `true` would ship a broken first-run screen;
+    // asserting the pre-collection seed pins this.
+    registry.emit(listOf(entry("a", ModelDownloadStatusType.SUCCEEDED)))
 
     val viewModel = HomeViewModel(registry)
-    advanceUntilIdle()
+    // Deliberately no `subscribe` and no `advanceUntilIdle` — we want the pre-collection
+    // seed value the UI sees before the first frame observes the flow.
+    assertFalse(viewModel.hasDownloadedModels.value)
+  }
 
+  @Test
+  fun activeModelName_reflectsRegistry_reactively() = runTest {
+    val viewModel = HomeViewModel(registry)
+    assertEquals(null, viewModel.activeModelName.value)
+
+    registry.setActiveModelName("model-a")
+    assertEquals("model-a", viewModel.activeModelName.value)
+
+    registry.setActiveModelName("model-b")
     assertEquals("model-b", viewModel.activeModelName.value)
   }
 
-  // Keep [hasDownloadedModels] hot inside `runTest`. The production flow uses
-  // `WhileSubscribed(5_000)` — without an active collector, `.value` stays at the
-  // initial seed and the mapping transform never runs. `backgroundScope` is cancelled
-  // automatically when `runTest` ends.
-  private fun TestScope.subscribe(viewModel: HomeViewModel) {
-    backgroundScope.launch { viewModel.hasDownloadedModels.collect {} }
-  }
-
   // ---- helpers ----
+
+  // Single factory used by every `hasDownloadedModels` test so the `WhileSubscribed` collector
+  // is never forgotten — `.value` on a `WhileSubscribed` StateFlow without an active subscriber
+  // returns the initial seed, which would silently produce passing-but-meaningless `assertFalse`.
+  private fun TestScope.createSubscribedViewModel(): HomeViewModel {
+    val viewModel = HomeViewModel(registry)
+    backgroundScope.launch { viewModel.hasDownloadedModels.collect {} }
+    return viewModel
+  }
 
   private fun entry(name: String, status: ModelDownloadStatusType): ModelEntry =
     ModelEntry(
