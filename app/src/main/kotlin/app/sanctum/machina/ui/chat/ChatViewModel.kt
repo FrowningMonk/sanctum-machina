@@ -10,6 +10,7 @@ import app.sanctum.machina.R
 import app.sanctum.machina.core.common.pcmToWav
 import app.sanctum.machina.core.data.ConfigKeys
 import app.sanctum.machina.core.data.Model
+import app.sanctum.machina.core.data.ModelDownloadStatusType
 import app.sanctum.machina.core.data.SAMPLE_RATE
 import app.sanctum.machina.core.log.ErrorLog
 import app.sanctum.machina.core.registry.ModelEntry
@@ -22,6 +23,7 @@ import app.sanctum.machina.data.ChatRepository
 import app.sanctum.machina.data.dao.ChatDao
 import app.sanctum.machina.data.dao.MessageDao
 import app.sanctum.machina.data.model.MessageEntity
+import app.sanctum.machina.engine.WarmupCoordinator
 import java.io.File
 import java.util.UUID
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -46,6 +48,29 @@ sealed interface ChatUiState {
     data object Loading : ChatUiState
     data class Ready(val isGenerating: Boolean) : ChatUiState
     data class Failed(val rawCause: String) : ChatUiState
+}
+
+/**
+ * Renders the `ChatScreen` TopAppBar title region (AC-U5–U7, AC-E3/E3b).
+ *
+ * Driven by `combine(chatIdentity, registry.models, warmupCoordinator.isWarmupInProgress)` in
+ * [ChatViewModel.topAppBarState]: [Loading] takes precedence whenever a warmup is in flight; in
+ * Draft mode the user can pick any downloaded model from the dropdown; in Quick/Persistent the
+ * variant is derived from the engine's init status for the pinned `modelId`.
+ */
+sealed class TopAppBarState {
+    /** Draft mode — model picker. [models] contains only downloaded entries; [currentModelId]
+     *  marks which one to check in the dropdown. */
+    data class Draft(val models: List<ModelEntry>, val currentModelId: String) : TopAppBarState()
+
+    /** Warmup / reinit in flight — show spinner, Send disabled. */
+    data class Loading(val modelId: String) : TopAppBarState()
+
+    /** `ModelInitStatus.Idle` or `Failed` in a non-Draft chat — show «Загрузить» button. */
+    data class Failed(val modelId: String) : TopAppBarState()
+
+    /** Engine ready — show read-only chip with [modelName] (Model.name, human-readable). */
+    data class Ready(val modelName: String) : TopAppBarState()
 }
 
 /**
@@ -76,6 +101,7 @@ constructor(
     private val chatRepository: ChatRepository,
     private val messageDao: MessageDao,
     private val chatDao: ChatDao,
+    private val warmupCoordinator: WarmupCoordinator,
 ) : ViewModel() {
 
     // Eagerly resolved so a missing/mis-typed nav arg surfaces at construction
@@ -177,6 +203,31 @@ constructor(
     )
     val navigation: SharedFlow<ChatNavigationEvent> = _navigation.asSharedFlow()
 
+    /**
+     * Drives the `ChatScreen` TopAppBar title region (AC-U5–U7, AC-E3/E3b). Derived reactively
+     * from [ChatIdentity], [ModelRegistry.models] and [WarmupCoordinator.isWarmupInProgress]:
+     *
+     *  - `warmupInProgress == true` → [TopAppBarState.Loading] regardless of identity — the
+     *    cross-model reinit surface is the same spinner the initial warmup renders.
+     *  - `ChatIdentity.Draft` → [TopAppBarState.Draft] with the downloaded-model list (filtered
+     *    by [ModelDownloadStatusType.SUCCEEDED]) and `currentModelId` = pinned or active model id.
+     *  - `ChatIdentity.Quick` / `ChatIdentity.Persistent` → resolve the entry for the pinned
+     *    `_chatModelId` and map its `initStatus` to Ready / Loading / Failed. `Idle` and a
+     *    missing entry both collapse to [TopAppBarState.Failed] so the user sees the
+     *    «Загрузить» affordance (AC-U6, AC-E3).
+     */
+    val topAppBarState: StateFlow<TopAppBarState> = combine(
+        registry.models,
+        _chatModelId,
+        warmupCoordinator.isWarmupInProgress,
+    ) { models, modelId, warmupInFlight ->
+        deriveTopAppBarState(models, modelId, warmupInFlight, registry.activeModelName.value)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.Eagerly,
+        initialValue = TopAppBarState.Loading(modelId = ""),
+    )
+
     init {
         viewModelScope.launch { bootstrapChatModelId() }
         viewModelScope.launch { observeEngineState() }
@@ -253,6 +304,46 @@ constructor(
 
     /** Backwards-compat alias for the existing TopAppBar wiring. */
     fun reset() = resetConversation()
+
+    /**
+     * Triggers a cross-model reinit (AC-E3, AC-E3b). Delegates to
+     * [WarmupCoordinator.cancelAndRestart] so the single-flight mutex inside the coordinator
+     * serialises the handover — a rapid double-tap from the Draft dropdown or the «Загрузить»
+     * button cannot interleave two `registry.initialize` calls against the same
+     * `lifecycleMutex` (tech-spec Decision 3 race).
+     */
+    fun loadModel(modelId: String) {
+        warmupCoordinator.cancelAndRestart(modelId)
+    }
+
+    private fun deriveTopAppBarState(
+        models: List<ModelEntry>,
+        pinnedModelId: String?,
+        warmupInFlight: Boolean,
+        activeModelId: String?,
+    ): TopAppBarState {
+        val effectiveModelId = pinnedModelId ?: activeModelId ?: ""
+        if (warmupInFlight) return TopAppBarState.Loading(effectiveModelId)
+        return when (identity) {
+            ChatIdentity.Draft -> TopAppBarState.Draft(
+                models = models.filter {
+                    it.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED
+                },
+                currentModelId = effectiveModelId,
+            )
+            ChatIdentity.Quick, is ChatIdentity.Persistent -> {
+                val entry = pinnedModelId?.let { id ->
+                    models.firstOrNull { it.model.modelId == id }
+                }
+                when (entry?.initStatus) {
+                    ModelInitStatus.Ready -> TopAppBarState.Ready(entry.model.name)
+                    ModelInitStatus.Initializing -> TopAppBarState.Loading(effectiveModelId)
+                    is ModelInitStatus.Failed -> TopAppBarState.Failed(effectiveModelId)
+                    ModelInitStatus.Idle, null -> TopAppBarState.Failed(effectiveModelId)
+                }
+            }
+        }
+    }
 
     fun saveAndApplySettings(settings: PerModelSettings) {
         viewModelScope.launch {

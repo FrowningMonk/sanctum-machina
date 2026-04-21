@@ -28,6 +28,7 @@ import app.sanctum.machina.data.dao.ChatDao
 import app.sanctum.machina.data.dao.MessageDao
 import app.sanctum.machina.data.model.ChatEntity
 import app.sanctum.machina.data.model.MessageEntity
+import app.sanctum.machina.engine.WarmupCoordinator
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ToolProvider
 import java.io.File
@@ -77,6 +78,7 @@ class ChatViewModelTest {
     private lateinit var fakeMessageDao: FakeMessageDao
     private lateinit var fakeChatDao: FakeChatDao
     private lateinit var fakeChatRepository: FakeChatRepository
+    private lateinit var fakeWarmupCoordinator: FakeWarmupCoordinator
 
     private lateinit var sharedCalls: MutableList<String>
 
@@ -92,6 +94,7 @@ class ChatViewModelTest {
         fakeMessageDao = FakeMessageDao()
         fakeChatDao = FakeChatDao()
         fakeChatRepository = FakeChatRepository()
+        fakeWarmupCoordinator = FakeWarmupCoordinator()
     }
 
     @After
@@ -558,6 +561,7 @@ class ChatViewModelTest {
             chatRepository = suspending,
             messageDao = fakeMessageDao,
             chatDao = fakeChatDao,
+            warmupCoordinator = fakeWarmupCoordinator,
         )
         advanceUntilIdle()
         val events = collectSnackbar(vm2)
@@ -632,6 +636,7 @@ class ChatViewModelTest {
             chatRepository = suspending,
             messageDao = fakeMessageDao,
             chatDao = fakeChatDao,
+            warmupCoordinator = fakeWarmupCoordinator,
         )
         advanceUntilIdle()
 
@@ -1254,6 +1259,133 @@ class ChatViewModelTest {
         assertEquals(initBefore, fakeRegistry.initializeCalls)
     }
 
+    // ------------------------------------------------------------------
+    // Task 10 — TopAppBar state machine (AC-U5/U6/U7, AC-E3/E3b)
+    // ------------------------------------------------------------------
+
+    @Test
+    fun topAppBarState_draft_returnsDownloadedModels() = runTest(dispatcher) {
+        val a = Model(name = "Model A", modelId = "id-a")
+        val b = Model(name = "Model B", modelId = "id-b")
+        fakeRegistry.publishEntries(
+            FakeModelRegistry.Entry(a, ModelInitStatus.Ready, ModelDownloadStatusType.SUCCEEDED),
+            FakeModelRegistry.Entry(b, ModelInitStatus.Idle, ModelDownloadStatusType.SUCCEEDED),
+        )
+        val vm = buildViewModel(ChatIdentityArg.Draft)
+        advanceUntilIdle()
+
+        val state = vm.topAppBarState.value
+        assertTrue("Draft identity must surface Draft state: $state", state is TopAppBarState.Draft)
+        val draft = state as TopAppBarState.Draft
+        assertEquals(
+            "dropdown must list both downloaded models",
+            listOf("id-a", "id-b"),
+            draft.models.map { it.model.modelId },
+        )
+    }
+
+    @Test
+    fun topAppBarState_draft_emptyList_whenNoDownloaded() = runTest(dispatcher) {
+        val a = Model(name = "Model A", modelId = "id-a")
+        fakeRegistry.publishEntries(
+            FakeModelRegistry.Entry(a, ModelInitStatus.Idle, ModelDownloadStatusType.NOT_DOWNLOADED),
+        )
+        val vm = buildViewModel(ChatIdentityArg.Draft)
+        advanceUntilIdle()
+
+        val state = vm.topAppBarState.value
+        assertTrue(state is TopAppBarState.Draft)
+        assertEquals(
+            "not-downloaded entries must not appear in the picker",
+            emptyList<String>(),
+            (state as TopAppBarState.Draft).models.map { it.model.modelId },
+        )
+    }
+
+    @Test
+    fun topAppBarState_persistentIdle_returnsFailed() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeRegistry.publishEntry(model, ModelInitStatus.Idle)
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        assertEquals(
+            TopAppBarState.Failed(modelId = "id-m"),
+            vm.topAppBarState.value,
+        )
+    }
+
+    @Test
+    fun topAppBarState_persistentFailed_returnsFailed() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeRegistry.publishEntry(model, ModelInitStatus.Failed("boom"))
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        assertEquals(
+            TopAppBarState.Failed(modelId = "id-m"),
+            vm.topAppBarState.value,
+        )
+    }
+
+    @Test
+    fun topAppBarState_persistentReady_returnsReady() = runTest(dispatcher) {
+        val model = Model(name = "Model M", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        assertEquals(
+            TopAppBarState.Ready(modelName = "Model M"),
+            vm.topAppBarState.value,
+        )
+    }
+
+    @Test
+    fun topAppBarState_warmupInFlight_returnsLoading() = runTest(dispatcher) {
+        val model = Model(name = "Model M", modelId = "id-m")
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        val vm = buildViewModel(ChatIdentityArg.Quick)
+        advanceUntilIdle()
+        assertTrue(
+            "seed must surface Ready before the Loading transition",
+            vm.topAppBarState.value is TopAppBarState.Ready,
+        )
+
+        fakeWarmupCoordinator.isWarmupInProgressState.value = true
+        advanceUntilIdle()
+
+        val state = vm.topAppBarState.value
+        assertTrue("warmup in flight must collapse to Loading: $state", state is TopAppBarState.Loading)
+    }
+
+    @Test
+    fun topAppBarState_quick_returnsReady_withActiveName() = runTest(dispatcher) {
+        val model = Model(name = "Model M", modelId = "id-m")
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        val vm = buildViewModel(ChatIdentityArg.Quick)
+        advanceUntilIdle()
+
+        assertEquals(
+            TopAppBarState.Ready(modelName = "Model M"),
+            vm.topAppBarState.value,
+        )
+    }
+
+    @Test
+    fun loadModel_delegatesToWarmupCoordinator() = runTest(dispatcher) {
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        val vm = buildViewModel(ChatIdentityArg.Quick)
+        advanceUntilIdle()
+
+        vm.loadModel("id-b")
+
+        assertEquals(listOf("id-b"), fakeWarmupCoordinator.cancelAndRestartCalls)
+    }
+
     // ---- helpers -------------------------------------------------------
 
     private sealed class ChatIdentityArg {
@@ -1281,6 +1413,7 @@ class ChatViewModelTest {
             chatRepository = fakeChatRepository,
             messageDao = fakeMessageDao,
             chatDao = fakeChatDao,
+            warmupCoordinator = fakeWarmupCoordinator,
         )
     }
 
@@ -1364,6 +1497,27 @@ private class FakeModelRegistry(
             )
         )
         _activeModelName.value = if (status === ModelInitStatus.Ready) model.modelId else null
+    }
+
+    data class Entry(
+        val model: Model,
+        val initStatus: ModelInitStatus,
+        val downloadStatus: ModelDownloadStatusType,
+    )
+
+    /** Publish multiple model entries at once — used by Draft-picker tests (Task 10). */
+    fun publishEntries(vararg entries: Entry) {
+        _models.value = entries.map { e ->
+            ModelEntry(
+                model = e.model,
+                downloadStatus = ModelDownloadStatus(status = e.downloadStatus),
+                initStatus = e.initStatus,
+            )
+        }
+        _activeModelName.value = entries
+            .firstOrNull { it.initStatus === ModelInitStatus.Ready }
+            ?.model
+            ?.modelId
     }
 
     override suspend fun refreshAllowlist(): Result<Unit> = Result.success(Unit)
@@ -1623,6 +1777,29 @@ private class FakeChatRepository : ChatRepository {
     override fun observeMessages(chatId: Long): Flow<List<MessageEntity>> = emptyFlow()
 
     override suspend fun sweepZombieChats(filesDir: File) {}
+}
+
+/**
+ * Stub extending the production [WarmupCoordinator] (class is `open` for this purpose). The real
+ * scope / mutex / observer is pre-started by the parent init block, but its inputs (a fake
+ * registry with no models and a fake AppSettingsRepository with empty ids) idle immediately, so
+ * construction has no side effect relevant to the tests. Tests drive state through
+ * [isWarmupInProgressState] and record [cancelAndRestartCalls].
+ */
+private class FakeWarmupCoordinator : WarmupCoordinator(
+    registry = FakeModelRegistry(mutableListOf()),
+    appSettings = FakeAppSettingsRepository(),
+    errorLog = ErrorLog(ApplicationProvider.getApplicationContext<Application>()),
+    scope = CoroutineScope(Dispatchers.Unconfined),
+) {
+    val isWarmupInProgressState = MutableStateFlow(false)
+    val cancelAndRestartCalls = mutableListOf<String>()
+
+    override val isWarmupInProgress: StateFlow<Boolean> = isWarmupInProgressState.asStateFlow()
+
+    override fun cancelAndRestart(modelId: String) {
+        cancelAndRestartCalls += modelId
+    }
 }
 
 private object ViewModelReflection {

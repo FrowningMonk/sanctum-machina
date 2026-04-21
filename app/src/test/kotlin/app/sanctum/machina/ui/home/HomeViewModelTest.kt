@@ -1,11 +1,15 @@
 package app.sanctum.machina.ui.home
 
+import android.app.Application
+import androidx.test.core.app.ApplicationProvider
 import app.sanctum.machina.core.data.Model
 import app.sanctum.machina.core.data.ModelDownloadStatus
 import app.sanctum.machina.core.data.ModelDownloadStatusType
 import app.sanctum.machina.core.registry.ModelEntry
 import app.sanctum.machina.core.registry.ModelInitStatus
 import app.sanctum.machina.core.registry.ModelRegistry
+import app.sanctum.machina.engine.AppCorruptionState
+import app.sanctum.machina.logexport.LogExportManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -25,6 +29,9 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * TDD harness for [HomeViewModel] (Phase-3 Task 7).
@@ -39,15 +46,26 @@ import org.junit.Test
  * drives `stateIn` collection deterministically.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [33])
 class HomeViewModelTest {
 
   private val testDispatcher = StandardTestDispatcher()
   private lateinit var registry: FakeModelRegistry
+  private lateinit var corruption: AppCorruptionState
+  private lateinit var logExport: LogExportManager
 
   @Before
   fun setUp() {
     Dispatchers.setMain(testDispatcher)
     registry = FakeModelRegistry()
+    corruption = AppCorruptionState()
+    // Real LogExportManager via the Context-only constructor (same entry point used by the
+    // :crash process). Tests in this file never call `buildAndWrite`, so logcat / filesystem
+    // reads are not exercised — construction alone is enough for the Hilt-style VM ctor.
+    logExport = LogExportManager(
+      ApplicationProvider.getApplicationContext<Application>(),
+    )
   }
 
   @After
@@ -122,7 +140,7 @@ class HomeViewModelTest {
     // asserting the pre-collection seed pins this.
     registry.emit(listOf(entry("a", ModelDownloadStatusType.SUCCEEDED)))
 
-    val viewModel = HomeViewModel(registry)
+    val viewModel = HomeViewModel(registry, corruption, logExport)
     // Deliberately no `subscribe` and no `advanceUntilIdle` — we want the pre-collection
     // seed value the UI sees before the first frame observes the flow.
     assertFalse(viewModel.hasDownloadedModels.value)
@@ -130,7 +148,7 @@ class HomeViewModelTest {
 
   @Test
   fun activeModelName_reflectsRegistry_reactively() = runTest {
-    val viewModel = HomeViewModel(registry)
+    val viewModel = HomeViewModel(registry, corruption, logExport)
     assertEquals(null, viewModel.activeModelName.value)
 
     registry.setActiveModelName("model-a")
@@ -146,7 +164,7 @@ class HomeViewModelTest {
   // is never forgotten — `.value` on a `WhileSubscribed` StateFlow without an active subscriber
   // returns the initial seed, which would silently produce passing-but-meaningless `assertFalse`.
   private fun TestScope.createSubscribedViewModel(): HomeViewModel {
-    val viewModel = HomeViewModel(registry)
+    val viewModel = HomeViewModel(registry, corruption, logExport)
     backgroundScope.launch { viewModel.hasDownloadedModels.collect {} }
     return viewModel
   }

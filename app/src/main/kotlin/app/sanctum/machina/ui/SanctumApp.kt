@@ -1,17 +1,12 @@
 package app.sanctum.machina.ui
 
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -19,6 +14,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import app.sanctum.machina.ui.about.AboutScreen
+import app.sanctum.machina.ui.chat.ChatScreen
 import app.sanctum.machina.ui.drawer.DrawerContent
 import app.sanctum.machina.ui.home.HomeScreen
 import app.sanctum.machina.ui.modelmanager.ModelManagerScreen
@@ -91,8 +87,16 @@ fun SanctumApp() {
                         },
                     ),
                 ) {
-                    // TODO(Task 10): rework ChatScreen signature for ChatIdentity.Quick
-                    QuickChatPlaceholder()
+                    ChatScreen(
+                        onBack = { navController.popBackStack() },
+                        onNavigateToPersistent = { chatId ->
+                            navController.navigate("chat/$chatId") {
+                                // Draft→Persistent atomic handover (AC-P7): remove the draft
+                                // route so Back from the persistent chat returns to Home.
+                                popUpTo("chat/draft") { inclusive = true }
+                            }
+                        },
+                    )
                 }
                 composable(
                     route = "chat/draft",
@@ -103,8 +107,14 @@ fun SanctumApp() {
                         },
                     ),
                 ) {
-                    // TODO(Task 10): rework ChatScreen signature for ChatIdentity.Draft
-                    DraftChatPlaceholder()
+                    ChatScreen(
+                        onBack = { navController.popBackStack() },
+                        onNavigateToPersistent = { chatId ->
+                            navController.navigate("chat/$chatId") {
+                                popUpTo("chat/draft") { inclusive = true }
+                            }
+                        },
+                    )
                 }
                 composable(
                     route = "chat/{chatId}",
@@ -112,8 +122,10 @@ fun SanctumApp() {
                         navArgument("chatId") { type = NavType.LongType },
                     ),
                 ) {
-                    // TODO(Task 8): rework ChatScreen signature for ChatIdentity.Persistent
-                    PersistentChatPlaceholder()
+                    ChatScreen(
+                        onBack = { navController.popBackStack() },
+                        onNavigateToPersistent = { /* persistent chats don't re-navigate */ },
+                    )
                 }
                 // TOMBSTONE: deprecated in Task 7, removed in Task 8. The old string-based
                 // chat/{modelName} route is kept registered to prevent route-not-found crashes
@@ -148,23 +160,3 @@ fun SanctumApp() {
     }
 }
 
-@Composable
-private fun QuickChatPlaceholder() {
-    Column(modifier = Modifier.padding(24.dp)) {
-        Text("Quick chat — Task 8")
-    }
-}
-
-@Composable
-private fun DraftChatPlaceholder() {
-    Column(modifier = Modifier.padding(24.dp)) {
-        Text("Draft chat — Task 8")
-    }
-}
-
-@Composable
-private fun PersistentChatPlaceholder() {
-    Column(modifier = Modifier.padding(24.dp)) {
-        Text("Persistent chat — Task 8")
-    }
-}

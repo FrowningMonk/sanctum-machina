@@ -76,7 +76,9 @@ open class WarmupCoordinator @VisibleForTesting(otherwise = VisibleForTesting.PR
    * [restartMutex] *before* the new Job starts, and reset in a `finally {}` block so both normal
    * completion and cancellation reliably clear it.
    */
-  val isWarmupInProgress: StateFlow<Boolean> = _isWarmupInProgress.asStateFlow()
+  // `open` so `ChatViewModelTest` (Task 10) can substitute a stub coordinator whose flag is driven
+  // from the test scheduler without hitting the real scope / mutex / registry.initialize path.
+  open val isWarmupInProgress: StateFlow<Boolean> = _isWarmupInProgress.asStateFlow()
 
   private val restartMutex = Mutex()
   private var warmupJob: Job? = null
@@ -101,7 +103,7 @@ open class WarmupCoordinator @VisibleForTesting(otherwise = VisibleForTesting.PR
    * Cancel any in-flight warmup and start a new one for [modelId]. Used by cross-model "Load"
    * flows where the user wants to switch engines while a default warmup is already running.
    */
-  fun cancelAndRestart(modelId: String) {
+  open fun cancelAndRestart(modelId: String) {
     scope.launch { launchWarmup(modelId) }
   }
 
