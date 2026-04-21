@@ -1,6 +1,7 @@
 package app.sanctum.machina.core.registry
 
 import android.content.Context
+import androidx.annotation.VisibleForTesting
 import app.sanctum.machina.core.data.Accelerator
 import app.sanctum.machina.core.data.ConfigKeys
 import app.sanctum.machina.core.data.DownloadRepository
@@ -49,25 +50,9 @@ private const val LOG_TAG_INIT = "inference-init"
  * receives the same payload shape Phase-1 produced when no prompt was
  * configured.
  *
- * Extracted as an internal top-level function so Task 10's TDD anchor tests
- * can drive the mapping without standing up the full registry graph.
+ * Exposed as an internal top-level function so the mapping can be exercised
+ * by unit tests without standing up the full registry graph.
  */
-/**
- * D7: extract the `activeModelName` derivation so it can be exercised in isolation by Task-3 TDD
- * anchor tests. The production code path wires this in [DefaultModelRegistry] as the sole call
- * site, which means a regression in either the expression or the field it reads surfaces through
- * the helper's tests. `model.modelId` (stable HF id) — not `model.name` — is intentional: Room
- * `chat.model_id` stores the HF id, and same-model fast-path equality in DrawerContent /
- * ChatViewModel depends on the types matching.
- */
-internal fun deriveActiveModelName(
-  models: StateFlow<List<ModelEntry>>,
-  scope: CoroutineScope,
-): StateFlow<String?> =
-  models
-    .map { list -> list.firstOrNull { it.initStatus === ModelInitStatus.Ready }?.model?.modelId }
-    .stateIn(scope, SharingStarted.Eagerly, null)
-
 internal fun buildSystemInstruction(configValues: Map<String, Any>): Contents? {
   val raw = configValues[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label] as? String
   // Name clarifies that `takeIf { isNotBlank() }` filters rather than trims —
@@ -76,6 +61,25 @@ internal fun buildSystemInstruction(configValues: Map<String, Any>): Contents? {
   val nonBlank = raw?.takeIf { it.isNotBlank() } ?: return null
   return Contents.of(listOf(Content.Text(nonBlank)))
 }
+
+/**
+ * D7: project the list of [ModelEntry] into the stable HF [Model.modelId] of the single entry
+ * currently in [ModelInitStatus.Ready], or `null` if none. Exposed as an internal top-level
+ * function so the derivation can be unit-tested without constructing the full registry graph;
+ * [DefaultModelRegistry.activeModelName] is the sole production call site.
+ *
+ * Projects `modelId` — not `name` or `displayName` — because `chat.model_id` in Room stores the
+ * stable HF id, and same-model fast-path equality in DrawerContent / ChatViewModel depends on the
+ * strings matching. Referential equality (`===`) matches the project convention for comparing
+ * [ModelInitStatus] values (see [cleanup], [resetConversation]).
+ */
+internal fun deriveActiveModelName(
+  models: StateFlow<List<ModelEntry>>,
+  scope: CoroutineScope,
+): StateFlow<String?> =
+  models
+    .map { list -> list.firstOrNull { it.initStatus === ModelInitStatus.Ready }?.model?.modelId }
+    .stateIn(scope, SharingStarted.Eagerly, null)
 // LOG_TAG_CLEANUP ("inference-cleanup") — whitelisted in user-spec D11; not used yet because
 // LlmChatModelHelper.cleanUp swallows its own exceptions internally. Phase 2 debt: surface
 // close-failures via ErrorLog if/when cleanUp grows a throwing error path.
@@ -104,12 +108,13 @@ constructor(
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
   private val lifecycleMutex = Mutex()
 
-  private val _models = MutableStateFlow<List<ModelEntry>>(emptyList())
+  // `_models` is internal to let same-module unit tests drive the derived StateFlow
+  // deterministically; external consumers use the read-only `models` projection below.
+  @VisibleForTesting
+  internal val _models = MutableStateFlow<List<ModelEntry>>(emptyList())
   override val models: StateFlow<List<ModelEntry>> = _models.asStateFlow()
 
-  // D7: derived StateFlow projecting the currently-Ready ModelEntry onto its stable HF modelId
-  // (or null if none). Derivation lives in `deriveActiveModelName` to be directly testable; this
-  // is the only production call site, so helper-level tests cover wiring.
+  // D7: see `deriveActiveModelName` KDoc; `ModelRegistry.activeModelName` carries the public KDoc.
   override val activeModelName: StateFlow<String?> = deriveActiveModelName(models, scope)
 
   init {
