@@ -261,6 +261,7 @@ private class CountingDataStore(
 private class FakeModelRegistry : ModelRegistry {
   private val state = MutableStateFlow<List<ModelEntry>>(emptyList())
   override val models: StateFlow<List<ModelEntry>> = state
+  override val activeModelName: StateFlow<String?> = MutableStateFlow(null)
 
   fun set(vararg allowed: AllowedModel) {
     state.value = allowed.map {

@@ -761,6 +761,7 @@ private class FakeModelRegistry(
 
     private val _models = MutableStateFlow<List<ModelEntry>>(emptyList())
     override val models: StateFlow<List<ModelEntry>> = _models
+    override val activeModelName: StateFlow<String?> = MutableStateFlow(null)
 
     fun setModel(model: Model) {
         _models.value = listOf(
