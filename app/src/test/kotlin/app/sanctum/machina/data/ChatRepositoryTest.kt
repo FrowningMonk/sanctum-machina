@@ -50,6 +50,8 @@ class ChatRepositoryTest {
     messageDao = FakeMessageDao()
     errorLog = ErrorLog(context)
     errorLogFile = File(context.filesDir, "logs/errors.log")
+    // Only the ErrorLog dir is shared with Robolectric's app filesDir; attachment
+    // I/O lives under tempFolder so it stays per-test (T4-T8).
     errorLogFile.parentFile?.deleteRecursively()
     filesDir = tempFolder.newFolder("filesDir")
     attachmentsRoot = File(filesDir, "attachments").apply { mkdirs() }
@@ -73,6 +75,7 @@ class ChatRepositoryTest {
       modelId = "litert-community/gemma-4-E4B-it-litert-lm",
       firstMessage = firstMessage,
       stagingDir = staging,
+      filesDir = filesDir,
     )
 
     assertTrue("chatId must be positive", chatId > 0L)
@@ -88,9 +91,31 @@ class ChatRepositoryTest {
   }
 
   @Test
-  fun commitDraftChat_ioExceptionOnStagingWrite() = runTest {
-    // AC-A4: IOException raised before Room INSERT must leave Room untouched.
-    // We model "staging write failed" as "staging dir does not exist when commit is called".
+  fun commitDraftChat_nullStagingDir_skipsRenameAndSucceeds() = runTest {
+    var renameInvocations = 0
+    val repo = newRepository(rename = { _, _ -> renameInvocations++; true })
+
+    val chatId = repo.commitDraftChat(
+      modelId = "model/x",
+      firstMessage = userMessage("text-only", 1L),
+      stagingDir = null,
+      filesDir = filesDir,
+    )
+
+    assertTrue("chatId must be positive", chatId > 0L)
+    assertNotNull("chat row exists", chatDao.byId[chatId])
+    assertEquals("rename never invoked", 0, renameInvocations)
+    assertFalse(
+      "no spurious chatId dir created under attachments root",
+      File(attachmentsRoot, chatId.toString()).exists(),
+    )
+  }
+
+  @Test
+  fun commitDraftChat_missingStagingDir_throwsBeforeRoomInsert() = runTest {
+    // AC-A4: pre-INSERT staging-dir validation must short-circuit Room work.
+    // Models the failure mode where the caller's staging step never produced
+    // the directory the repo was told to commit.
     val staging = File(attachmentsRoot, ".staging-missing")
     val repo = newRepository()
 
@@ -99,6 +124,7 @@ class ChatRepositoryTest {
         modelId = "model/x",
         firstMessage = userMessage("hi", 1L),
         stagingDir = staging,
+        filesDir = filesDir,
       )
     }.exceptionOrNull()
     assertTrue("IOException expected, got $thrown", thrown is IOException)
@@ -108,33 +134,107 @@ class ChatRepositoryTest {
   }
 
   @Test
+  fun commitDraftChat_stagingOutsideAttachmentsRoot_throws() = runTest {
+    // Security T4-S1: staging dir must live under filesDir/attachments/.
+    val outside = tempFolder.newFolder("outside-tree")
+    val repo = newRepository()
+
+    val thrown = runCatching {
+      repo.commitDraftChat(
+        modelId = "model/x",
+        firstMessage = userMessage("hi", 1L),
+        stagingDir = outside,
+        filesDir = filesDir,
+      )
+    }.exceptionOrNull()
+    assertTrue("IOException expected, got $thrown", thrown is IOException)
+    assertEquals("no chat inserted", 0, chatDao.insertCalls)
+  }
+
+  @Test
   fun commitDraftChat_renameFailsAfterRoomInsert() = runTest {
     val staging = File(attachmentsRoot, ".staging-failrename").apply { mkdirs() }
     File(staging, "doc.txt").writeText("payload")
-    val repo = newRepository(rename = { _, _ -> false })
+    // Simulate Room's @Transaction rollback: on throw inside the runner we
+    // restore the chat fake to its pre-block state. This mirrors what
+    // database.withTransaction { ... } does in production.
+    val repo = newRepository(
+      rename = { _, _ -> false },
+      transactionRunner = { block ->
+        val chatSnapshot = chatDao.byId.toMap()
+        val msgSnapshot = messageDao.byChat.mapValues { it.value.toList() }
+        try {
+          block()
+        } catch (t: Throwable) {
+          chatDao.byId.clear()
+          chatDao.byId.putAll(chatSnapshot)
+          messageDao.byChat.clear()
+          msgSnapshot.forEach { (k, v) -> messageDao.byChat[k] = v.toMutableList() }
+          throw t
+        }
+      },
+    )
 
     val thrown = runCatching {
       repo.commitDraftChat(
         modelId = "model/x",
         firstMessage = userMessage("hi", 1L),
         stagingDir = staging,
+        filesDir = filesDir,
       )
     }.exceptionOrNull()
     assertTrue("IOException expected, got $thrown", thrown is IOException)
 
-    assertEquals("Room insert was attempted", 1, chatDao.insertCalls)
-    assertTrue("Room row was rolled back via deleteById", chatDao.deleteByIdCalls.isNotEmpty())
-    assertTrue("Room row is gone from fake state", chatDao.byId.isEmpty())
+    assertEquals("Room chat insert was attempted", 1, chatDao.insertCalls)
+    assertEquals("Room message insert was attempted", 1, messageDao.insertCalls)
+    assertTrue("Room state rolled back (chat gone)", chatDao.byId.isEmpty())
+    assertTrue("Room state rolled back (messages gone)", messageDao.byChat.values.all { it.isEmpty() })
     assertFalse("staging dir cleaned up", staging.exists())
-    val finalDir = File(attachmentsRoot, chatDao.deleteByIdCalls.first().toString())
-    assertFalse("final dir must not exist", finalDir.exists())
+  }
+
+  @Test
+  fun commitDraftChat_messageInsertFails_chatRollbackToo() = runTest {
+    // Locks down the Room-transaction contract: a throw INSIDE the runner from
+    // messageDao.insert must roll back the just-inserted chat row.
+    val staging = File(attachmentsRoot, ".staging-msgfail").apply { mkdirs() }
+    val throwingMessageDao = FakeMessageDao().apply { failOnInsert = true }
+    val repo = DefaultChatRepository(
+      chatDao = chatDao,
+      messageDao = throwingMessageDao,
+      errorLog = errorLog,
+      ioDispatcher = UnconfinedTestDispatcher(),
+      rename = { _, _ -> true },
+      transactionRunner = { block ->
+        val chatSnapshot = chatDao.byId.toMap()
+        try {
+          block()
+        } catch (t: Throwable) {
+          chatDao.byId.clear()
+          chatDao.byId.putAll(chatSnapshot)
+          throw t
+        }
+      },
+    )
+
+    val thrown = runCatching {
+      repo.commitDraftChat(
+        modelId = "model/x",
+        firstMessage = userMessage("hi", 1L),
+        stagingDir = staging,
+        filesDir = filesDir,
+      )
+    }.exceptionOrNull()
+    assertNotNull("expected throw from messageDao.insert", thrown)
+    assertTrue("Room state rolled back", chatDao.byId.isEmpty())
+    assertFalse("staging dir cleaned up", staging.exists())
   }
 
   // ---- deleteChat ----
 
   @Test
   fun deleteChat_callsRoomAndDeletesFiles() = runTest {
-    // Insert a chat directly into fake state and create its attachments dir.
+    // CASCADE removal of messages is verified by MessageDaoTest (Task 1) —
+    // fakes here do not model FK CASCADE.
     val chatId = chatDao.insertSync(
       ChatEntity(modelId = "m/1", title = "T", createdAt = 1L, lastMessageAt = 1L),
     )
@@ -163,8 +263,10 @@ class ChatRepositoryTest {
     assertTrue("zombie chat deleted", chatDao.deleteByIdCalls.contains(zombieId))
     val log = errorLogFile.readLines()
     assertTrue(
-      "zombie sweep logs ErrorLog.e under history-write",
-      log.any { it.contains("[history-write]") && it.contains("zombie") },
+      "zombie sweep logs ErrorLog.e under history-write with chat id",
+      log.any {
+        it.contains("[history-write]") && it.contains("zombie") && it.contains("id=$zombieId")
+      },
     )
   }
 
@@ -209,6 +311,7 @@ class ChatRepositoryTest {
       modelId = "m/x",
       firstMessage = userMessage("Hello title", 1_700_000_000_000L),
       stagingDir = staging,
+      filesDir = filesDir,
     )
 
     val chat = chatDao.byId[chatId]
@@ -221,6 +324,7 @@ class ChatRepositoryTest {
 
   private fun newRepository(
     rename: (File, File) -> Boolean = { src, dst -> src.renameTo(dst) },
+    transactionRunner: suspend (suspend () -> Long) -> Long = { it() },
   ): DefaultChatRepository =
     DefaultChatRepository(
       chatDao = chatDao,
@@ -228,7 +332,7 @@ class ChatRepositoryTest {
       errorLog = errorLog,
       ioDispatcher = UnconfinedTestDispatcher(),
       rename = rename,
-      transactionRunner = { block -> block() },
+      transactionRunner = transactionRunner,
     )
 
   private fun userMessage(text: String, createdAt: Long): MessageEntity =
@@ -280,6 +384,7 @@ private class FakeChatDao : ChatDao {
 private class FakeMessageDao : MessageDao {
   val byChat: MutableMap<Long, MutableList<MessageEntity>> = linkedMapOf()
   var insertCalls: Int = 0; private set
+  var failOnInsert: Boolean = false
   private var nextId: Long = 1L
   private val state = MutableStateFlow<Map<Long, List<MessageEntity>>>(emptyMap())
 
@@ -293,6 +398,7 @@ private class FakeMessageDao : MessageDao {
 
   override suspend fun insert(message: MessageEntity): Long {
     insertCalls++
+    if (failOnInsert) throw IOException("synthetic message insert failure")
     return insertSync(message)
   }
 

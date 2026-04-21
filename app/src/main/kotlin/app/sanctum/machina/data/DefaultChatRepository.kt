@@ -1,5 +1,6 @@
 package app.sanctum.machina.data
 
+import androidx.annotation.VisibleForTesting
 import androidx.room.withTransaction
 import app.sanctum.machina.core.log.ErrorLog
 import app.sanctum.machina.data.dao.ChatDao
@@ -17,23 +18,32 @@ import kotlinx.coroutines.withContext
 
 private const val ATTACHMENTS_DIR = "attachments"
 private const val ERROR_COMPONENT = "history-write"
+private const val ROLE_USER = "user"
 
 /**
  * Default [ChatRepository]. Hilt-bound via `AppModule` (Task 5) as `@Singleton`.
  *
- * Two-step `commitDraftChat` atomicity:
- *   1. `database.withTransaction { … }` covers cross-DAO INSERT (chat + first
- *      message) — Room rolls back automatically on any throw inside the block.
- *   2. After the transaction commits, the staging directory is renamed to its
- *      final `filesDir/attachments/{chatId}/`. If that rename returns `false`
- *      we treat it as `IOException`, delete the just-inserted Room row, and
- *      `deleteRecursively` the staging directory (Decision 6).
+ * `commitDraftChat` atomicity (Decision 6, hardened after Task-4 review):
+ *   - Cross-DAO INSERT (chat + first message) AND the staging-dir rename run
+ *     together inside a single `database.withTransaction { … }`.
+ *   - If the rename returns `false`, we throw inside the block — Room rolls
+ *     back both INSERTs automatically. The outer try/catch then removes the
+ *     staging directory and re-throws.
+ *   - Folding rename into the transaction closes the kill-window where the
+ *     spec's "delete the row in a second statement" rollback could leave an
+ *     orphan chat+message after a process kill (security review T4-S2).
  *
- * Test seams (`ioDispatcher`, `rename`, `transactionRunner`) keep the class
- * unit-testable without an in-memory Room instance — production wiring uses
- * `Dispatchers.IO`, `File::renameTo`, and `database::withTransaction`.
+ * Caller-supplied [filesDir] is the canonical app private storage root.
+ * `commitDraftChat` verifies that any non-null staging dir lives inside
+ * `filesDir/attachments/` before touching the filesystem (security T4-S1).
+ *
+ * Test seams (`ioDispatcher`, `rename`, `transactionRunner`) live on a
+ * `@VisibleForTesting` primary constructor; production wiring goes through
+ * the `@Inject` secondary below.
  */
-class DefaultChatRepository internal constructor(
+class DefaultChatRepository
+@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+internal constructor(
   private val chatDao: ChatDao,
   private val messageDao: MessageDao,
   private val errorLog: ErrorLog,
@@ -61,16 +71,32 @@ class DefaultChatRepository internal constructor(
     modelId: String,
     firstMessage: MessageEntity,
     stagingDir: File?,
+    filesDir: File,
   ): Long = withContext(ioDispatcher) {
-    // Pre-validate staging BEFORE INSERT (AC-A4): if the caller's staging
-    // step did not produce a directory, we must not create a half-committed
-    // chat with no on-disk attachments.
-    if (stagingDir != null && !stagingDir.isDirectory) {
-      throw IOException("staging directory missing: ${stagingDir.absolutePath}")
+    val attachmentsRoot = File(filesDir, ATTACHMENTS_DIR)
+
+    if (stagingDir != null) {
+      // Containment check (security review T4-S1): caller must stage inside
+      // `filesDir/attachments/`. Rejecting outside-tree paths before the
+      // Room INSERT prevents an internal-API misuse from creating directories
+      // outside the app's attachments root.
+      val rootCanonical = attachmentsRoot.canonicalPath
+      val stagingCanonical = stagingDir.canonicalPath
+      if (!stagingCanonical.startsWith(rootCanonical + File.separator)) {
+        throw IOException(
+          "staging dir must live under attachments root: $stagingCanonical",
+        )
+      }
+      if (!stagingDir.exists()) {
+        throw IOException("staging dir missing: ${stagingDir.absolutePath}")
+      }
+      if (!stagingDir.isDirectory) {
+        throw IOException("staging path is not a directory: ${stagingDir.absolutePath}")
+      }
     }
 
     val title = AutoTitleGenerator.generateTitle(
-      firstUserText = if (firstMessage.role == "user") firstMessage.text else null,
+      firstUserText = if (firstMessage.role == ROLE_USER) firstMessage.text else null,
       createdAtMs = firstMessage.createdAt,
     )
     val chat = ChatEntity(
@@ -81,31 +107,27 @@ class DefaultChatRepository internal constructor(
       lastMessageAt = firstMessage.createdAt,
     )
 
-    val chatId = transactionRunner {
-      val id = chatDao.insert(chat)
-      messageDao.insert(firstMessage.copy(chatId = id))
-      id
-    }
-
-    if (stagingDir != null) {
-      // Anchor the final dir off the staging dir's parent (which is
-      // `filesDir/attachments/`) — the caller already chose this root.
-      val attachmentsRoot = stagingDir.parentFile
-        ?: throw IOException("staging dir has no parent: ${stagingDir.absolutePath}")
-      attachmentsRoot.mkdirs()
-      val finalDir = File(attachmentsRoot, chatId.toString())
-      val ok = rename(stagingDir, finalDir)
-      if (!ok) {
-        // Roll back Room + clean staging (Decision 6).
-        chatDao.deleteById(chatId)
-        stagingDir.deleteRecursively()
-        throw IOException(
-          "rename failed: ${stagingDir.absolutePath} -> ${finalDir.absolutePath}",
-        )
+    try {
+      transactionRunner {
+        val id = chatDao.insert(chat)
+        messageDao.insert(firstMessage.copy(chatId = id))
+        if (stagingDir != null) {
+          val finalDir = File(attachmentsRoot, id.toString())
+          if (!rename(stagingDir, finalDir)) {
+            throw IOException(
+              "rename failed: ${stagingDir.absolutePath} -> ${finalDir.absolutePath}",
+            )
+          }
+        }
+        id
       }
+    } catch (t: Throwable) {
+      // Room rolled back both INSERTs. Remove the staging dir if it survived
+      // (rename never fired or failed early). `deleteRecursively` on a missing
+      // path is a no-op.
+      stagingDir?.deleteRecursively()
+      throw t
     }
-
-    chatId
   }
 
   override suspend fun savePersistentMessage(message: MessageEntity) {
@@ -138,9 +160,15 @@ class DefaultChatRepository internal constructor(
   override suspend fun deleteChat(chatId: Long, filesDir: File) {
     withContext(ioDispatcher) {
       chatDao.deleteById(chatId) // CASCADE removes message rows
-      // deleteRecursively returns false on a missing root — that's fine; chats
-      // without attachments are normal.
-      File(filesDir, "$ATTACHMENTS_DIR/$chatId").deleteRecursively()
+      val dir = File(filesDir, "$ATTACHMENTS_DIR/$chatId")
+      if (dir.exists() && !dir.deleteRecursively()) {
+        // Row is gone but on-disk attachments survived — flag as observable
+        // disk-orphan so it can be picked up in diagnostics (T4-m1).
+        errorLog.e(
+          ERROR_COMPONENT,
+          "failed to remove attachments dir for chatId=$chatId path=${dir.absolutePath}",
+        )
+      }
     }
   }
 
@@ -149,6 +177,15 @@ class DefaultChatRepository internal constructor(
   override fun observeMessages(chatId: Long): Flow<List<MessageEntity>> =
     messageDao.observeByChat(chatId)
 
+  /**
+   * Single-shot startup sweep. Caller invariant: only run from
+   * `SanctumApplication.onCreate` BEFORE any UI flow that could trigger
+   * `commitDraftChat` (T4-S3) — there is no transactional barrier between the
+   * snapshot read and the per-row delete here.
+   *
+   * `chat.modelId` is logged for diagnostics; today it is a HuggingFace
+   * identifier (no PII). Keep it that way (T4-S4).
+   */
   override suspend fun sweepZombieChats(filesDir: File) {
     withContext(ioDispatcher) {
       val attachmentsRoot = File(filesDir, ATTACHMENTS_DIR)

@@ -21,21 +21,26 @@ interface ChatRepository {
 
   /**
    * Atomically promote a draft to a persistent chat. Inserts a [ChatEntity]
-   * (with auto-generated title) plus the user's first [firstMessage] inside a
-   * single Room transaction, then renames [stagingDir] (if non-null) to
-   * `filesDir/attachments/{chatId}/`.
+   * (with auto-generated title) and the user's first [firstMessage] AND
+   * renames [stagingDir] (if non-null) to `filesDir/attachments/{chatId}/`,
+   * all inside a single Room transaction. Rename failure throws inside the
+   * transaction → Room rolls back both INSERTs; the staging directory is
+   * then removed by the outer catch (Decision 6, AC-A6).
    *
-   * On rename failure the Room row is rolled back via `deleteById` and the
-   * staging directory is removed (Decision 6, AC-A6).
+   * [filesDir] is the canonical app private storage root. When [stagingDir]
+   * is non-null it MUST live under `filesDir/attachments/`; otherwise the
+   * call throws `IOException` before any Room work.
    *
    * @return the newly inserted chat id.
-   * @throws java.io.IOException when [stagingDir] is provided but is not a
-   *   directory, or when the rename to the final attachments folder fails.
+   * @throws java.io.IOException when [stagingDir] is outside the attachments
+   *   root, missing, not a directory, or when the rename to the final
+   *   attachments folder fails.
    */
   suspend fun commitDraftChat(
     modelId: String,
     firstMessage: MessageEntity,
     stagingDir: File?,
+    filesDir: File,
   ): Long
 
   /** Insert a single message (USER on send, ASSISTANT on `done=true`). */
