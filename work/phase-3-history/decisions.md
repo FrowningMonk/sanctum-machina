@@ -165,3 +165,31 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `./gradlew :app:testDebugUnitTest --tests "app.sanctum.machina.data.AutoTitleGeneratorTest" --tests "app.sanctum.machina.data.ChatRepositoryTest"` → BUILD SUCCESSFUL (10 + 11 = 21 тестов, 0 failures, 0 errors)
 - `./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL (полный `:app` unit-test без регрессий после фикса FakeModelRegistry-стабов)
 - `./gradlew :app:compileDebugKotlin` → BUILD SUCCESSFUL (Hilt-граф резолвится — `DefaultChatRepository` готов к биндингу из `AppModule` в Task 5)
+
+## Task 5: WarmupCoordinator + AppModule
+
+**Status:** Done
+**Commit:** b466277 (impl), 1fed4b5 (review round 1 fixes)
+**Agent:** main agent
+**Summary:** Создан `:app`-уровневый `WarmupCoordinator` (`@Singleton`, инжектит `ModelRegistry` + `AppSettingsRepository` + `ErrorLog`) — держит `warmupJob`, резолвит модель по AC-F5 (default → last-used → no-op), пишет `last_used_model_id` на успехе и `ErrorLog.e("engine-warmup", ...)` на фейле; `cancelAndRestart(modelId)` через `cancelAndJoin` снимает in-flight Job перед новым `initialize()` — mutex `lifecycleMutex` внутри `DefaultModelRegistry` гарантированно освобождён (user-spec Risk double-wait закрыт). `isWarmupInProgress: StateFlow<Boolean>` переключается в `true` до `cancelAndJoin` и сбрасывается в inner `finally` только если `warmupJob === coroutineContext[Job]` — без этого была бы видна транзиентная `false`-гэп между cancellation и стартом новой Job (Task-10 спиннер бы мигал). AC-F3 observer запускается в `init{}` и одноразово пишет `default_model_id` при первом `SUCCEEDED`-entry. `AppModule` (`@InstallIn(SingletonComponent)`, abstract + companion) биндит `ChatRepository ← DefaultChatRepository` и провайдит `SanctumDatabase` (через `SanctumDatabase.create(context)`), `ChatDao`, `MessageDao`. `WarmupCoordinator` резолвится автоматически — нужных `@Provides` нет.
+**Deviations:**
+- `WarmupCoordinator` имеет `@VisibleForTesting` primary-constructor, принимающий `CoroutineScope` — это seam для тестов (task этого не требовал явно, но иначе `Dispatchers.Default` из production-scope не ложится на test-scheduler). Production path через secondary `@Inject constructor` создаёт `CoroutineScope(SupervisorJob() + Dispatchers.Default)` — полностью по spec.
+- Round-1 code-reviewer major: изначально `_isWarmupInProgress.value = true` стоял ПОСЛЕ `cancelAndJoin` — outgoing-Job's `finally` писал `false` первым, создавая flicker. Fix: `warmupJob = null` + `true` ПЕРЕД `cancelAndJoin`; inner `finally` проверяет владение через `warmupJob === coroutineContext[Job]`.
+- Round-1 code-reviewer major: `setLastUsedModelId` и observer-body изначально не имели try/catch — DataStore failures уходили в logcat. Fix: `persistLastUsedModelId` helper + try/catch в observer, оба логируют через `ErrorLog.e("settings-io", ...)` (компонент уже был в `ALLOWED_COMPONENTS`).
+- Round-1 test-reviewer major: тесты использовали `UnconfinedTestDispatcher` — task Implementation Hint явно указывает `StandardTestDispatcher`. Fix: переключение + 4 новых теста (bare cancellation, warmupDefault twice, empty list, first-of-multiple) + gated transition-observation в `isWarmupInProgress` тестах.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: APPROVED_WITH_SUGGESTIONS, 2 major (flag flicker, unhandled exceptions в background) + 6 minor → [logs/working/task-5/code-reviewer-1.json](logs/working/task-5/code-reviewer-1.json)
+- security-auditor: APPROVED, 0 findings — injection/logging/concurrency/exposure/storage — ни одного вектора → [logs/working/task-5/security-auditor-1.json](logs/working/task-5/security-auditor-1.json)
+- test-reviewer: NEEDS_IMPROVEMENT, 3 major (terminal-state-only assertions в isWarmupInProgress тестах, dispatcher deviation) + 5 minor → [logs/working/task-5/test-reviewer-1.json](logs/working/task-5/test-reviewer-1.json)
+
+*Round 2 (after fixes):*
+- code-reviewer: APPROVED, 0 findings — ownership handshake через mutex корректен, новые тесты пинят контракты → [logs/working/task-5/code-reviewer-2.json](logs/working/task-5/code-reviewer-2.json)
+- test-reviewer: PASSED, 0 findings — все 3 round-1 major закрыты, gated-гейты на CompletableDeferred работают, subscriptionCount-assertion пинит self-cancel → [logs/working/task-5/test-reviewer-2.json](logs/working/task-5/test-reviewer-2.json)
+
+**Verification:**
+- `./gradlew :app:testDebugUnitTest --tests "*.WarmupCoordinatorTest"` → BUILD SUCCESSFUL (13 тестов, 0 failures — 10 из TDD Anchor + 3 edge-cases)
+- `./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL (полный `:app` unit-test без регрессий)
+- `./gradlew :app:kspDebugKotlin` → BUILD SUCCESSFUL (Hilt code-gen резолвит `@Binds ChatRepository ← DefaultChatRepository` и auto-resolve `WarmupCoordinator` через `@Inject constructor`)

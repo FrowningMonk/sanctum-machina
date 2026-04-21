@@ -1,0 +1,77 @@
+{
+  "status": "needs_improvement",
+  "summary": "All 10 TDD anchors are present and semantically match the spec. The headline ordering test (cancelAndRestart_cancelsInFlightJobBeforeNewInitialize) correctly verifies causal ordering (not just final state) by asserting inside the second initialize handler. Fakes are faithful and the AC-F3 one-shot test covers both first-trigger and no-retrigger. However, three tests are weaker than their names imply: isWarmupInProgress_emitsFalse_afterCompletion and _afterCancellation only observe the final false value and cannot detect an implementation that never flips the flag to true; the cancellation variant additionally cannot distinguish 'cancellation reset the flag' from 'model-b completion reset the flag' because model-b succeeds. The test file also deviates from the task's explicit Implementation Hint that mandates StandardTestDispatcher — UnconfinedTestDispatcher is used instead, which risks false positives for ordering assertions because child coroutines unwind eagerly rather than through the scheduler. The Thread.sleep(20) poll for ErrorLog is a real timing coupling (ErrorLog hops to real Dispatchers.IO) that is avoidable by wrapping ErrorLog in a capture-fake. Fakes themselves are well-designed.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "empty_test",
+      "location": "app/src/test/kotlin/app/sanctum/machina/engine/WarmupCoordinatorTest.kt:269-278 (isWarmupInProgress_emitsFalse_afterCompletion)",
+      "issue": "Litmus-test failure. The test only asserts the final value (assertFalse after advanceUntilIdle). An implementation that never flips _isWarmupInProgress to true at all would still pass this test, because the initial MutableStateFlow value is false. The test name implies a transition (false -> true -> false) but only observes the terminal state. Combined with the separate _emitsTrue_duringWarmup test this is acceptable coverage, but the test as written provides zero additional signal beyond the initial-value check.",
+      "recommendation": "Capture the full sequence of emissions with a collector and assert both transitions happened. Example using a list + launch { coordinator.isWarmupInProgress.toList(emissions) } inside a backgroundScope, then after advanceUntilIdle assert emissions == listOf(false, true, false). Alternatively, assert coordinator.isWarmupInProgress.value becomes true BEFORE registry.initialize returns (use a CompletableDeferred gate inside initializeHandler that suspends until the test has read isWarmupInProgress.value == true, then completes to let warmup finish). Either proves the true->false transition rather than only the terminal false."
+    },
+    {
+      "severity": "major",
+      "category": "empty_test",
+      "location": "app/src/test/kotlin/app/sanctum/machina/engine/WarmupCoordinatorTest.kt:281-298 (isWarmupInProgress_emitsFalse_afterCancellation)",
+      "issue": "The test's own comment contradicts its spec. Spec TDD-anchor text: 'assert isWarmupInProgress.value == false after cancellation, before the new Job is counted'. Test comment at line 296: 'After the successful model-b warmup completes, the flag is false.' Because the test lets model-b's handler return Result.success(Unit), the final assertFalse is satisfied by the successful completion of the second warmup, NOT by the cancellation of the first. An implementation where cancellation does NOT reset the flag (missing finally {} block) would still pass this test, since model-b's normal completion would flip the flag regardless. This is the exact regression the test was supposed to catch per AC: 'transitions via a finally {} block so cancellation always resets the flag'.",
+      "recommendation": "Split into two observable checkpoints. Make model-b's handler also suspend (awaitCancellation or a gate Deferred) so it does not complete synchronously. After cancelAndRestart + advanceUntilIdle, assert that (a) firstCancelled completed, (b) secondStarted has NOT yet completed, and (c) isWarmupInProgress.value is in the correct state for the coordinator's intent. Since the coordinator now sets the flag to true BEFORE cancelling the old Job (line 117 in production: 'Flip the flag BEFORE the new Job is launched so observers never see a false gap'), the 'between cancellation and new Job' window the TDD anchor described no longer exists — revise the test to match implementation intent: assert the flag stays true across the cancel-and-restart boundary, then becomes false only after the second Job completes. That actually tests the 'no false gap' guarantee documented in production."
+    },
+    {
+      "severity": "major",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/engine/WarmupCoordinatorTest.kt:79-85 (newCoordinator helper)",
+      "issue": "Dispatcher choice deviates from the task's explicit Implementation Hint ('Use StandardTestDispatcher so timing is deterministic', tasks/5.md line 145). UnconfinedTestDispatcher runs child coroutines inline at launch time, which bypasses the scheduler's queue. This hides ordering bugs where production relies on the scheduler yielding — specifically the launchWarmup flow, where _isWarmupInProgress.value = true must be observable by a collector between old-Job cancellation and new-Job start. With Unconfined, the whole launchWarmup body unwinds inside the caller frame, which can make tests pass that would fail under the scheduling semantics Dispatchers.Default gives in production. The docstring's claim ('no advanceUntilIdle bookkeeping needed') is also contradicted by the fact that every test still calls advanceUntilIdle() — so the supposed benefit is unused.",
+      "recommendation": "Replace with StandardTestDispatcher(testScheduler) to match the task hint. Concrete change: coordinatorScope = CoroutineScope(StandardTestDispatcher(testScheduler) + SupervisorJob()). Keep the existing advanceUntilIdle() calls, they already gate every assertion. Re-run the suite; any test that goes red under StandardTestDispatcher was previously passing due to Unconfined's eager inline execution and needs a real fix (most likely the two isWarmupInProgress tests flagged above)."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/engine/WarmupCoordinatorTest.kt:143-169 (warmupDefault_logsEngineWarmupError_onFailure + awaitLogFile)",
+      "issue": "Thread.sleep(20) polling couples the test to real wall-clock time because ErrorLog.e hops to real Dispatchers.IO via withContext. This works today but (a) adds up to ~2 s to a failing test, (b) can flake on loaded CI runners if IO dispatch latency exceeds 2 000 ms, and (c) leaks Dispatchers.IO work across test boundaries since there is no join on that coroutine. The 'patterns.md forbids MockK/Mockito' rule does not forbid hand-rolled capture fakes — using the real file-based ErrorLog here is an unnecessary integration concern in a pure unit test.",
+      "recommendation": "Introduce a FakeErrorLog that implements the same surface as ErrorLog but captures calls in-memory. Two options: (1) extract an interface ErrorLogger from ErrorLog (breaks API, not worth it); (2) make ErrorLog open for test subclassing, then override e() in test to append to a list without IO dispatch. Option (2) is minimally invasive: change 'class ErrorLog' to 'open class ErrorLog' and 'suspend fun e(...)' to 'open suspend fun e(...)'. Test: private class FakeErrorLog(context: Context) : ErrorLog(context) { val entries = mutableListOf<Triple<String,String,Throwable?>>(); override suspend fun e(component: String, description: String, cause: Throwable?) { entries += Triple(component, description, cause) } }. Replace awaitLogFile() + file read with assertEquals('engine-warmup', errorLog.entries.single().first). Removes the sleep, the IO-dispatch coupling, and the filesDir cleanup in @Before/@After."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/test/kotlin/app/sanctum/machina/engine/WarmupCoordinatorTest.kt:114-124 (warmupDefault_doesNothing_whenBothEmpty)",
+      "issue": "Only asserts initializeCalls is empty and lastUsedModelId == \"\". Does not assert that _isWarmupInProgress stays false (i.e. no Job was launched and the flag was not toggled). An implementation that flipped the flag to true, realised there is nothing to do, and did not reset it would pass this test.",
+      "recommendation": "Add assertFalse(\"no warmup should be in progress\", coordinator.isWarmupInProgress.value) after the advanceUntilIdle call. Also assert appSettings.setDefaultModelIdCalls.isEmpty() to rule out an accidental write-through."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/test/kotlin/app/sanctum/machina/engine/WarmupCoordinatorTest.kt (test class as a whole)",
+      "issue": "Task 5 Details > Edge cases enumerates two edge cases that have no corresponding test: (a) 'warmupDefault() called multiple times before first warmup completes: each call should cancel the previous Job and start a new one'; (b) AC-F3 observer: 'if registry.models emits an empty list on startup (no models downloaded), the observer should not call setDefaultModelId'. Neither is covered. The 'warmupDefault called twice' case is functionally similar to cancelAndRestart but uses a different code path (resolveModelId + launchWarmup vs direct launchWarmup) and could regress independently.",
+      "recommendation": "Add two tests: (1) warmupDefault_calledTwiceInQuickSuccession_cancelsFirstBeforeSecondStarts — same pattern as the existing cancelAndRestart ordering test but invoke coordinator.warmupDefault() twice instead of warmupDefault + cancelAndRestart. (2) ac_f3Observer_doesNotSetDefault_onEmptyModelList — construct coordinator with appSettings.defaultModelId = \"\", do not emit anything on registry._models (stays at initial emptyList()), advanceUntilIdle, assert appSettings.setDefaultModelIdCalls.isEmpty()."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/engine/WarmupCoordinatorTest.kt:221-252 (ac_f3Observer_setsDefaultModelId_onFirstDownloadedModel_whenEmpty)",
+      "issue": "The one-shot assertion is correct but coupled to an implementation detail. The production code calls appSettings.setDefaultModelId(...) which in the fake mutates appSettings.defaultModelId to the new value. On the second emission, the 'if getDefaultModelId().isEmpty()' guard inside the observer would also prevent a re-call even if the observer had not self-cancelled. So this test cannot distinguish 'observer correctly self-cancelled' from 'the isEmpty() guard caught it'. If a future refactor drops the self-cancel (relying only on the guard), the test stays green, but the documented 'one-shot: break out of the collection loop by cancelling its Job' contract (tasks/5.md line 126) would silently regress.",
+      "recommendation": "Add an additional assertion that proves the collector itself terminated. Two approaches: (a) after the one-shot, emit a third entry and verify registry._models.subscriptionCount.value == 0 (StateFlow exposes subscriber count). (b) Expose a VisibleForTesting property on WarmupCoordinator for the observer Job and assert !observerJob.isActive after the first successful write. Option (a) is cleaner and requires no production change: assertEquals(0, registry._models.subscriptionCount.value) after the one-shot."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/engine/WarmupCoordinatorTest.kt:308-344 (FakeModelRegistry)",
+      "issue": "Seven of nine ModelRegistry methods throw NotImplementedError. This is correct in spirit (unused == surfaced loudly) but fragile: any future refactor that makes WarmupCoordinator call refreshAllowlist/cleanup/etc. as part of its lifecycle will fail with NotImplementedError rather than producing a useful test signal. Also, _models is public (Kotlin underscore naming does not enforce privacy; any test can mutate it) — accepted for now but if more tests are added they all share the same mutable handle.",
+      "recommendation": "Lower severity. Replace NotImplementedError throws with empty/success defaults to match real registry behavior when the method is not under test: refreshAllowlist() returns Result.success(Unit), cleanup is a no-op, etc. Keep NotImplementedError only for download() which returns a Flow. This makes the fake forward-compatible with coordinator lifecycle extensions and avoids crashing unrelated tests."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "litmusTest": {
+      "checked": 10,
+      "passed": 7,
+      "failed": 3
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 10,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}
