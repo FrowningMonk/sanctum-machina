@@ -1,8 +1,6 @@
 package app.sanctum.machina.data
 
-import android.content.Context
 import androidx.room.Database
-import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteDatabase
 import app.sanctum.machina.data.dao.ChatDao
@@ -25,15 +23,6 @@ abstract class SanctumDatabase : RoomDatabase() {
 
     companion object {
         const val DATABASE_NAME: String = "sanctum.db"
-
-        fun create(context: Context): SanctumDatabase =
-            Room.databaseBuilder(
-                context.applicationContext,
-                SanctumDatabase::class.java,
-                DATABASE_NAME,
-            )
-                .addCallback(ForeignKeysOnOpenCallback)
-                .build()
 
         internal val ForeignKeysOnOpenCallback: Callback = object : Callback() {
             override fun onOpen(db: SupportSQLiteDatabase) {

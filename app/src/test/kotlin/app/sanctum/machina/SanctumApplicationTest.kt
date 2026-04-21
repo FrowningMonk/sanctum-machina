@@ -1,8 +1,11 @@
 package app.sanctum.machina
 
+import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import app.sanctum.machina.crash.CrashHandler
+import app.sanctum.machina.engine.StartupHousekeeper
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -78,6 +81,61 @@ class SanctumApplicationTest {
             SentinelHandler,
             after,
         )
+    }
+
+    @Test
+    fun testHousekeepingSkippedInCrashProcess() {
+        val app = ApplicationProvider.getApplicationContext<SanctumApplication>()
+        val recording = RecordingStartupHousekeeper(app)
+        app.startupHousekeeper = recording
+        writeBoundProcessName("${app.packageName}:crash")
+
+        app.onCreate()
+
+        assertEquals(
+            ":crash process must NOT launch startup housekeeping",
+            0,
+            recording.runCount,
+        )
+    }
+
+    private class RecordingStartupHousekeeper(context: Context) : StartupHousekeeper(
+        context = context,
+        errorLog = app.sanctum.machina.core.log.ErrorLog(context),
+        chatRepository = NullChatRepository,
+    ) {
+        var runCount = 0
+            private set
+
+        override suspend fun run() {
+            runCount++
+        }
+    }
+
+    private object NullChatRepository : app.sanctum.machina.data.ChatRepository {
+        override suspend fun commitDraftChat(
+            modelId: String,
+            firstMessage: app.sanctum.machina.data.model.MessageEntity,
+            stagingDir: java.io.File?,
+            filesDir: java.io.File,
+        ): Long = 0L
+        override suspend fun savePersistentMessage(
+            message: app.sanctum.machina.data.model.MessageEntity,
+        ) = Unit
+        override suspend fun updateChatLastMessage(chatId: Long, timestampMs: Long) = Unit
+        override suspend fun updateChatTitle(
+            chatId: Long,
+            title: String,
+            isManuallyTitled: Boolean,
+        ) = Unit
+        override suspend fun deleteChat(chatId: Long, filesDir: java.io.File) = Unit
+        override fun observeChats(): kotlinx.coroutines.flow.Flow<List<app.sanctum.machina.data.model.ChatEntity>> =
+            kotlinx.coroutines.flow.emptyFlow()
+        override fun observeMessages(
+            chatId: Long,
+        ): kotlinx.coroutines.flow.Flow<List<app.sanctum.machina.data.model.MessageEntity>> =
+            kotlinx.coroutines.flow.emptyFlow()
+        override suspend fun sweepZombieChats(filesDir: java.io.File) = Unit
     }
 
     private object SentinelHandler : Thread.UncaughtExceptionHandler {

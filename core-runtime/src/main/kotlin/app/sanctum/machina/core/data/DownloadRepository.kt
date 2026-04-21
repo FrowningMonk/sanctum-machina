@@ -71,7 +71,11 @@ interface DownloadRepository {
 }
 
 class DefaultDownloadRepository(private val context: Context) : DownloadRepository {
-  private val workManager = WorkManager.getInstance(context)
+  // Lazy so `WorkManager.getInstance(context)` does not run inside Hilt's SingletonComponent
+  // eager-init — test environments without the WorkManager ContentProvider bootstrapped (e.g.
+  // Robolectric without `WorkManagerTestInitHelper`) would otherwise crash the whole graph at
+  // injection time, even when no download is ever triggered.
+  private val workManager by lazy { WorkManager.getInstance(context) }
   private val downloadStartTimeSharedPreferences =
     context.getSharedPreferences("download_start_time_ms", Context.MODE_PRIVATE)
 
