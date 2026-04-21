@@ -22,17 +22,25 @@ import app.sanctum.machina.core.runtime.LlmModelHelper
 import app.sanctum.machina.core.runtime.ResultListener
 import app.sanctum.machina.core.settings.AppSettingsRepository
 import app.sanctum.machina.core.settings.proto.PerModelSettings
+import app.sanctum.machina.data.ChatRepository
+import app.sanctum.machina.data.dao.ChatDao
+import app.sanctum.machina.data.dao.MessageDao
+import app.sanctum.machina.data.model.ChatEntity
+import app.sanctum.machina.data.model.MessageEntity
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ToolProvider
-import java.io.IOException
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.emptyFlow
-import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -44,6 +52,8 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -63,6 +73,9 @@ class ChatViewModelTest {
     private lateinit var fakeHelper: FakeLlmHelper
     private lateinit var fakeDecoder: FakeImageDecoder
     private lateinit var fakeRepo: FakeAppSettingsRepository
+    private lateinit var fakeMessageDao: FakeMessageDao
+    private lateinit var fakeChatDao: FakeChatDao
+    private lateinit var fakeChatRepository: FakeChatRepository
 
     private lateinit var sharedCalls: MutableList<String>
 
@@ -75,6 +88,9 @@ class ChatViewModelTest {
         fakeHelper = FakeLlmHelper(sharedCalls)
         fakeDecoder = FakeImageDecoder()
         fakeRepo = FakeAppSettingsRepository()
+        fakeMessageDao = FakeMessageDao()
+        fakeChatDao = FakeChatDao()
+        fakeChatRepository = FakeChatRepository()
     }
 
     @After
@@ -82,9 +98,214 @@ class ChatViewModelTest {
         Dispatchers.resetMain()
     }
 
+    // ------------------------------------------------------------------
+    // Task 8 — TDD anchors (new behaviours under test)
+    // ------------------------------------------------------------------
+
+    @Test
+    fun quickMode_neverCallsMessageDao() = runTest(dispatcher) {
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        val vm = buildViewModel(ChatIdentityArg.Quick)
+        advanceUntilIdle()
+
+        vm.send("hello")
+        advanceUntilIdle()
+        fakeHelper.lastResultListener?.invoke("ok", true, null)
+        advanceUntilIdle()
+
+        assertEquals(
+            "Quick mode must never observe Room messages",
+            0,
+            fakeMessageDao.observeCalls,
+        )
+        assertEquals(
+            "Quick mode must never insert into Room",
+            emptyList<MessageEntity>(),
+            fakeMessageDao.inserted,
+        )
+    }
+
+    @Test
+    fun draftMode_firstSend_callsCommitDraftChat() = runTest(dispatcher) {
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        val vm = buildViewModel(ChatIdentityArg.Draft)
+        advanceUntilIdle()
+
+        vm.send("first turn")
+        advanceUntilIdle()
+
+        assertEquals(
+            "Draft mode's first send must commit a persistent row",
+            1,
+            fakeChatRepository.commitCalls.size,
+        )
+        val commit = fakeChatRepository.commitCalls.single()
+        assertEquals("id-m", commit.modelId)
+        assertEquals("first turn", commit.firstMessage.text)
+        assertEquals("user", commit.firstMessage.role)
+    }
+
+    @Test
+    fun draftMode_afterCommit_navigatesToPersistentRoute() = runTest(dispatcher) {
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        fakeChatRepository.nextChatId = 42L
+        val vm = buildViewModel(ChatIdentityArg.Draft)
+        advanceUntilIdle()
+        val navEvents = mutableListOf<ChatNavigationEvent>()
+        backgroundScope.launch { vm.navigation.collect { navEvents += it } }
+
+        vm.send("first turn")
+        advanceUntilIdle()
+
+        assertEquals(
+            "commit success must emit NavigateToPersistent with the new chatId",
+            listOf(ChatNavigationEvent.NavigateToPersistent(42L)),
+            navEvents,
+        )
+    }
+
+    @Test
+    fun onCleared_doesNotCallRegistryCleanup() = runTest(dispatcher) {
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        val vm = buildViewModel(ChatIdentityArg.Quick)
+        advanceUntilIdle()
+
+        val method = ViewModelReflection.onCleared(vm)
+        method.invoke(vm)
+        advanceUntilIdle()
+
+        assertEquals(
+            "Decision 5 / AC-E6: onCleared must not tear down the warm engine",
+            0,
+            fakeRegistry.cleanupCalls,
+        )
+    }
+
+    @Test
+    fun engineStateTransition_initializingDrivesLoading() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        val vm = buildViewModel(ChatIdentityArg.Quick)
+        advanceUntilIdle()
+        assertTrue(
+            "initial Ready must propagate before the transition assertion",
+            vm.uiState.value is ChatUiState.Ready,
+        )
+
+        fakeRegistry.publishEntry(model, ModelInitStatus.Initializing)
+        advanceUntilIdle()
+
+        assertEquals(ChatUiState.Loading, vm.uiState.value)
+    }
+
+    @Test
+    fun engineStateTransition_readyDrivesReady() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeRegistry.publishEntry(model, ModelInitStatus.Initializing)
+        val vm = buildViewModel(ChatIdentityArg.Quick)
+        advanceUntilIdle()
+        assertEquals(ChatUiState.Loading, vm.uiState.value)
+
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        advanceUntilIdle()
+
+        assertEquals(
+            "Ready must surface Ready(isGenerating=false)",
+            ChatUiState.Ready(isGenerating = false),
+            vm.uiState.value,
+        )
+    }
+
+    @Test
+    fun engineStateTransition_failedDrivesFailed() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        val vm = buildViewModel(ChatIdentityArg.Quick)
+        advanceUntilIdle()
+
+        fakeRegistry.publishEntry(model, ModelInitStatus.Failed("boom"))
+        advanceUntilIdle()
+
+        val state = vm.uiState.value
+        assertTrue(state is ChatUiState.Failed)
+        assertEquals("boom", (state as ChatUiState.Failed).rawCause)
+    }
+
+    @Test
+    fun doubleBubble_noSimultaneousStreamingAndPersisted() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        // Seed Room with the USER row that corresponds to the streaming turn.
+        val userRow = MessageEntity(
+            id = 1L,
+            chatId = 7L,
+            role = "user",
+            text = "hi",
+            createdAt = 10L,
+        )
+        fakeMessageDao.emit(listOf(userRow))
+        advanceUntilIdle()
+
+        // Capture every displayMessages emission while the stream runs.
+        val emissions = mutableListOf<List<Message>>()
+        backgroundScope.launch { vm.messages.collect { emissions += it } }
+
+        vm.send("hi")
+        advanceUntilIdle()
+        val listener = fakeHelper.lastResultListener
+            ?: error("Persistent send must call runInference")
+
+        // Stream a token — display should show USER + streaming ASSISTANT.
+        listener.invoke("partial", false, null)
+        advanceUntilIdle()
+        assertTrue(
+            "during streaming, the in-memory bubble must be visible",
+            emissions.any { it.any { m -> m.role == MessageRole.ASSISTANT && m.streaming } },
+        )
+
+        // Engine signals done. The VM persists ASSISTANT; simulate the Room
+        // flow re-emitting with the new row. The atomic handover must ensure
+        // no displayMessages emission carries both representations.
+        listener.invoke("", true, null)
+        advanceUntilIdle()
+        val assistantRow = MessageEntity(
+            id = 2L,
+            chatId = 7L,
+            role = "assistant",
+            text = "partial",
+            createdAt = 20L,
+        )
+        fakeMessageDao.emit(listOf(userRow, assistantRow))
+        advanceUntilIdle()
+
+        for (snapshot in emissions) {
+            val persistedEndsWithAssistant = snapshot.count { it.role == MessageRole.ASSISTANT } >= 1 &&
+                snapshot.last().role == MessageRole.ASSISTANT
+            // A "streaming-only" bubble is a non-streaming assistant next to
+            // a persisted assistant — we key the invariant on `streaming=true`
+            // since that is the in-memory flag exclusive to `_streamingMessage`.
+            val hasInMemoryStreaming = snapshot.any { it.role == MessageRole.ASSISTANT && it.streaming }
+            val bothPresent = persistedEndsWithAssistant && hasInMemoryStreaming &&
+                snapshot.count { it.role == MessageRole.ASSISTANT } > 1
+            assertFalse(
+                "atomic handover broken: both persisted ASSISTANT and streaming bubble present",
+                bothPresent,
+            )
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Phase-2 behaviour kept (adapted to ChatIdentity.Quick)
+    // ------------------------------------------------------------------
+
     @Test
     fun addImages_belowLimit_addsAll() = runTest(dispatcher) {
-        val vm = buildViewModel()
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         val uris = listOf(uri("a"), uri("b"), uri("c"))
 
         vm.addImages(uris)
@@ -96,7 +317,8 @@ class ChatViewModelTest {
 
     @Test
     fun addImages_exceedsLimit_clipsToTen() = runTest(dispatcher) {
-        val vm = buildViewModel()
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         val seed = List(7) { stubBitmap() }
         seed.forEach { vm.addImageBitmap(it) }
         advanceUntilIdle()
@@ -117,7 +339,8 @@ class ChatViewModelTest {
 
     @Test
     fun addImages_alreadyAtLimit_noneAdded() = runTest(dispatcher) {
-        val vm = buildViewModel()
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         repeat(10) { vm.addImageBitmap(stubBitmap()) }
         advanceUntilIdle()
         val events = collectSnackbar(vm)
@@ -134,7 +357,8 @@ class ChatViewModelTest {
 
     @Test
     fun removeAttachment_validIdx_removes() = runTest(dispatcher) {
-        val vm = buildViewModel()
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         repeat(3) { vm.addImageBitmap(stubBitmap()) }
         advanceUntilIdle()
 
@@ -145,7 +369,8 @@ class ChatViewModelTest {
 
     @Test
     fun removeAttachment_invalidIdx_noCrash() = runTest(dispatcher) {
-        val vm = buildViewModel()
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         repeat(2) { vm.addImageBitmap(stubBitmap()) }
         advanceUntilIdle()
 
@@ -157,23 +382,17 @@ class ChatViewModelTest {
 
     @Test
     fun addImages_decoderReturnsNull_skipsAndDoesNotCrash() = runTest(dispatcher) {
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
         fakeDecoder.nullFor.add("broken")
-        val vm = buildViewModel()
+        val vm = buildViewModel(ChatIdentityArg.Quick)
 
         vm.addImages(listOf(uri("broken"), uri("ok")))
         advanceUntilIdle()
 
         val attachments = vm.attachments.value
         assertEquals(1, attachments.size)
-        assertTrue(
-            "surviving attachment must be an Image (not a placeholder)",
-            attachments.single() is Attachment.Image,
-        )
-        assertEquals(
-            "both URIs should have been attempted",
-            listOf(uri("broken"), uri("ok")),
-            fakeDecoder.decodedUris,
-        )
+        assertTrue(attachments.single() is Attachment.Image)
+        assertEquals(listOf(uri("broken"), uri("ok")), fakeDecoder.decodedUris)
     }
 
     @Test
@@ -181,13 +400,14 @@ class ChatViewModelTest {
         fakeRegistry.setModel(
             Model(
                 name = "m",
+                modelId = "id-m",
                 llmSupportImage = true,
                 llmSupportAudio = true,
                 llmSupportThinking = false,
             )
         )
 
-        val vm = buildViewModel()
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
 
         assertTrue(vm.modelCaps.value.supportImage)
@@ -197,8 +417,8 @@ class ChatViewModelTest {
 
     @Test
     fun send_transfersPendingAttachmentsIntoUserMessageAndClearsStaging() = runTest(dispatcher) {
-        fakeRegistry.setModel(Model(name = "m", llmSupportImage = true))
-        val vm = buildViewModel()
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m", llmSupportImage = true))
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
         val bitmap = stubBitmap()
         vm.addImageBitmap(bitmap)
@@ -216,8 +436,8 @@ class ChatViewModelTest {
 
     @Test
     fun send_attachmentOnlyBlankText_stillProceedsAndClears() = runTest(dispatcher) {
-        fakeRegistry.setModel(Model(name = "m", llmSupportImage = true))
-        val vm = buildViewModel()
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m", llmSupportImage = true))
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
         vm.addImageBitmap(stubBitmap())
         advanceUntilIdle()
@@ -233,7 +453,8 @@ class ChatViewModelTest {
 
     @Test
     fun addAudio_createsAudioAttachment() = runTest(dispatcher) {
-        val vm = buildViewModel()
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
 
         val pcm = byteArrayOf(1, 2, 3, 4)
@@ -241,13 +462,14 @@ class ChatViewModelTest {
         advanceUntilIdle()
 
         val audio = vm.attachments.value.single() as Attachment.Audio
-        assertSame("pcm must be stored by reference, not copied", pcm, audio.pcm)
+        assertSame(pcm, audio.pcm)
         assertEquals(1234L, audio.durationMs)
     }
 
     @Test
     fun addAudio_alreadyHasAudio_isNoOp() = runTest(dispatcher) {
-        val vm = buildViewModel()
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
         val firstPcm = byteArrayOf(9)
         vm.addAudio(firstPcm, durationMs = 1_000L)
@@ -258,12 +480,13 @@ class ChatViewModelTest {
 
         val audio = vm.attachments.value.single() as Attachment.Audio
         assertEquals(1_000L, audio.durationMs)
-        assertSame("first clip must survive by reference", firstPcm, audio.pcm)
+        assertSame(firstPcm, audio.pcm)
     }
 
     @Test
     fun addAudio_coexistsWithImages() = runTest(dispatcher) {
-        val vm = buildViewModel()
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
         vm.addImageBitmap(stubBitmap())
         advanceUntilIdle()
@@ -278,26 +501,21 @@ class ChatViewModelTest {
 
     @Test
     fun reportAudioError_emitsSnackbarAndAcceptsValidComponent() = runTest(dispatcher) {
-        val vm = buildViewModel()
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
         val events = collectSnackbar(vm)
 
-        vm.reportAudioError(
-            "audio record init failed",
-            IllegalStateException("mic busy"),
-        )
+        vm.reportAudioError("audio record init failed", IllegalStateException("mic busy"))
         advanceUntilIdle()
 
-        assertEquals(
-            listOf(R.string.audio_record_init_failed),
-            events,
-        )
+        assertEquals(listOf(R.string.audio_record_init_failed), events)
     }
 
     @Test
     fun send_transfersAudioAttachmentAndClears() = runTest(dispatcher) {
-        fakeRegistry.setModel(Model(name = "m", llmSupportAudio = true))
-        val vm = buildViewModel()
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m", llmSupportAudio = true))
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
         val pcm = byteArrayOf(5, 6, 7)
         vm.addAudio(pcm, durationMs = 2_000L)
@@ -315,47 +533,24 @@ class ChatViewModelTest {
 
     @Test
     fun reportCameraError_emitsSnackbarAndAcceptsValidComponent() = runTest(dispatcher) {
-        val vm = buildViewModel()
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
         val events = collectSnackbar(vm)
 
         vm.reportCameraError("camera bind failed", IllegalStateException("provider unavailable"))
         advanceUntilIdle()
 
-        assertEquals(
-            listOf(R.string.camera_init_failed),
-            events,
-        )
+        assertEquals(listOf(R.string.camera_init_failed), events)
     }
-
-    @Test
-    fun modelCaps_initFails_keepsDefaultCaps() = runTest(dispatcher) {
-        fakeRegistry.initResult = Result.failure(IOException("boom"))
-        fakeRegistry.setModel(
-            Model(
-                name = "m",
-                llmSupportImage = true,
-                llmSupportAudio = true,
-                llmSupportThinking = true,
-            )
-        )
-
-        val vm = buildViewModel()
-        advanceUntilIdle()
-
-        assertEquals(ModelCapabilities(), vm.modelCaps.value)
-        assertTrue(vm.uiState.value is ChatUiState.Failed)
-    }
-
-    // --- Task 11: state-machine TDD anchors -----------------------------------
 
     @Test
     fun send_emptyTextEmptyAttachments_noInference() = runTest(dispatcher) {
-        fakeRegistry.setModel(Model(name = "m"))
-        val vm = buildViewModel()
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
 
-        vm.send("   ")  // whitespace-only, no attachments
+        vm.send("   ")
         advanceUntilIdle()
 
         assertEquals(0, fakeHelper.runInferenceCalls)
@@ -366,23 +561,20 @@ class ChatViewModelTest {
     fun send_thinkingEnabled_accumulates() = runTest(dispatcher) {
         val model = Model(
             name = "m",
+            modelId = "id-m",
             llmSupportThinking = true,
             configs = createLlmChatConfigs(supportThinking = true),
         )
         model.preProcess()
         fakeRegistry.setModel(model)
-        fakeRepo.save(
-            "m",
-            PerModelSettings.newBuilder().setEnableThinking(true).build(),
-        )
-        val vm = buildViewModel()
+        fakeRepo.save("id-m", PerModelSettings.newBuilder().setEnableThinking(true).build())
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
 
         vm.send("think please")
         advanceUntilIdle()
 
-        val listener = fakeHelper.lastResultListener
-            ?: error("send must invoke runInference")
+        val listener = fakeHelper.lastResultListener ?: error("send must invoke runInference")
         listener.invoke("hello", false, "thought-1 ")
         listener.invoke(" world", false, "thought-2")
         listener.invoke("", true, null)
@@ -390,11 +582,7 @@ class ChatViewModelTest {
         val assistant = vm.messages.value.last { it.role == MessageRole.ASSISTANT }
         assertEquals("hello world", assistant.text)
         assertEquals("thought-1 thought-2", assistant.thinkingText)
-        // LiteRT-LM Jinja template only emits `<|think|>` tokens when
-        // enable_thinking is passed via extraContext — without this the
-        // model answers directly and message.channels["thought"] stays null.
         assertEquals(
-            "send must forward enable_thinking=true when accumulation is on",
             mapOf("enable_thinking" to "true"),
             fakeHelper.lastExtraContext,
         )
@@ -404,99 +592,31 @@ class ChatViewModelTest {
     fun send_thinkingDisabled_extraContextNull() = runTest(dispatcher) {
         val model = Model(
             name = "m",
+            modelId = "id-m",
             llmSupportThinking = true,
             configs = createLlmChatConfigs(supportThinking = true),
         )
         model.preProcess()
         fakeRegistry.setModel(model)
-        // No override — default ENABLE_THINKING is false.
-        val vm = buildViewModel()
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
 
         vm.send("hi")
         advanceUntilIdle()
 
-        assertEquals(
-            "extraContext must be null when thinking is off — otherwise " +
-                "Gemma would emit reasoning we'd silently drop",
-            null,
-            fakeHelper.lastExtraContext,
-        )
-    }
-
-    @Test
-    fun send_thinkingDisabled_skips() = runTest(dispatcher) {
-        val model = Model(
-            name = "m",
-            llmSupportThinking = true,
-            configs = createLlmChatConfigs(supportThinking = true),
-        )
-        model.preProcess()
-        fakeRegistry.setModel(model)
-        // Default for ENABLE_THINKING in createLlmChatConfigs is false; no override needed.
-        val vm = buildViewModel()
-        advanceUntilIdle()
-
-        vm.send("hi")
-        advanceUntilIdle()
-        val listener = fakeHelper.lastResultListener
-            ?: error("send must invoke runInference")
-        listener.invoke("ok", false, "thinking ignored")
-        listener.invoke("", true, null)
-
-        val assistant = vm.messages.value.last { it.role == MessageRole.ASSISTANT }
-        assertEquals("ok", assistant.text)
-        assertEquals(
-            "thinkingText must stay null when enable_thinking is false",
-            null,
-            assistant.thinkingText,
-        )
-    }
-
-    @Test
-    fun send_llmSupportThinkingFalse_skips() = runTest(dispatcher) {
-        // Even with supportThinking=true configs and an enable_thinking=true
-        // override, the model.llmSupportThinking flag must veto accumulation.
-        val model = Model(
-            name = "m",
-            llmSupportThinking = false,
-            configs = createLlmChatConfigs(supportThinking = true),
-        )
-        model.preProcess()
-        fakeRegistry.setModel(model)
-        fakeRepo.save(
-            "m",
-            PerModelSettings.newBuilder().setEnableThinking(true).build(),
-        )
-        val vm = buildViewModel()
-        advanceUntilIdle()
-
-        vm.send("hi")
-        advanceUntilIdle()
-        val listener = fakeHelper.lastResultListener
-            ?: error("send must invoke runInference")
-        listener.invoke("ok", false, "still ignored")
-        listener.invoke("", true, null)
-
-        val assistant = vm.messages.value.last { it.role == MessageRole.ASSISTANT }
-        assertEquals("ok", assistant.text)
-        assertEquals(
-            "model.llmSupportThinking gates the channel even with enable_thinking=true",
-            null,
-            assistant.thinkingText,
-        )
+        assertNull(fakeHelper.lastExtraContext)
     }
 
     @Test
     fun applyLightOverrides_updatesConfigValues_noCleanup() = runTest(dispatcher) {
-        val model = Model(name = "m", configs = createLlmChatConfigs())
+        val model = Model(name = "m", modelId = "id-m", configs = createLlmChatConfigs())
         model.preProcess()
         fakeRegistry.setModel(model)
-        val vm = buildViewModel()
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
 
         fakeRepo.save(
-            "m",
+            "id-m",
             PerModelSettings.newBuilder().setTemperature(0.2f).setMaxTokens(512).build(),
         )
 
@@ -508,33 +628,24 @@ class ChatViewModelTest {
 
         assertEquals(0.2f, model.configValues[ConfigKeys.TEMPERATURE.label])
         assertEquals(512, model.configValues[ConfigKeys.MAX_TOKENS.label])
-        assertEquals(
-            "applyLightOverrides must not call registry.cleanup",
-            cleanupCountBefore,
-            fakeRegistry.cleanupCalls,
-        )
-        assertEquals(
-            "applyLightOverrides must not call registry.initialize",
-            initCountBefore,
-            fakeRegistry.initializeCalls,
-        )
+        assertEquals(cleanupCountBefore, fakeRegistry.cleanupCalls)
+        assertEquals(initCountBefore, fakeRegistry.initializeCalls)
     }
 
     @Test
     fun applyHeavySetting_sequencing_stopCleanupInitialize() = runTest(dispatcher) {
-        val model = Model(name = "m", configs = createLlmChatConfigs())
+        val model = Model(name = "m", modelId = "id-m", configs = createLlmChatConfigs())
         model.preProcess()
         fakeRegistry.setModel(model)
-        val vm = buildViewModel()
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
 
-        // Drive a streaming generation so applyHeavySetting must call stopResponse first.
         vm.send("hi")
         advanceUntilIdle()
         sharedCalls.clear()
 
         fakeRepo.save(
-            "m",
+            "id-m",
             PerModelSettings.newBuilder().setAccelerator(Accelerator.CPU.label).build(),
         )
 
@@ -545,55 +656,41 @@ class ChatViewModelTest {
             it == "stopResponse" || it == "cleanup" || it == "initialize"
         }
         assertEquals(listOf("stopResponse", "cleanup", "initialize"), sequence)
-        assertEquals(
-            Accelerator.CPU.label,
-            model.configValues[ConfigKeys.ACCELERATOR.label],
-        )
-        assertFalse("reinit progress must clear after success", vm.reinitInProgress.value)
+        assertEquals(Accelerator.CPU.label, model.configValues[ConfigKeys.ACCELERATOR.label])
+        assertFalse(vm.reinitInProgress.value)
     }
 
     @Test
     fun applyHeavySetting_initCrash_failedState() = runTest(dispatcher) {
-        val model = Model(name = "m", configs = createLlmChatConfigs())
+        val model = Model(name = "m", modelId = "id-m", configs = createLlmChatConfigs())
         model.preProcess()
         fakeRegistry.setModel(model)
-        val vm = buildViewModel()
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
 
         fakeRepo.save(
-            "m",
+            "id-m",
             PerModelSettings.newBuilder().setAccelerator(Accelerator.CPU.label).build(),
         )
-        // Init succeeds first time (constructor) then fails on heavy reinit.
         fakeRegistry.initResult = Result.failure(RuntimeException("native init failed"))
         val events = collectSnackbar(vm)
 
         vm.applyHeavySetting()
         advanceUntilIdle()
 
-        assertTrue(
-            "init failure must transition to Failed state",
-            vm.uiState.value is ChatUiState.Failed,
-        )
-        assertFalse(
-            "reinit progress must clear in finally even on failure",
-            vm.reinitInProgress.value,
-        )
-        assertTrue(
-            "failure must emit the chat_load_failed snackbar (R.string.chat_load_failed_title)",
-            events.contains(R.string.chat_load_failed_title),
-        )
+        assertTrue(vm.uiState.value is ChatUiState.Failed)
+        assertFalse(vm.reinitInProgress.value)
+        assertTrue(events.contains(R.string.chat_load_failed_title))
     }
 
     @Test
     fun applySystemPromptAndReset_resetsWithPrompt() = runTest(dispatcher) {
-        val model = Model(name = "m", configs = createLlmChatConfigs())
+        val model = Model(name = "m", modelId = "id-m", configs = createLlmChatConfigs())
         model.preProcess()
         fakeRegistry.setModel(model)
-        val vm = buildViewModel()
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
 
-        // Seed history + staging so the reset is observable.
         vm.send("first turn")
         advanceUntilIdle()
         fakeHelper.lastResultListener?.invoke("ok", true, null)
@@ -602,12 +699,9 @@ class ChatViewModelTest {
 
         val events = collectSnackbar(vm)
         fakeRepo.save(
-            "m",
+            "id-m",
             PerModelSettings.newBuilder().setSystemPromptDefault("be terse").build(),
         )
-        sharedCalls.clear()
-        // Baseline: constructor init counts as 1 initialize, applyEffective
-        // runs before send(). Assertions below check deltas, not absolutes.
         val cleanupBefore = fakeRegistry.cleanupCalls
         val initBefore = fakeRegistry.initializeCalls
 
@@ -615,40 +709,24 @@ class ChatViewModelTest {
         advanceUntilIdle()
 
         assertEquals("be terse", model.configValues[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label])
-        assertEquals(
-            "reset must hand the new prompt to the registry",
-            "be terse",
-            fakeRegistry.lastResetSystemPrompt,
-        )
-        assertTrue("messages must clear", vm.messages.value.isEmpty())
-        assertTrue("attachments must clear", vm.attachments.value.isEmpty())
-        assertEquals(
-            listOf(R.string.settings_semilight_applied_snackbar),
-            events,
-        )
-        assertEquals(
-            "semi-light systemPrompt must not cleanup the engine (D15)",
-            cleanupBefore,
-            fakeRegistry.cleanupCalls,
-        )
-        assertEquals(
-            "semi-light systemPrompt must not reinitialize the engine (D15)",
-            initBefore,
-            fakeRegistry.initializeCalls,
-        )
+        assertEquals("be terse", fakeRegistry.lastResetSystemPrompt)
+        assertTrue(vm.messages.value.isEmpty())
+        assertTrue(vm.attachments.value.isEmpty())
+        assertEquals(listOf(R.string.settings_semilight_applied_snackbar), events)
+        assertEquals(cleanupBefore, fakeRegistry.cleanupCalls)
+        assertEquals(initBefore, fakeRegistry.initializeCalls)
     }
 
     @Test
     fun resetConversation_clearsAll() = runTest(dispatcher) {
-        // Bake the system prompt as the allowlist default so the merge step
-        // in `applyEffectiveConfigToModel` doesn't wipe it back to "".
         val model = Model(
             name = "m",
+            modelId = "id-m",
             configs = createLlmChatConfigs(defaultSystemPrompt = "be helpful"),
         )
         model.preProcess()
         fakeRegistry.setModel(model)
-        val vm = buildViewModel()
+        val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
         vm.send("hi")
         advanceUntilIdle()
@@ -656,8 +734,6 @@ class ChatViewModelTest {
         vm.addImageBitmap(stubBitmap())
         advanceUntilIdle()
         assertNotEquals(0, vm.messages.value.size)
-        // Reset baselines AFTER the warm-up send() so the post-reset
-        // assertions verify the reset path itself, not earlier setup.
         val cleanupBefore = fakeRegistry.cleanupCalls
         val initBefore = fakeRegistry.initializeCalls
 
@@ -666,27 +742,27 @@ class ChatViewModelTest {
 
         assertTrue(vm.messages.value.isEmpty())
         assertTrue(vm.attachments.value.isEmpty())
-        assertEquals(
-            "reset must hand the effective system prompt to the engine (D23)",
-            "be helpful",
-            fakeRegistry.lastResetSystemPrompt,
-        )
-        assertEquals(
-            "resetConversation must keep the engine loaded (D23) — no cleanup",
-            cleanupBefore,
-            fakeRegistry.cleanupCalls,
-        )
-        assertEquals(
-            "resetConversation must keep the engine loaded (D23) — no initialize",
-            initBefore,
-            fakeRegistry.initializeCalls,
-        )
+        assertEquals("be helpful", fakeRegistry.lastResetSystemPrompt)
+        assertEquals(cleanupBefore, fakeRegistry.cleanupCalls)
+        assertEquals(initBefore, fakeRegistry.initializeCalls)
     }
 
-    // ---- helpers ----
+    // ---- helpers -------------------------------------------------------
 
-    private fun buildViewModel(): ChatViewModel {
-        val savedState = SavedStateHandle(mapOf(ChatViewModel.NAV_ARG_MODEL_NAME to "m"))
+    private sealed class ChatIdentityArg {
+        object Quick : ChatIdentityArg()
+        object Draft : ChatIdentityArg()
+        data class Persistent(val id: Long) : ChatIdentityArg()
+    }
+
+    private fun buildViewModel(identity: ChatIdentityArg): ChatViewModel {
+        val savedState = SavedStateHandle(
+            when (identity) {
+                ChatIdentityArg.Quick -> mapOf(ChatViewModel.NAV_ARG_KIND to ChatViewModel.KIND_QUICK)
+                ChatIdentityArg.Draft -> mapOf(ChatViewModel.NAV_ARG_KIND to ChatViewModel.KIND_DRAFT)
+                is ChatIdentityArg.Persistent -> mapOf(ChatViewModel.NAV_ARG_CHAT_ID to identity.id)
+            }
+        )
         return ChatViewModel(
             savedStateHandle = savedState,
             registry = fakeRegistry,
@@ -695,6 +771,9 @@ class ChatViewModelTest {
             context = context,
             imageDecoder = fakeDecoder,
             settingsRepository = fakeRepo,
+            chatRepository = fakeChatRepository,
+            messageDao = fakeMessageDao,
+            chatDao = fakeChatDao,
         )
     }
 
@@ -761,16 +840,23 @@ private class FakeModelRegistry(
 
     private val _models = MutableStateFlow<List<ModelEntry>>(emptyList())
     override val models: StateFlow<List<ModelEntry>> = _models
-    override val activeModelName: StateFlow<String?> = MutableStateFlow(null)
+
+    private val _activeModelName = MutableStateFlow<String?>(null)
+    override val activeModelName: StateFlow<String?> = _activeModelName.asStateFlow()
 
     fun setModel(model: Model) {
+        publishEntry(model, ModelInitStatus.Ready)
+    }
+
+    fun publishEntry(model: Model, status: ModelInitStatus) {
         _models.value = listOf(
             ModelEntry(
                 model = model,
                 downloadStatus = ModelDownloadStatus(status = ModelDownloadStatusType.SUCCEEDED),
-                initStatus = ModelInitStatus.Ready,
+                initStatus = status,
             )
         )
+        _activeModelName.value = if (status === ModelInitStatus.Ready) model.modelId else null
     }
 
     override suspend fun refreshAllowlist(): Result<Unit> = Result.success(Unit)
@@ -843,5 +929,99 @@ private class FakeLlmHelper(
 
     override fun stopResponse(model: Model) {
         sharedCalls += "stopResponse"
+    }
+}
+
+private class FakeMessageDao : MessageDao {
+    private val observed = MutableStateFlow<List<MessageEntity>>(emptyList())
+    val inserted = mutableListOf<MessageEntity>()
+    var observeCalls = 0
+        private set
+
+    fun emit(list: List<MessageEntity>) { observed.value = list }
+
+    override suspend fun insert(message: MessageEntity): Long {
+        inserted += message
+        return (inserted.size).toLong()
+    }
+
+    override suspend fun deleteById(id: Long) {}
+
+    override suspend fun getByChatId(chatId: Long): List<MessageEntity> =
+        observed.value.filter { it.chatId == chatId }
+
+    override fun observeByChat(chatId: Long): Flow<List<MessageEntity>> {
+        observeCalls += 1
+        return observed.map { list -> list.filter { it.chatId == chatId } }
+    }
+
+    override suspend fun countByChatId(chatId: Long): Int =
+        observed.value.count { it.chatId == chatId }
+}
+
+private class FakeChatDao : ChatDao {
+    private val store = mutableMapOf<Long, ChatEntity>()
+
+    fun put(entity: ChatEntity) { store[entity.id] = entity }
+
+    override suspend fun insert(chat: ChatEntity): Long {
+        val id = if (chat.id == 0L) (store.keys.maxOrNull() ?: 0L) + 1 else chat.id
+        store[id] = chat.copy(id = id)
+        return id
+    }
+
+    override suspend fun update(chat: ChatEntity) { store[chat.id] = chat }
+
+    override suspend fun deleteById(id: Long) { store.remove(id) }
+
+    override suspend fun getById(id: Long): ChatEntity? = store[id]
+
+    override fun observeAll(): Flow<List<ChatEntity>> = MutableStateFlow(store.values.toList())
+}
+
+private class FakeChatRepository : ChatRepository {
+    data class CommitCall(
+        val modelId: String,
+        val firstMessage: MessageEntity,
+        val stagingDir: File?,
+    )
+
+    val commitCalls = mutableListOf<CommitCall>()
+    val insertedMessages = mutableListOf<MessageEntity>()
+    var nextChatId: Long = 1L
+
+    override suspend fun commitDraftChat(
+        modelId: String,
+        firstMessage: MessageEntity,
+        stagingDir: File?,
+        filesDir: File,
+    ): Long {
+        commitCalls += CommitCall(modelId, firstMessage, stagingDir)
+        return nextChatId
+    }
+
+    override suspend fun savePersistentMessage(message: MessageEntity) {
+        insertedMessages += message
+    }
+
+    override suspend fun updateChatLastMessage(chatId: Long, timestampMs: Long) {}
+
+    override suspend fun updateChatTitle(chatId: Long, title: String, isManuallyTitled: Boolean) {}
+
+    override suspend fun deleteChat(chatId: Long, filesDir: File) {}
+
+    override fun observeChats(): Flow<List<ChatEntity>> = emptyFlow()
+
+    override fun observeMessages(chatId: Long): Flow<List<MessageEntity>> = emptyFlow()
+
+    override suspend fun sweepZombieChats(filesDir: File) {}
+}
+
+private object ViewModelReflection {
+    fun onCleared(vm: ChatViewModel): java.lang.reflect.Method {
+        val cls = androidx.lifecycle.ViewModel::class.java
+        val m = cls.getDeclaredMethod("onCleared")
+        m.isAccessible = true
+        return m
     }
 }

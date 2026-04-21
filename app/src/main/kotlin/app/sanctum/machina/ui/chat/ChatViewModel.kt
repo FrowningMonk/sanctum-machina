@@ -12,23 +12,30 @@ import app.sanctum.machina.core.data.ConfigKeys
 import app.sanctum.machina.core.data.Model
 import app.sanctum.machina.core.data.SAMPLE_RATE
 import app.sanctum.machina.core.log.ErrorLog
+import app.sanctum.machina.core.registry.ModelEntry
+import app.sanctum.machina.core.registry.ModelInitStatus
 import app.sanctum.machina.core.registry.ModelRegistry
 import app.sanctum.machina.core.runtime.LlmModelHelper
 import app.sanctum.machina.core.settings.AppSettingsRepository
 import app.sanctum.machina.core.settings.proto.PerModelSettings
+import app.sanctum.machina.data.ChatRepository
+import app.sanctum.machina.data.dao.ChatDao
+import app.sanctum.machina.data.dao.MessageDao
+import app.sanctum.machina.data.model.MessageEntity
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -39,15 +46,18 @@ sealed interface ChatUiState {
 }
 
 /**
- * Capability flags derived from the active [Model] after `registry.initialize`.
- * Drives conditional visibility of camera/gallery/mic in `MultimodalInputBar`
- * (AC-18) and the thinking UI gate (AC-14).
+ * Capability flags derived from the active [Model] when the engine reports
+ * [ModelInitStatus.Ready]. Drives conditional visibility of camera/gallery/mic
+ * in `MultimodalInputBar` (AC-18) and the thinking UI gate (AC-14).
  */
 data class ModelCapabilities(
     val supportImage: Boolean = false,
     val supportAudio: Boolean = false,
     val supportThinking: Boolean = false,
 )
+
+private const val ROLE_USER = "user"
+private const val ROLE_ASSISTANT = "assistant"
 
 @HiltViewModel
 class ChatViewModel
@@ -60,17 +70,61 @@ constructor(
     @ApplicationContext private val context: Context,
     private val imageDecoder: ImageDecoder,
     private val settingsRepository: AppSettingsRepository,
+    private val chatRepository: ChatRepository,
+    private val messageDao: MessageDao,
+    private val chatDao: ChatDao,
 ) : ViewModel() {
 
-    val modelName: String =
-        savedStateHandle.get<String>(NAV_ARG_MODEL_NAME)
-            ?: error("modelName nav-arg is required")
+    // Eagerly resolved so a missing/mis-typed nav arg surfaces at construction
+    // time rather than lazily on the first send() (AC-E4 requires the route to
+    // be interpretable before any UI state transition).
+    val identity: ChatIdentity = resolveIdentity(savedStateHandle)
+
+    // Quick-mode override: when the Model Manager "Load" flow opens a chat,
+    // the route carries `?modelId={id}` that pins the VM to that specific
+    // model instead of whatever WarmupCoordinator warmed. Null for Draft and
+    // for Quick without an explicit override.
+    private val explicitModelId: String? = savedStateHandle[NAV_ARG_MODEL_ID]
+
+    /**
+     * Stable HF [Model.modelId] backing this chat. For Persistent this is a
+     * one-shot read of `chat.model_id` from Room (immutable for the chat's
+     * lifetime). For Quick/Draft it tracks [ModelRegistry.activeModelName]
+     * reactively so the first time [app.sanctum.machina.engine.WarmupCoordinator]
+     * publishes a Ready model the VM's engine observer fires.
+     *
+     * Quick may carry an explicit `modelId` nav arg (from the Model-Manager
+     * "Load" flow, Task 11) — if present it pins the flow; otherwise the flow
+     * is the pass-through of [ModelRegistry.activeModelName].
+     */
+    private val _chatModelId: MutableStateFlow<String?> = MutableStateFlow(null)
 
     private val _uiState = MutableStateFlow<ChatUiState>(ChatUiState.Loading)
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
+    // Quick / Draft history. Persistent mode exposes history through
+    // [messages] backed by the combine below — `_messages` stays empty there.
     private val _messages = MutableStateFlow<List<Message>>(emptyList())
-    val messages: StateFlow<List<Message>> = _messages.asStateFlow()
+
+    /**
+     * In-memory streaming ASSISTANT bubble for Persistent mode (D4). Cleared
+     * atomically when Room first re-emits with the persisted ASSISTANT row so
+     * the combine below never publishes a state where the same bubble appears
+     * both as in-memory streaming and as a Room row.
+     */
+    private val _streamingMessage = MutableStateFlow<Message?>(null)
+
+    /**
+     * Single messages stream for the UI: Persistent combines Room-backed
+     * [MessageEntity]s with [_streamingMessage]; Quick/Draft just mirror the
+     * in-memory [_messages] list.
+     *
+     * Atomic handover at `done=true`: when the Room flow first emits a list
+     * ending in an `ASSISTANT` row, [_streamingMessage] is both *suppressed*
+     * by the combine lambda (so no emission can carry both representations)
+     * and *cleared* by the side-effect collector in [observePersistedForHandover].
+     */
+    val messages: StateFlow<List<Message>> = buildMessagesFlow()
 
     private val _attachments = MutableStateFlow<List<Attachment>>(emptyList())
     val attachments: StateFlow<List<Attachment>> = _attachments.asStateFlow()
@@ -80,8 +134,8 @@ constructor(
 
     /**
      * Toggles the modal `ReinitProgressDialog` while a heavy-setting reinit
-     * runs (D12/D21). UI must block input — accelerator/enableThinking
-     * teardown is uncancellable.
+     * runs (D12/D21). UI must block input — accelerator teardown is
+     * uncancellable.
      */
     private val _reinitInProgress = MutableStateFlow(false)
     val reinitInProgress: StateFlow<Boolean> = _reinitInProgress.asStateFlow()
@@ -94,23 +148,23 @@ constructor(
     private val _snackbar = MutableSharedFlow<Int>(replay = 0, extraBufferCapacity = 8)
     val snackbar: SharedFlow<Int> = _snackbar.asSharedFlow()
 
+    /**
+     * One-shot navigation events. Extra-buffer=1 + `replay=0` means the
+     * commit-then-navigate path never suspends; if no collector is attached
+     * (e.g. the host composable has just started config change) the event is
+     * coalesced by the buffer and consumed on resume.
+     */
+    private val _navigation = MutableSharedFlow<ChatNavigationEvent>(
+        replay = 0,
+        extraBufferCapacity = 1,
+    )
+    val navigation: SharedFlow<ChatNavigationEvent> = _navigation.asSharedFlow()
+
     init {
-        viewModelScope.launch {
-            // Apply persisted overrides before init so awaitInitialize sees the
-            // user's accelerator + system prompt (D24, D21).
-            applyEffectiveConfigToModel()
-            registry.initialize(modelName).fold(
-                onSuccess = {
-                    refreshModelCaps()
-                    _uiState.value = ChatUiState.Ready(isGenerating = false)
-                },
-                onFailure = { e ->
-                    val cause =
-                        e.message?.takeIf { it.isNotBlank() }
-                            ?: e::class.simpleName.orEmpty()
-                    _uiState.value = ChatUiState.Failed(cause)
-                },
-            )
+        viewModelScope.launch { bootstrapChatModelId() }
+        viewModelScope.launch { observeEngineState() }
+        if (identity is ChatIdentity.Persistent) {
+            viewModelScope.launch { observePersistedForHandover(identity.id) }
         }
     }
 
@@ -121,108 +175,29 @@ constructor(
         val state = _uiState.value
         if (state !is ChatUiState.Ready || state.isGenerating) return
         if (_reinitInProgress.value) return
-        val model = registry.getModel(modelName) ?: error("Model not initialized")
 
-        val images = pending.filterIsInstance<Attachment.Image>().map { it.bitmap }
-        // Wrap raw PCM in a RIFF/WAVE header at the litertlm boundary —
-        // user-spec claim "litertlm ест PCM" was wrong (confirmed on
-        // Honor 200 smoke: headerless PCM → onError → message marked
-        // `interrupted`). Attachment.Audio keeps raw PCM for in-memory
-        // compactness and Phase-3 Room serialisation.
-        val audioClips = pending.filterIsInstance<Attachment.Audio>()
-            .map { pcmToWav(it.pcm, SAMPLE_RATE) }
-
-        // D9/AC-14 gate — only surface and accumulate reasoning when the
-        // model exposes the channel AND the user has opted in via
-        // enable_thinking. Evaluated once per send() so a mid-stream flip
-        // of the config value can't leave the bubble half-populated.
-        val enableThinking =
-            model.configValues[ConfigKeys.ENABLE_THINKING.label] as? Boolean == true
-        val accumulateThinking = model.llmSupportThinking && enableThinking
-        val initialThinkingText: String? = if (accumulateThinking) "" else null
-
-        _messages.update { current ->
-            current +
-                Message(MessageRole.USER, normalized, attachments = pending) +
-                Message(
-                    MessageRole.ASSISTANT,
-                    text = "",
-                    streaming = true,
-                    thinkingText = initialThinkingText,
-                )
+        when (val id = identity) {
+            ChatIdentity.Draft -> commitDraft(normalized, pending)
+            ChatIdentity.Quick -> runInferenceQuick(normalized, pending)
+            is ChatIdentity.Persistent -> runInferencePersistent(id, normalized, pending)
         }
-        // Clear the staging area so the ThumbnailStrip empties — the
-        // attachments now live inside the USER Message for history rendering
-        // (AC-26, D28) and in the `images`/`audioClips` snapshots for the
-        // inference call below.
-        _attachments.value = emptyList()
-        _uiState.value = ChatUiState.Ready(isGenerating = true)
-
-        val startMs = System.currentTimeMillis()
-        var firstTokenMs = 0L
-        val sb = StringBuilder()
-        val thinkingSb = StringBuilder()
-
-        // Gemma 4 emits reasoning as inline `<|think|>` tokens that LiteRT-LM's
-        // Jinja chat template only injects when `enable_thinking=true` is passed
-        // via `extraContext`. Without this, the template renders in answer-only
-        // mode and `message.channels["thought"]` stays null — `accumulateThinking`
-        // would still gate the UI, but no thinking tokens would ever arrive.
-        // Matches Gallery reference (`LlmChatViewModel.kt:216`).
-        val extraContext: Map<String, String>? =
-            if (accumulateThinking) mapOf("enable_thinking" to "true") else null
-
-        helper.runInference(
-            model = model,
-            input = normalized,
-            resultListener = { partial, done, partialThinking ->
-                // Drop emissions that arrive after stop() — LiteRT-LM may deliver a trailing
-                // partial/done pair between cancelProcess() and actual thread teardown.
-                if (_messages.value.lastOrNull()?.interrupted == true) return@runInference
-                if (firstTokenMs == 0L && partial.isNotEmpty()) {
-                    firstTokenMs = System.currentTimeMillis()
-                }
-                if (accumulateThinking && !partialThinking.isNullOrEmpty()) {
-                    thinkingSb.append(partialThinking)
-                    val snapshot = thinkingSb.toString()
-                    updateLastAssistant { it.copy(thinkingText = snapshot) }
-                }
-                if (partial.isNotEmpty()) {
-                    sb.append(partial)
-                    updateLastAssistant { it.copy(text = sb.toString()) }
-                }
-                if (done) {
-                    val totalMs = System.currentTimeMillis() - startMs
-                    val ttftMs = if (firstTokenMs > 0L) (firstTokenMs - startMs) else 0L
-                    val totalSec = totalMs / 1000.0
-                    val footer =
-                        context.getString(
-                            R.string.ttft_footer_format,
-                            ttftMs.toInt(),
-                            totalSec,
-                        )
-                    updateLastAssistant { it.copy(streaming = false, footer = footer) }
-                    _uiState.value = ChatUiState.Ready(isGenerating = false)
-                }
-            },
-            cleanUpListener = { /* no-op */ },
-            onError = { msg ->
-                val safeMsg = msg.ifBlank { "(no message)" }
-                viewModelScope.launch { errorLog.e("inference", safeMsg) }
-                updateLastAssistant { it.copy(streaming = false, interrupted = true) }
-                _uiState.value = ChatUiState.Ready(isGenerating = false)
-            },
-            images = images,
-            audioClips = audioClips,
-            coroutineScope = viewModelScope,
-            extraContext = extraContext,
-        )
     }
 
     fun stop() {
-        val model = registry.getModel(modelName) ?: return
+        val model = currentReadyModel() ?: return
         helper.stopResponse(model)
-        updateLastAssistant { it.copy(streaming = false, interrupted = true) }
+        when (identity) {
+            is ChatIdentity.Persistent -> {
+                // Mark the streaming bubble as interrupted but keep it visible
+                // until the next Room emission; there is no persisted ASSISTANT
+                // yet (`done=true` did not fire) — the interrupted partial is
+                // intentionally not saved, matching AC-R3.
+                _streamingMessage.update { it?.copy(streaming = false, interrupted = true) }
+            }
+            ChatIdentity.Quick, ChatIdentity.Draft -> {
+                updateLastAssistantInMemory { it.copy(streaming = false, interrupted = true) }
+            }
+        }
         _uiState.value = ChatUiState.Ready(isGenerating = false)
     }
 
@@ -231,13 +206,18 @@ constructor(
      * loaded (D23). The effective system prompt (defaults ∪ override) is
      * passed back into `registry.resetConversation` so the next user turn
      * starts under the same system instruction the engine had on init.
+     *
+     * For Persistent mode this does NOT delete Room rows — it only resets
+     * the engine KV cache and clears the in-memory streaming bubble. The
+     * persisted history remains intact (user can still see past turns).
      */
     fun resetConversation() {
         viewModelScope.launch {
-            val model = registry.getModel(modelName)
-            val effective = model?.let { effectiveSystemPrompt(it) }
-            registry.resetConversation(modelName, systemPrompt = effective)
+            val model = currentReadyModel() ?: return@launch
+            val effective = effectiveSystemPrompt(model)
+            registry.resetConversation(model.name, systemPrompt = effective)
             _messages.value = emptyList()
+            _streamingMessage.value = null
             _attachments.value = emptyList()
         }
     }
@@ -245,144 +225,101 @@ constructor(
     /** Backwards-compat alias for the existing TopAppBar wiring. */
     fun reset() = resetConversation()
 
-    /**
-     * Persist [settings] then dispatch apply* (light / semi / heavy)
-     * based on which fields actually differ from the engine's current
-     * `model.configValues` (D15). Heavy applications are routed through
-     * [applyHeavySetting] which surfaces the modal progress dialog; the
-     * `HeavyChangeDialog` confirmation gate lives in the bottom-sheet UI
-     * and must be shown by the caller before this is invoked for a
-     * heavy-difference set.
-     */
     fun saveAndApplySettings(settings: PerModelSettings) {
         viewModelScope.launch {
-            val model = registry.getModel(modelName) ?: return@launch
+            val modelId = _chatModelId.value ?: return@launch
+            val model = currentReadyModel() ?: return@launch
             val current = model.configValues.toMap()
             val target = EffectiveConfig.merge(computeDefaults(model), settings)
-            settingsRepository.savePerModelSettings(modelName, settings)
+            settingsRepository.savePerModelSettings(modelId, settings)
             dispatchByLevel(classifyApplyLevel(current, target))
         }
     }
 
-    /**
-     * Reset persisted overrides for the active model and apply whatever
-     * level the diff between the current engine config and the allowlist
-     * defaults requires (D15). Heavy reset is gated on the same
-     * `HeavyChangeDialog` flow as user-edited heavy changes — the caller
-     * is responsible for showing the confirm dialog when
-     * [needsHeavyResetToDefaults] returns `true`.
-     */
     fun resetSettingsToDefaults() {
         viewModelScope.launch {
-            val model = registry.getModel(modelName) ?: return@launch
+            val modelId = _chatModelId.value ?: return@launch
+            val model = currentReadyModel() ?: return@launch
             val current = model.configValues.toMap()
             val defaults = computeDefaults(model)
-            settingsRepository.resetPerModelSettings(modelName)
+            settingsRepository.resetPerModelSettings(modelId)
             dispatchByLevel(classifyApplyLevel(current, defaults))
         }
     }
 
-    /**
-     * Reads the current engine config snapshot and reports whether
-     * resetting to allowlist defaults would require an engine reinit
-     * (i.e. accelerator would change). The bottom sheet uses this to
-     * decide whether the Default button must surface `HeavyChangeDialog`
-     * first.
-     */
     fun needsHeavyResetToDefaults(): Boolean {
-        val model = registry.getModel(modelName) ?: return false
+        val model = currentReadyModel() ?: return false
         val current = model.configValues
         val defaults = computeDefaults(model)
         return classifyApplyLevel(current, defaults) == ApplyLevel.HEAVY
     }
 
-    /**
-     * Returns whether applying [target] would route through the heavy
-     * (cleanup + initialize) flow per current D15 classification. The
-     * bottom-sheet UI calls this to decide whether to surface
-     * `HeavyChangeDialog`. Single source of truth — the sheet must NOT
-     * keep its own copy of the heavy-field set, so reclassification
-     * (e.g. `enable_thinking` heavy → semi-light) propagates everywhere.
-     */
     fun needsHeavyApply(target: PerModelSettings): Boolean {
-        val model = registry.getModel(modelName) ?: return false
+        val model = currentReadyModel() ?: return false
         val current = model.configValues
         val merged = EffectiveConfig.merge(computeDefaults(model), target)
         return classifyApplyLevel(current, merged) == ApplyLevel.HEAVY
     }
 
     /** Observable snapshot of the persisted overrides for the active model. */
-    fun observePerModelSettings(): kotlinx.coroutines.flow.Flow<PerModelSettings?> =
-        settingsRepository.observePerModelSettings(modelName)
+    fun observePerModelSettings(): kotlinx.coroutines.flow.Flow<PerModelSettings?> {
+        val modelId = _chatModelId.value ?: return flowOf(null)
+        return settingsRepository.observePerModelSettings(modelId)
+    }
 
-    /**
-     * Convenience accessor for the active model's current `configValues`
-     * (effective = defaults ∪ overrides). Returns an empty map when the
-     * registry has not published a `Ready` model yet.
-     */
     fun currentEffectiveConfig(): Map<String, Any> =
-        registry.getModel(modelName)?.configValues ?: emptyMap()
+        currentReadyModel()?.configValues ?: emptyMap()
 
-    /** Allowlist-default snapshot for the active model (no overrides). */
     fun allowlistDefaults(): Map<String, Any> =
-        registry.getModel(modelName)?.let(::computeDefaults) ?: emptyMap()
+        currentReadyModel()?.let(::computeDefaults) ?: emptyMap()
 
-    /**
-     * Light-field apply (D15, AC-21): re-load persisted overrides and
-     * reassign `model.configValues` so the next `send()` sees the new value.
-     * No engine reinit, stream not interrupted, dialogs not shown.
-     */
     fun applyLightOverrides() {
         viewModelScope.launch {
-            val model = registry.getModel(modelName) ?: return@launch
-            val overrides = settingsRepository.observePerModelSettings(modelName).first()
+            val modelId = _chatModelId.value ?: return@launch
+            val model = currentReadyModel() ?: return@launch
+            val overrides = settingsRepository.observePerModelSettings(modelId).first()
             val defaults = computeDefaults(model)
             model.configValues = EffectiveConfig.merge(defaults, overrides)
         }
     }
 
-    /**
-     * Semi-light apply (D15) for `systemPromptDefault` and
-     * `enableThinking` (Honor 200 smoke 2026-04-18 confirmed the latter):
-     * the engine stays loaded, `resetConversation(systemPrompt = …)`
-     * wipes the KV cache and the next turn picks up the new flag /
-     * prompt via Jinja-template rendering. UI history clears and a
-     * snackbar surfaces the action.
-     */
     fun applySystemPromptAndReset() {
         viewModelScope.launch {
-            val model = registry.getModel(modelName) ?: return@launch
-            val overrides = settingsRepository.observePerModelSettings(modelName).first()
+            val modelId = _chatModelId.value ?: return@launch
+            val model = currentReadyModel() ?: return@launch
+            val overrides = settingsRepository.observePerModelSettings(modelId).first()
             val defaults = computeDefaults(model)
             val merged = EffectiveConfig.merge(defaults, overrides)
             model.configValues = merged
             val effective = effectiveSystemPrompt(merged)
-            registry.resetConversation(modelName, systemPrompt = effective)
+            registry.resetConversation(model.name, systemPrompt = effective)
             _messages.value = emptyList()
+            _streamingMessage.value = null
             _attachments.value = emptyList()
             _snackbar.tryEmit(R.string.settings_semilight_applied_snackbar)
         }
     }
 
-    /**
-     * Heavy-field apply (D15, D21): stop in-flight inference, reload
-     * persisted overrides into `model.configValues`, then `cleanup ⇒
-     * initialize` — strictly sequenced so litertlm sees a clean teardown
-     * before re-allocating the new accelerator/thinking-mode engine.
-     *
-     * `_reinitInProgress` gates the modal `ReinitProgressDialog`. On
-     * `initialize` failure the VM transitions to `Failed` and the engine
-     * stays Idle (D27 / R2).
-     */
     fun applyHeavySetting() {
         viewModelScope.launch {
             _reinitInProgress.value = true
             try {
-                val priorModel = registry.getModel(modelName)
+                val modelId = _chatModelId.value ?: run {
+                    _reinitInProgress.value = false
+                    return@launch
+                }
+                val priorModel = currentReadyModel()
                 val state = _uiState.value
                 if (priorModel != null && state is ChatUiState.Ready && state.isGenerating) {
                     helper.stopResponse(priorModel)
-                    updateLastAssistant { it.copy(streaming = false, interrupted = true) }
+                    when (identity) {
+                        is ChatIdentity.Persistent -> _streamingMessage.update {
+                            it?.copy(streaming = false, interrupted = true)
+                        }
+                        else -> updateLastAssistantInMemory {
+                            it.copy(streaming = false, interrupted = true)
+                        }
+                    }
                     _uiState.value = ChatUiState.Ready(isGenerating = false)
                 }
                 val rawModel = preInitModel()
@@ -390,22 +327,21 @@ constructor(
                     _reinitInProgress.value = false
                     return@launch
                 }
-                val overrides = settingsRepository.observePerModelSettings(modelName).first()
+                val overrides = settingsRepository.observePerModelSettings(modelId).first()
                 val defaults = computeDefaults(rawModel)
                 rawModel.configValues = EffectiveConfig.merge(defaults, overrides)
 
-                registry.cleanup(modelName)
-                registry.initialize(modelName).fold(
+                registry.cleanup(rawModel.name)
+                registry.initialize(rawModel.name).fold(
                     onSuccess = {
-                        refreshModelCaps()
-                        _uiState.value = ChatUiState.Ready(isGenerating = false)
+                        // The reactive observer will push uiState back to Ready
+                        // when registry.models emits Ready for this model — no
+                        // direct assignment here avoids races with the observer.
                     },
                     onFailure = { e ->
                         val cause =
                             e.message?.takeIf { it.isNotBlank() }
                                 ?: e::class.simpleName.orEmpty()
-                        // Set state first so any failure inside the log path
-                        // doesn't leave the UI stuck on a stale Ready state.
                         _uiState.value = ChatUiState.Failed(cause)
                         _snackbar.tryEmit(R.string.chat_load_failed_title)
                         viewModelScope.launch {
@@ -419,15 +355,6 @@ constructor(
         }
     }
 
-    /**
-     * Decodes [uris] via [ImageDecoder], downscales to ~1024×1024, clips the
-     * total image count to [MAX_IMAGES] (AC-10, R5).
-     *
-     * The cap is re-checked inside the final `_attachments.update { }` block
-     * to close a TOCTOU race between concurrent `addImages` calls (rapid
-     * double-tap of the Photo Picker). Pre-decode clipping is a courtesy
-     * optimisation; the `update` block is authoritative.
-     */
     fun addImages(uris: List<Uri>) {
         if (uris.isEmpty()) return
         viewModelScope.launch {
@@ -457,11 +384,6 @@ constructor(
             if (droppedPreDecode || droppedByRace) {
                 _snackbar.tryEmit(R.string.attachment_max_images_reached)
             }
-            // Fire-and-forget: errorLog.e suspends into Dispatchers.IO, which
-            // detaches from the test scheduler and would otherwise leave
-            // `_attachments.update` pending when `advanceUntilIdle` returns.
-            // Sequencing logs in a separate launch keeps the hot path
-            // deterministic for tests and for the UI state transition.
             if (failed.isNotEmpty()) {
                 viewModelScope.launch {
                     for (uri in failed) errorLog.e("attachment-decode", "decode failed: $uri")
@@ -470,12 +392,6 @@ constructor(
         }
     }
 
-    /**
-     * Adds a [bitmap] captured from CameraX directly (task 8). Large source
-     * bitmaps are defensively downscaled to the same ~1024-px invariant as
-     * `addImages` (R5) — camera callers should downscale upstream, but this
-     * keeps the R5 contract centralised.
-     */
     fun addImageBitmap(bitmap: Bitmap) {
         val currentImageCount = _attachments.value.count { it is Attachment.Image }
         if (currentImageCount >= MAX_IMAGES) {
@@ -492,13 +408,6 @@ constructor(
         }
     }
 
-    /**
-     * Adds an [Attachment.Audio] produced by [AudioRecorderBottomSheet]
-     * (AC-12, D5). Enforces `MAX_AUDIO_CLIPS = 1` (AC-20, D13) — if an
-     * audio clip is already staged, the call is a no-op. The sheet's mic
-     * button is also disabled in that state (see [MultimodalInputBar]);
-     * this VM guard is a defensive second line for TOCTOU and tests.
-     */
     fun addAudio(pcm: ByteArray, durationMs: Long) {
         _attachments.update { current ->
             if (current.any { it is Attachment.Audio }) current
@@ -506,23 +415,11 @@ constructor(
         }
     }
 
-    /**
-     * Called from [CameraBottomSheet] when CameraX bind/takePicture fails
-     * (D27 — "camera" component). Logs via [ErrorLog] and surfaces a user-
-     * visible snackbar. The sheet dismisses itself; no state reset needed
-     * here because no attachment was added.
-     */
     fun reportCameraError(description: String, cause: Throwable?) {
         viewModelScope.launch { errorLog.e("camera", description, cause) }
         _snackbar.tryEmit(R.string.camera_init_failed)
     }
 
-    /**
-     * Called from [AudioRecorderBottomSheet] when `AudioRecord` fails to
-     * reach `STATE_INITIALIZED` (D27 — "audio" component, R9 for
-     * MIUI/HarmonyOS). Logs and emits the `audio_record_init_failed`
-     * snackbar; the sheet dismisses itself.
-     */
     fun reportAudioError(description: String, cause: Throwable?) {
         viewModelScope.launch { errorLog.e("audio", description, cause) }
         _snackbar.tryEmit(R.string.audio_record_init_failed)
@@ -530,29 +427,401 @@ constructor(
 
     override fun onCleared() {
         super.onCleared()
-        // viewModelScope is already cancelled here; GlobalScope is lint-discouraged.
-        // A fresh SupervisorJob scope lets cleanup outlive the ViewModel.
-        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { registry.cleanup(modelName) }
+        // Decision 5 / AC-E6: do NOT call registry.cleanup here. The engine
+        // lifecycle is owned by WarmupCoordinator; tearing it down on every
+        // Back navigation would defeat background warmup.
     }
 
-    // --- internals -----------------------------------------------------------
+    // --- init helpers --------------------------------------------------------
+
+    private fun resolveIdentity(savedStateHandle: SavedStateHandle): ChatIdentity {
+        val chatId: Long? = savedStateHandle[NAV_ARG_CHAT_ID]
+        if (chatId != null) return ChatIdentity.Persistent(chatId)
+        val kind: String? = savedStateHandle[NAV_ARG_KIND]
+        return if (kind == KIND_DRAFT) ChatIdentity.Draft else ChatIdentity.Quick
+    }
 
     /**
-     * D15 classification of a config diff. Heavy beats semi beats light;
-     * `NONE` means the diff is empty across all tracked fields.
+     * Seeds `_chatModelId` and, for non-persistent modes, keeps it tracking
+     * [ModelRegistry.activeModelName] reactively.
+     *
+     * - Persistent: one-shot Room lookup of `chat.model_id` — the chat row
+     *   cannot switch models mid-session, so a StateFlow snapshot is enough.
+     *   A missing row (chat deleted concurrently) leaves the flow null and
+     *   the engine observer at Loading.
+     * - Quick with explicit nav arg: pin to the caller-supplied modelId (the
+     *   Model Manager "Load" flow, Task 11).
+     * - Quick / Draft without pin: collect `registry.activeModelName` — the
+     *   first time warmup publishes a Ready model the flow flips, which in
+     *   turn fires the engine-state observer and unblocks Send.
+     *
+     * Also applies persisted overrides once a model resolves so the engine
+     * sees the user's accelerator / system prompt on the next heavy apply
+     * (D24, D21). Re-running on every activeModelName change is safe: the
+     * repository read is idempotent.
      */
+    private suspend fun bootstrapChatModelId() {
+        when (val id = identity) {
+            is ChatIdentity.Persistent -> {
+                val entity = runCatching { chatDao.getById(id.id) }
+                    .onFailure { errorLog.e("history-read", "chat row lookup failed for id=${id.id}", it) }
+                    .getOrNull()
+                _chatModelId.value = entity?.modelId
+                applyEffectiveConfigToModel()
+            }
+            ChatIdentity.Quick, ChatIdentity.Draft -> {
+                val pinned = explicitModelId
+                    ?: registry.activeModelName.value
+                    // Suspend until WarmupCoordinator publishes a Ready model.
+                    // Quick/Draft pin to that first non-null emission; if the
+                    // engine later transitions Ready → Initializing/Failed the
+                    // VM keeps observing the same modelId and surfaces the
+                    // transition via the engine observer (not by switching
+                    // models). Cross-model reinit goes through `applyHeavySetting`.
+                    ?: registry.activeModelName.first { it != null }!!
+                _chatModelId.value = pinned
+                applyEffectiveConfigToModel()
+            }
+        }
+    }
+
+    private fun buildMessagesFlow(): StateFlow<List<Message>> = when (val id = identity) {
+        is ChatIdentity.Persistent ->
+            combine(messageDao.observeByChat(id.id), _streamingMessage) { persisted, streaming ->
+                // Defence-in-depth against the double-bubble race (user-spec
+                // Risks): once the Room list contains a trailing ASSISTANT row
+                // the streaming overlay is hidden even if the side-effect
+                // collector in [observePersistedForHandover] has not yet fired.
+                val persistedEndsWithAssistant = persisted.lastOrNull()?.role == ROLE_ASSISTANT
+                val visibleStreaming = if (persistedEndsWithAssistant) null else streaming
+                persisted.map(::toDomainMessage) + listOfNotNull(visibleStreaming)
+            }.stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.Eagerly,
+                initialValue = emptyList(),
+            )
+        ChatIdentity.Quick, ChatIdentity.Draft -> _messages.asStateFlow()
+    }
+
+    private suspend fun observeEngineState() {
+        combine(registry.models, _chatModelId) { list, modelId ->
+            if (modelId == null) null else list.firstOrNull { it.model.modelId == modelId }
+        }.collect { entry ->
+            updateUiStateFromEntry(entry)
+        }
+    }
+
+    /**
+     * Side-effect half of the atomic double-bubble handover (D4). On every
+     * Room emission ending in an ASSISTANT row we null out `_streamingMessage`
+     * so subsequent UI state observers see a clean in-memory state — the
+     * display-visibility invariant is already guaranteed by the combine in
+     * [buildMessagesFlow].
+     */
+    private suspend fun observePersistedForHandover(chatId: Long) {
+        messageDao.observeByChat(chatId).collect { persisted ->
+            if (persisted.lastOrNull()?.role == ROLE_ASSISTANT) {
+                _streamingMessage.value = null
+            }
+        }
+    }
+
+    private fun updateUiStateFromEntry(entry: ModelEntry?) {
+        val status = entry?.initStatus
+        val next = when (status) {
+            ModelInitStatus.Ready -> {
+                refreshModelCaps(entry.model)
+                val prev = _uiState.value
+                val generating = (prev as? ChatUiState.Ready)?.isGenerating == true
+                ChatUiState.Ready(isGenerating = generating)
+            }
+            ModelInitStatus.Initializing -> ChatUiState.Loading
+            is ModelInitStatus.Failed -> ChatUiState.Failed(status.message)
+            ModelInitStatus.Idle, null -> ChatUiState.Loading
+        }
+        // Avoid redundant emissions — a StateFlow already dedupes on equals,
+        // but constructing a new Ready(isGenerating=false) over and over would
+        // still trigger collectors due to instance identity in combine chains.
+        if (_uiState.value != next) _uiState.value = next
+    }
+
+    // --- send paths ----------------------------------------------------------
+
+    private fun commitDraft(text: String, pending: List<Attachment>) {
+        val modelId = _chatModelId.value
+        if (modelId == null) {
+            viewModelScope.launch {
+                errorLog.e("history-write", "commitDraft aborted: no active model")
+            }
+            _snackbar.tryEmit(R.string.chat_load_failed_title)
+            return
+        }
+        // Require a Ready engine for the first send — matches the Send-gate
+        // check in the outer `send()` (uiState must be Ready there). Attachments
+        // are accepted for future task wiring; Task 8 does not persist them
+        // (no ChatRepository.writeAttachmentsStaging hook yet). See
+        // decisions.md for the deferral.
+        if (currentReadyModel() == null) return
+        @Suppress("UNUSED_PARAMETER") val attachmentsPlaceholder = pending
+        val now = System.currentTimeMillis()
+        val firstMessage = MessageEntity(
+            chatId = 0L,
+            role = ROLE_USER,
+            text = text,
+            createdAt = now,
+        )
+        viewModelScope.launch {
+            val filesDir = context.filesDir
+            val result = runCatching {
+                chatRepository.commitDraftChat(
+                    modelId = modelId,
+                    firstMessage = firstMessage,
+                    stagingDir = null,
+                    filesDir = filesDir,
+                )
+            }
+            result.fold(
+                onSuccess = { chatId ->
+                    _attachments.value = emptyList()
+                    _navigation.tryEmit(ChatNavigationEvent.NavigateToPersistent(chatId))
+                },
+                onFailure = { cause ->
+                    errorLog.e("history-write", "commitDraftChat failed", cause)
+                    _snackbar.tryEmit(R.string.chat_load_failed_title)
+                },
+            )
+        }
+    }
+
+    private fun runInferenceQuick(text: String, pending: List<Attachment>) {
+        val model = currentReadyModel() ?: return
+        appendUserAndStreamingBubbleInMemory(text, pending, model)
+        dispatchInference(text, pending, model) { done, interrupted ->
+            if (done || interrupted) {
+                _uiState.value = ChatUiState.Ready(isGenerating = false)
+            }
+        }
+    }
+
+    private fun runInferencePersistent(
+        identity: ChatIdentity.Persistent,
+        text: String,
+        pending: List<Attachment>,
+    ) {
+        val model = currentReadyModel() ?: return
+        val accumulateThinking = shouldAccumulateThinking(model)
+        val initialThinkingText: String? = if (accumulateThinking) "" else null
+
+        _streamingMessage.value = Message(
+            role = MessageRole.ASSISTANT,
+            text = "",
+            streaming = true,
+            thinkingText = initialThinkingText,
+            attachments = emptyList(),
+        )
+        _attachments.value = emptyList()
+        _uiState.value = ChatUiState.Ready(isGenerating = true)
+
+        // AC-R1: persist USER synchronously before runInference so a process
+        // kill mid-stream leaves the USER row present even if ASSISTANT never
+        // arrives (AC-R3). `savePersistentMessage` runs on Dispatchers.IO
+        // inside the repository.
+        val userTs = System.currentTimeMillis()
+        viewModelScope.launch {
+            val userMsg = MessageEntity(
+                chatId = identity.id,
+                role = ROLE_USER,
+                text = text,
+                createdAt = userTs,
+            )
+            runCatching { chatRepository.savePersistentMessage(userMsg) }
+                .onFailure { errorLog.e("history-write", "savePersistentMessage USER failed", it) }
+            chatRepository.updateChatLastMessage(identity.id, userTs)
+
+            dispatchInferencePersistent(identity, text, pending, model, accumulateThinking)
+        }
+    }
+
+    private fun dispatchInferencePersistent(
+        identity: ChatIdentity.Persistent,
+        text: String,
+        pending: List<Attachment>,
+        model: Model,
+        accumulateThinking: Boolean,
+    ) {
+        val startMs = System.currentTimeMillis()
+        var firstTokenMs = 0L
+        val sb = StringBuilder()
+        val thinkingSb = StringBuilder()
+
+        val images = pending.filterIsInstance<Attachment.Image>().map { it.bitmap }
+        val audioClips = pending.filterIsInstance<Attachment.Audio>()
+            .map { pcmToWav(it.pcm, SAMPLE_RATE) }
+        val extraContext: Map<String, String>? =
+            if (accumulateThinking) mapOf("enable_thinking" to "true") else null
+
+        helper.runInference(
+            model = model,
+            input = text,
+            resultListener = { partial, done, partialThinking ->
+                val bubble = _streamingMessage.value
+                if (bubble?.interrupted == true) return@runInference
+                if (firstTokenMs == 0L && partial.isNotEmpty()) {
+                    firstTokenMs = System.currentTimeMillis()
+                }
+                if (accumulateThinking && !partialThinking.isNullOrEmpty()) {
+                    thinkingSb.append(partialThinking)
+                    _streamingMessage.update { it?.copy(thinkingText = thinkingSb.toString()) }
+                }
+                if (partial.isNotEmpty()) {
+                    sb.append(partial)
+                    _streamingMessage.update { it?.copy(text = sb.toString()) }
+                }
+                if (done) {
+                    val totalMs = System.currentTimeMillis() - startMs
+                    val ttftMs = if (firstTokenMs > 0L) (firstTokenMs - startMs) else 0L
+                    val totalSec = totalMs / 1000.0
+                    val footer = context.getString(
+                        R.string.ttft_footer_format,
+                        ttftMs.toInt(),
+                        totalSec,
+                    )
+                    // AC-R2: persist ASSISTANT only on done=true. The Room
+                    // emission will trigger the atomic handover and clear
+                    // `_streamingMessage` — no direct clear here.
+                    val createdAt = System.currentTimeMillis()
+                    val assistantText = sb.toString()
+                    val thinkingText = if (accumulateThinking) thinkingSb.toString() else null
+                    viewModelScope.launch {
+                        val assistantMsg = MessageEntity(
+                            chatId = identity.id,
+                            role = ROLE_ASSISTANT,
+                            text = assistantText,
+                            thinkingText = thinkingText,
+                            createdAt = createdAt,
+                        )
+                        runCatching { chatRepository.savePersistentMessage(assistantMsg) }
+                            .onFailure { errorLog.e("history-write", "savePersistentMessage ASSISTANT failed", it) }
+                        chatRepository.updateChatLastMessage(identity.id, createdAt)
+                    }
+                    // Update the in-memory bubble to carry footer/streaming=false
+                    // in case the Room write is slow — the combine guarantees
+                    // no double-bubble even if streaming lingers here briefly.
+                    _streamingMessage.update { it?.copy(streaming = false, footer = footer) }
+                    _uiState.value = ChatUiState.Ready(isGenerating = false)
+                }
+            },
+            cleanUpListener = { /* no-op */ },
+            onError = { msg ->
+                val safeMsg = msg.ifBlank { "(no message)" }
+                viewModelScope.launch { errorLog.e("inference", safeMsg) }
+                _streamingMessage.update { it?.copy(streaming = false, interrupted = true) }
+                _uiState.value = ChatUiState.Ready(isGenerating = false)
+            },
+            images = images,
+            audioClips = audioClips,
+            coroutineScope = viewModelScope,
+            extraContext = extraContext,
+        )
+    }
+
+    private fun appendUserAndStreamingBubbleInMemory(
+        text: String,
+        pending: List<Attachment>,
+        model: Model,
+    ) {
+        val accumulateThinking = shouldAccumulateThinking(model)
+        val initialThinkingText: String? = if (accumulateThinking) "" else null
+        _messages.update { current ->
+            current +
+                Message(MessageRole.USER, text, attachments = pending) +
+                Message(
+                    MessageRole.ASSISTANT,
+                    text = "",
+                    streaming = true,
+                    thinkingText = initialThinkingText,
+                )
+        }
+        _attachments.value = emptyList()
+        _uiState.value = ChatUiState.Ready(isGenerating = true)
+    }
+
+    private fun dispatchInference(
+        text: String,
+        pending: List<Attachment>,
+        model: Model,
+        onTerminal: (done: Boolean, interrupted: Boolean) -> Unit,
+    ) {
+        val startMs = System.currentTimeMillis()
+        var firstTokenMs = 0L
+        val sb = StringBuilder()
+        val thinkingSb = StringBuilder()
+        val accumulateThinking = shouldAccumulateThinking(model)
+
+        val images = pending.filterIsInstance<Attachment.Image>().map { it.bitmap }
+        val audioClips = pending.filterIsInstance<Attachment.Audio>()
+            .map { pcmToWav(it.pcm, SAMPLE_RATE) }
+        val extraContext: Map<String, String>? =
+            if (accumulateThinking) mapOf("enable_thinking" to "true") else null
+
+        helper.runInference(
+            model = model,
+            input = text,
+            resultListener = { partial, done, partialThinking ->
+                if (_messages.value.lastOrNull()?.interrupted == true) return@runInference
+                if (firstTokenMs == 0L && partial.isNotEmpty()) {
+                    firstTokenMs = System.currentTimeMillis()
+                }
+                if (accumulateThinking && !partialThinking.isNullOrEmpty()) {
+                    thinkingSb.append(partialThinking)
+                    val snapshot = thinkingSb.toString()
+                    updateLastAssistantInMemory { it.copy(thinkingText = snapshot) }
+                }
+                if (partial.isNotEmpty()) {
+                    sb.append(partial)
+                    updateLastAssistantInMemory { it.copy(text = sb.toString()) }
+                }
+                if (done) {
+                    val totalMs = System.currentTimeMillis() - startMs
+                    val ttftMs = if (firstTokenMs > 0L) (firstTokenMs - startMs) else 0L
+                    val totalSec = totalMs / 1000.0
+                    val footer = context.getString(
+                        R.string.ttft_footer_format,
+                        ttftMs.toInt(),
+                        totalSec,
+                    )
+                    updateLastAssistantInMemory { it.copy(streaming = false, footer = footer) }
+                    onTerminal(true, false)
+                }
+            },
+            cleanUpListener = { /* no-op */ },
+            onError = { msg ->
+                val safeMsg = msg.ifBlank { "(no message)" }
+                viewModelScope.launch { errorLog.e("inference", safeMsg) }
+                updateLastAssistantInMemory { it.copy(streaming = false, interrupted = true) }
+                onTerminal(false, true)
+            },
+            images = images,
+            audioClips = audioClips,
+            coroutineScope = viewModelScope,
+            extraContext = extraContext,
+        )
+    }
+
+    private fun shouldAccumulateThinking(model: Model): Boolean {
+        val enableThinking =
+            model.configValues[ConfigKeys.ENABLE_THINKING.label] as? Boolean == true
+        return model.llmSupportThinking && enableThinking
+    }
+
+    // --- D15 classification --------------------------------------------------
+
     enum class ApplyLevel { NONE, LIGHT, SYSTEM_PROMPT, HEAVY }
 
     private fun classifyApplyLevel(
         current: Map<String, Any>,
         target: Map<String, Any>,
     ): ApplyLevel {
-        // D15 (post-2026-04-18 smoke): only `accelerator` is heavy. Smoke on
-        // Honor 200 with Gemma-4-E4B-it via litertlm 0.10.0 confirmed that
-        // `enable_thinking` flips correctly through `resetConversation`
-        // alone — no engine teardown needed because the flag only affects
-        // Jinja-template rendering of the next turn and the KV cache is
-        // wiped by the reset.
         val heavyChanged = current[ConfigKeys.ACCELERATOR.label] !=
             target[ConfigKeys.ACCELERATOR.label]
         if (heavyChanged) return ApplyLevel.HEAVY
@@ -574,24 +843,27 @@ constructor(
         }
     }
 
+    // --- model lookup / config helpers --------------------------------------
 
-    /**
-     * Applies persisted overrides to `model.configValues` BEFORE
-     * `registry.initialize` so the engine reads the user's accelerator
-     * + system prompt instead of allowlist defaults. Silent no-op when the
-     * registry hasn't published the model yet — `initialize` will fail
-     * later with a domain-specific error.
-     */
     private suspend fun applyEffectiveConfigToModel() {
+        val modelId = _chatModelId.value ?: return
         val model = preInitModel() ?: return
-        val overrides = settingsRepository.observePerModelSettings(modelName).first()
+        val overrides = settingsRepository.observePerModelSettings(modelId).first()
         val defaults = computeDefaults(model)
         model.configValues = EffectiveConfig.merge(defaults, overrides)
     }
 
-    /** Look up the [Model] without the registry's `Ready`-state filter. */
-    private fun preInitModel(): Model? =
-        registry.models.value.find { it.model.name == modelName }?.model
+    /** Raw [Model] lookup ignoring init state — used before heavy reinit. */
+    private fun preInitModel(): Model? {
+        val modelId = _chatModelId.value ?: return null
+        return registry.models.value.firstOrNull { it.model.modelId == modelId }?.model
+    }
+
+    private fun currentReadyModel(): Model? {
+        val modelId = _chatModelId.value ?: return null
+        val entry = registry.models.value.firstOrNull { it.model.modelId == modelId }
+        return if (entry?.initStatus === ModelInitStatus.Ready) entry.model else null
+    }
 
     private fun computeDefaults(model: Model): Map<String, Any> =
         model.configs.associate { it.key.label to it.defaultValue }
@@ -602,17 +874,15 @@ constructor(
     private fun effectiveSystemPrompt(model: Model): String? =
         effectiveSystemPrompt(model.configValues)
 
-    private fun refreshModelCaps() {
-        registry.getModel(modelName)?.let { model ->
-            _modelCaps.value = ModelCapabilities(
-                supportImage = model.llmSupportImage,
-                supportAudio = model.llmSupportAudio,
-                supportThinking = model.llmSupportThinking,
-            )
-        }
+    private fun refreshModelCaps(model: Model) {
+        _modelCaps.value = ModelCapabilities(
+            supportImage = model.llmSupportImage,
+            supportAudio = model.llmSupportAudio,
+            supportThinking = model.llmSupportThinking,
+        )
     }
 
-    private inline fun updateLastAssistant(transform: (Message) -> Message) {
+    private inline fun updateLastAssistantInMemory(transform: (Message) -> Message) {
         _messages.update { list ->
             if (list.isEmpty()) return@update list
             val last = list.last()
@@ -630,8 +900,45 @@ constructor(
         return Bitmap.createScaledBitmap(bitmap, w, h, /* filter = */ true)
     }
 
+    private fun toDomainMessage(entity: MessageEntity): Message {
+        val role = if (entity.role == ROLE_USER) MessageRole.USER else MessageRole.ASSISTANT
+        return Message(
+            role = role,
+            text = entity.text,
+            streaming = false,
+            interrupted = false,
+            footer = null,
+            thinkingText = entity.thinkingText,
+            attachments = emptyList(),
+        )
+    }
+
     companion object {
-        const val NAV_ARG_MODEL_NAME: String = "modelName"
+        /**
+         * Nav-arg key for persistent-chat routes (`chat/{chatId}`). Replaces the
+         * Phase-2 `modelName` arg — chat identity now lives on the Room row and
+         * the model is looked up indirectly via `chat.model_id`.
+         */
+        const val NAV_ARG_CHAT_ID: String = "chatId"
+
+        /**
+         * Nav-arg key injecting `"quick"` or `"draft"` into the SavedStateHandle
+         * for the non-persistent routes. Supplied via `navArgument("kind") { defaultValue = ... }`
+         * in the route definitions (see SanctumApp.kt) so composables need not
+         * pass it explicitly.
+         */
+        const val NAV_ARG_KIND: String = "kind"
+
+        /**
+         * Optional Quick-mode nav arg: pins the VM to a specific model that
+         * the user asked to "Load" from the Model Manager (Task 11 wires the
+         * `?modelId={id}` query arg).
+         */
+        const val NAV_ARG_MODEL_ID: String = "modelId"
+
+        const val KIND_DRAFT: String = "draft"
+        const val KIND_QUICK: String = "quick"
+
         private const val MAX_IMAGES: Int = 10
         private const val MAX_IMAGE_EDGE: Int = 1024
 
@@ -642,8 +949,6 @@ constructor(
             ConfigKeys.MAX_TOKENS.label,
         )
 
-        // Semi-light = needs `resetConversation` (KV-cache wipe + new
-        // turn picks up the change) but NOT an engine teardown.
         private val SEMI_LIGHT_FIELD_LABELS: Set<String> = setOf(
             ConfigKeys.SYSTEM_PROMPT_DEFAULT.label,
             ConfigKeys.ENABLE_THINKING.label,

@@ -60,13 +60,28 @@ fun SanctumApp() {
                             nullable = true
                             defaultValue = null
                         },
+                        // Task 8: constant "kind" marker so ChatViewModel can distinguish
+                        // Quick from Draft when no chatId nav arg is present. Default values
+                        // are injected into SavedStateHandle without appearing in the route.
+                        navArgument("kind") {
+                            type = NavType.StringType
+                            defaultValue = "quick"
+                        },
                     ),
                 ) {
-                    // TODO(Task 8): rework ChatScreen signature for ChatIdentity.Quick
+                    // TODO(Task 10): rework ChatScreen signature for ChatIdentity.Quick
                     QuickChatPlaceholder()
                 }
-                composable("chat/draft") {
-                    // TODO(Task 8): rework ChatScreen signature for ChatIdentity.Draft
+                composable(
+                    route = "chat/draft",
+                    arguments = listOf(
+                        navArgument("kind") {
+                            type = NavType.StringType
+                            defaultValue = "draft"
+                        },
+                    ),
+                ) {
+                    // TODO(Task 10): rework ChatScreen signature for ChatIdentity.Draft
                     DraftChatPlaceholder()
                 }
                 composable(
