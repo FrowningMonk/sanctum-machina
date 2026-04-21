@@ -1,0 +1,69 @@
+{
+  "status": "needs_improvement",
+  "summary": "Round 2 materially addresses T1 (the VM-layer remove path is now litmus-strong — `FakeChatRepository.deletedStagedFiles` is asserted against `listOf(\"img_0.png\")`, so stripping `deleteStagedFileIfAny` from production breaks the test). The three new repository tests (`deleteStagedAttachment_idempotent_missingFileIsNoOp`, `deleteStagedAttachment_outsideRoot_throws`, `writeAttachmentStaging_concurrentWrites_uniqueFilenames`, `savePersistentAttachment_concurrentCalls_uniqueFilenames`) are well-shaped and pin the new interface contracts. `persistentMode_sendWithAudio_callsSavePersistentAttachment` closes the audio-branch coverage gap. `draftMode_removeBeforeStagingSettles_skipsDeleteUntilReady` correctly exercises the `filename ?: return` guard. The commentary in `sendWhileStagingInFlight_blocksWithSnackbar` is trimmed as requested. However, three issues carried over or were introduced in round 2 that prevent a clean PASSED: (T2) the rollback test does not actually exercise the delete-in-catch path because a non-directory staging path makes `FileOutputStream.open()` fail before any file is created — removing `target.delete()` from production does not break the test; (T3) the savePersistentAttachment containment test is short-circuited by the mkdirs failure path for the same reason — removing `requireInsideAttachmentsRoot(chatDir, filesDir)` does not break the test; and (NEW) `draftMode_successfulCommit_nullsDraftStagingDirForFollowUpSends` has a structural litmus failure — its assertion runs inside `commitCalls.forEach {}` over a list that is empty on the second send (because no attachments → no commit), so removing `draftStagingDir = null` from production does not break the test. Two additional minors: `draftMode_multipleImages_warnAndPruneExtrasBeforeCommit` under-asserts (pins the snackbar + first filename but not the `pruneRetainLog` — the behavior its name promises), and the `writeAttachmentStaging_failedWrite_rollsBackPartialFile` comment explicitly notes the test can only prove 'nothing extra was created' which is weaker than the TDD anchor requires.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "empty_test",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:703-732 (draftMode_successfulCommit_nullsDraftStagingDirForFollowUpSends)",
+      "issue": "Litmus test fails: the only assertion that could catch a regression lives inside `fakeChatRepository.commitCalls.forEach { assertNull(...) }` — but after `commitCalls.clear()` the second `vm.send(\"second\")` has no attachments, so `commitDraftChat` is (a) either called with `stagingDir = null` anyway because `stagingDir = draftStagingDir?.takeIf { stagedImage != null || stagedAudio != null }` would return null regardless of whether `draftStagingDir` was nulled or not, or (b) never called at all because send may short-circuit on a completed draft identity. In case (a) the assertion trivially passes (stagingDir is null because stagedImage/stagedAudio are null). In case (b) forEach iterates 0 times and no assertion runs. Either way, if `draftStagingDir = null` is stripped from ChatViewModel.commitDraft's onSuccess, this test still passes. Test name promises the invariant is pinned; the test does not pin it.",
+      "recommendation": "Switch to a direct observable: after the first send succeeds, call `vm.addImageBitmap(stubBitmap())` again and assert the staging write receives a FRESH `File` (i.e. not the same `stagingDir` that was already renamed by the first commit). Concretely: capture `fakeChatRepository.stagingWriteDirs.first()` after the first add+advance, then after the first `send` completes, `vm.addImageBitmap(stubBitmap())` + `advanceUntilIdle()`, capture the second stagingWriteDir, and `assertNotEquals(first, second)` — or simpler, since `FakeChatRepository.writeAttachmentStaging` does not currently record the dir, expose `stagingWriteDirs: MutableList<File>` on the fake and record into it. Alternative low-cost fix: expose `ChatViewModel.currentDraftStagingDirForTest: File?` behind `@VisibleForTesting internal` and assert it is `null` after commit succeeds — less pure but unambiguous. If the pin truly can't be expressed through public API without contortion, drop the test; an untrustworthy test is worse than none."
+    },
+    {
+      "severity": "major",
+      "category": "empty_test",
+      "location": "app/src/test/kotlin/app/sanctum/machina/data/ChatRepositoryTest.kt:459-489 (writeAttachmentStaging_failedWrite_rollsBackPartialFile)",
+      "issue": "T2 closure is structurally weak. Trace: `stagingDir` is set to a regular file. `stagingDir.exists()` is true, so mkdirs is skipped. `writeAttachmentPayload` then calls `File(stagingDir, filename).outputStream()` which invokes `FileOutputStream.open()` — on Unix this fails with ENOTDIR **before** any file is created at the target path (the kernel rejects open() when a path component is not a directory). So `target.exists()` inside the catch is `false` and the `target.delete()` branch is NEVER exercised. The final assertion `attachmentsEntries == setOf(\"staging-fail-as-file\")` passes trivially — no file could ever be there, with or without the rollback code. Litmus test: delete the entire `try { ... } catch (t) { if (target.exists()) target.delete(); throw t }` block from `writeAttachmentPayload` — the test still passes because the exception propagates naturally and no partial file exists anyway. The TDD anchor's core invariant (partial file deleted on failure) is still untested.",
+      "recommendation": "Two options, pick one. (1) Inject a test hook: make `writeAttachmentPayload` callable via a test-only protected setter that swaps `attachment.bitmap.compress` for a lambda that creates the file via `out.write(byteArrayOf(1,2,3))` and then throws IOException. Test asserts `File(target).exists()` is false after. (2) Simpler: refactor `writeAttachmentPayload` to accept an injectable `writer: (Attachment, OutputStream) -> Unit` with a default that compresses PNG / writes WAV, and in the test supply `{ _, out -> out.write(byteArrayOf(1, 2, 3)); throw IOException(\"forced\") }`. Assert `staging.listFiles()?.isEmpty() == true` after. Either way, production must create the partial file BEFORE failing so the rollback path is observable. As a fallback with current production unchanged: use `Runtime.exec(\"chmod 444 $stagingDir\")` or `staging.setWritable(false)` to allow dir traversal but block file creation — but Robolectric's filesystem permissions are notoriously unreliable, so injection is the safer path."
+    },
+    {
+      "severity": "major",
+      "category": "empty_test",
+      "location": "app/src/test/kotlin/app/sanctum/machina/data/ChatRepositoryTest.kt:425-457 (savePersistentAttachment_chatDirOutsideRoot_throws)",
+      "issue": "T3 closure exercises the wrong failure. Trace: `outsideFilesDir = tempFolder/other-files-dir`, `attachments/` is written as a regular file under it. In `savePersistentAttachment`: `chatDir = outsideFilesDir/attachments/1`. `requireInsideAttachmentsRoot(chatDir, filesDir=outsideFilesDir)` computes `attachmentsRoot = canonical(outsideFilesDir/attachments)` — which is the regular file's path — and checks `chatDir.canonicalPath.startsWith(attachmentsRoot + separator)` → TRUE. Containment check PASSES. Then `chatDir.exists()` is false, `chatDir.mkdirs()` fails because its parent path component is a regular file — `IOException(\"failed to create attachments dir\")` is thrown. So the test's assertTrue catches the mkdirs exception, not the containment one. Litmus test: delete the `requireInsideAttachmentsRoot(chatDir, filesDir)` line the round-2 fix just added to production — the test STILL PASSES because mkdirs fails regardless. The defence-in-depth security guarantee the test is named after is not actually pinned. The test comment acknowledges this: 'Either the containment check OR the mkdirs failure throws'.",
+      "recommendation": "Since Robolectric does not support symlinks and filesDir is always trusted caller input, the only way to exercise the containment check is to inject a File that overrides `canonicalPath`. Use a Mockito `spy` or a custom File subclass: `val chatDirStub = object : File(\"...\") { override fun getCanonicalPath() = \"/etc/evil\" }`. But File.canonicalPath is final, so spy via mockito-inline. Simpler alternative: drop the test and instead add a JUnit `@Test` at the `requireInsideAttachmentsRoot` level directly — call it with a candidate whose `canonicalPath` is outside the attachments root, assert IOException. This pins the helper's contract explicitly, and a separate trivially-passing test for `savePersistentAttachment` is unnecessary once the helper is covered. If keeping the integration-style test, rename it to `savePersistentAttachment_hostileFilesDir_refusesToWrite` to match what it actually tests (the mkdirs + containment composite gate, without claiming either branch is exercised individually), and add a TODO noting Robolectric cannot exercise the containment branch today."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:674-701 (draftMode_multipleImages_warnAndPruneExtrasBeforeCommit)",
+      "issue": "Test name promises TWO invariants: the warning snackbar AND the extras-pruned-before-commit behaviour. Only the former is pinned. The commit-call assertion (`stagedImageFilename == \"img_0.png\"`) is a consequence of ChatViewModel's `attachments.firstOrNull { Image }`, NOT a consequence of pruning — it passes even if `pruneStagingDir` is never called. The `FakeChatRepository.pruneRetainLog` is defined on the fake (line 1553) but never asserted by any test. Litmus: delete the entire `chatRepository.pruneStagingDir(...)` block from `commitDraft` — this test still passes.",
+      "recommendation": "Add two assertions at the end of this test: `assertEquals(1, fakeChatRepository.pruneRetainLog.size)` and `assertEquals(setOf(\"img_0.png\"), fakeChatRepository.pruneRetainLog.single())`. This pins (a) prune was invoked exactly once before the commit, and (b) the retain set carries only the first image's staged filename. Also consider adding an ordering assertion via `eventLog`: append `\"pruneStagingDir\"` inside the fake's pruneStagingDir before the commit event and assert `eventLog` contains `[\"pruneStagingDir\", \"commitDraftChat\"]` in that order — pins the sequencing the production comment relies on ('before the rename')."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/data/ChatRepositoryTest.kt:460-489 (writeAttachmentStaging_failedWrite_rollsBackPartialFile — inline comment)",
+      "issue": "The test's own in-body comment explicitly says 'With a non-directory staging path there is no second file to clean up — the assertion is that nothing additional was created under attachmentsRoot.' This is the author acknowledging the test doesn't verify the rollback invariant from the task's TDD anchor. Leaving the test in its current shape under its current name creates a false sense of coverage for future reviewers — they see the anchor materialised and move on. This is a test-smell even if the T2 major above is not addressed: either strengthen the assertion or rename the test to match what it actually verifies (e.g. `writeAttachmentStaging_onWriteFailure_doesNotPolluteAttachmentsRoot`).",
+      "recommendation": "If the T2 major fix lands, remove this comment entirely — the injected writer will create a real partial file and the assertion `staging.listFiles().isEmpty()` pins the rollback cleanly. If T2 is not addressed in this round, at minimum rename the test to `writeAttachmentStaging_onWriteFailure_doesNotPolluteAttachmentsRoot` and add a linked `// TODO T17-T2: strengthen to exercise target.delete() path once an injectable writer exists` so the gap is visible to downstream reviewers."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 5,
+    "litmusTest": {
+      "checked": 18,
+      "passed": 15,
+      "failed": 3
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 18,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    },
+    "closureVerification": {
+      "T1_removeAttachmentDeletes": "closed",
+      "T2_partialWriteRollback": "weak — test added but does not exercise the target.delete() path",
+      "T3_savePersistentAttachmentContainment": "weak — test triggers mkdirs failure, not the containment check",
+      "concurrent_unique_filenames": "closed",
+      "deleteStagedAttachment_contract": "closed",
+      "removeBeforeStagingSettles": "closed",
+      "persistentMode_audio": "closed",
+      "multipleImages_prune": "partial — snackbar pinned, prune invocation not asserted",
+      "draftStagingDir_nulledOnCommit": "not closed — assertion structurally cannot fail",
+      "fake_persistentAttachment_sequential": "closed",
+      "sendWhileStagingInFlight_commentaryTrimmed": "closed"
+    }
+  }
+}

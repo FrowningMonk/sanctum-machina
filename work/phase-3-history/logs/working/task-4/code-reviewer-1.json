@@ -1,0 +1,78 @@
+{
+  "verdict": "APPROVED_WITH_SUGGESTIONS",
+  "summary": "Task 4 lands a clean, well-documented data layer. commitDraftChat atomicity is correct (Room-tx commit, then rename, with rollback on rename failure), all file I/O is dispatched on ioDispatcher, sweepZombieChats predicate matches AC-P8 (count==0 AND !dir.exists()), ErrorLog uses the correct \"history-write\" component, and AutoTitleGenerator implements AC-U2 precisely with proper edge-case coverage. Findings are limited to minor robustness/observability items (deleteChat lacks failure logging, read-modify-write pattern in update*) and a couple of nits.",
+  "findings": [
+    {
+      "severity": "minor",
+      "id": "T4-m1",
+      "file": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt",
+      "line": 138,
+      "issue": "deleteChat() ignores the boolean return of File.deleteRecursively(). If recursive delete fails (e.g., permission glitch on a Honor 200 user file), the chat row is gone but the attachments directory persists silently — orphan disk usage with no signal in errors.log.",
+      "suggestion": "On `false` return, call `errorLog.e(\"history-write\", \"failed to remove attachments dir for chatId=$chatId\")`. Same component is already in the whitelist; the chat-delete-but-files-leak case is exactly what AC-A2 wants observable."
+    },
+    {
+      "severity": "minor",
+      "id": "T4-m2",
+      "file": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt",
+      "line": 115,
+      "issue": "updateChatLastMessage and updateChatTitle use a read-modify-write pattern (getById → copy → update). Two concurrent updates to the same chat row can lose the loser's change. Today only ChatViewModel writes timestamps and DrawerViewModel writes titles, so contention is unlikely — but the pattern is fragile and forces an extra round-trip per write.",
+      "suggestion": "Add focused DAO methods on ChatDao: `@Query(\"UPDATE chats SET last_message_at = :ts WHERE id = :id\") suspend fun updateLastMessageAt(id: Long, ts: Long)` and a similar one for title+isManuallyTitled. Single statement, atomic, no read needed. Out-of-scope DAO change is small; if deferred, leave a TODO referencing this finding."
+    },
+    {
+      "severity": "minor",
+      "id": "T4-m3",
+      "file": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt",
+      "line": 152,
+      "issue": "sweepZombieChats reads the chat list via `chatDao.observeAll().first()`. Using a Flow as a one-shot suspend is correct (Room emits the current snapshot immediately) but it allocates a transient subscription per sweep. The `// No suspend \"all chats\" getter exists` comment already flags the workaround.",
+      "suggestion": "Add `@Query(\"SELECT * FROM chats\") suspend fun getAll(): List<ChatEntity>` to ChatDao and call it here. Cheaper, clearer, and avoids the conceptual mismatch (sweep is a one-time read, not an observation)."
+    },
+    {
+      "severity": "minor",
+      "id": "T4-m4",
+      "file": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt",
+      "line": 93,
+      "issue": "Final attachments dir is derived as a sibling of stagingDir (`stagingDir.parentFile`). This silently couples the repo to the caller's staging convention (parent must be `filesDir/attachments/`). If a future caller stages into a different parent (e.g., a temp cache dir), the chat dir will land in the wrong place rather than under filesDir/attachments/.",
+      "suggestion": "Either (a) take `filesDir: File` as a second parameter to commitDraftChat (mirroring deleteChat's signature) and compute the final dir as `File(filesDir, \"attachments/$chatId\")`, or (b) tighten the KDoc contract on the interface to say \"stagingDir MUST live directly under filesDir/attachments/\". Option (a) is more defensive; (b) is a one-line doc fix."
+    },
+    {
+      "severity": "minor",
+      "id": "T4-m5",
+      "file": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt",
+      "line": 36,
+      "issue": "The internal test-seam constructor exposes `rename`, `transactionRunner`, and `ioDispatcher` as constructor params. While this is a clean dependency-injection pattern and is well documented in the KDoc, the lambda types in the public-ish primary constructor (`(File, File) -> Boolean` and `suspend (suspend () -> Long) -> Long`) are unusual and an `@Inject`-only reader has to skim past them to find the production constructor.",
+      "suggestion": "Annotate the primary constructor as `@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)` (androidx.annotation) and/or move it below the @Inject constructor so the production wiring is the first thing readers see. Keeps intent unambiguous without changing behavior."
+    },
+    {
+      "severity": "nit",
+      "id": "T4-n1",
+      "file": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt",
+      "line": 69,
+      "issue": "The error message `\"staging directory missing: ...\"` covers two distinct conditions (path doesn't exist, path exists as a regular file) with the same wording. Diagnosing a real failure from the log will be slightly harder.",
+      "suggestion": "Distinguish: `if (!stagingDir.exists()) throw IOException(\"staging dir missing: $path\")` else `if (!stagingDir.isDirectory) throw IOException(\"staging path is not a directory: $path\")`."
+    },
+    {
+      "severity": "nit",
+      "id": "T4-n2",
+      "file": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt",
+      "line": 84,
+      "issue": "`firstMessage.role == \"user\"` uses a magic string. The same literal appears in tests too (helper `userMessage`). MessageEntity already conventionalises role values per tech-spec (\"user\" / \"assistant\").",
+      "suggestion": "Extract `private const val ROLE_USER = \"user\"` (and `ROLE_ASSISTANT`) somewhere shared (e.g., a `MessageRoles` object alongside MessageEntity). Title generation should also be safe for role==\"assistant\" (today it just yields fallback) but the intent is clearer with a named constant."
+    },
+    {
+      "severity": "nit",
+      "id": "T4-n3",
+      "file": "app/src/test/kotlin/app/sanctum/machina/data/ChatRepositoryTest.kt",
+      "line": 91,
+      "issue": "Test name `commitDraftChat_ioExceptionOnStagingWrite` describes 'IOException raised before Room INSERT', but the test models the failure mode as 'staging dir does not exist when commit is called' rather than an actual write-time failure. The AC-A4 invariant (no Room INSERT if staging is invalid) is verified, but the test name slightly overpromises.",
+      "suggestion": "Either rename to `commitDraftChat_missingStagingDir_throwsBeforeRoomInsert` or add a second test that uses a custom rename lambda or a stagingDir that exists as a regular file (not a directory) to round out the AC-A4 surface."
+    },
+    {
+      "severity": "nit",
+      "id": "T4-n4",
+      "file": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt",
+      "line": 95,
+      "issue": "`attachmentsRoot.mkdirs()` is called unconditionally before rename. In the happy path the parent already exists (caller created staging inside it). It's a defensive no-op, but mkdirs() can return false on permission errors and that signal is swallowed.",
+      "suggestion": "Either drop the mkdirs() call (the parent already exists by precondition — staging was created there) or check the return and throw IOException on failure. Today's behavior happens to be correct because rename() will then fail on a missing target dir and the rollback path runs, but it's incidental."
+    }
+  ]
+}

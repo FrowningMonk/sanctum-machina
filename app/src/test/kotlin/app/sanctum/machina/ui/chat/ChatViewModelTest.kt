@@ -1464,6 +1464,9 @@ private class FakeMessageDao : MessageDao {
 
     override suspend fun countByChatId(chatId: Long): Int =
         observed.value.count { it.chatId == chatId }
+
+    override suspend fun firstByChatIdAndRole(chatId: Long, role: String): MessageEntity? =
+        observed.value.firstOrNull { it.chatId == chatId && it.role == role }
 }
 
 private class FakeChatDao : ChatDao {

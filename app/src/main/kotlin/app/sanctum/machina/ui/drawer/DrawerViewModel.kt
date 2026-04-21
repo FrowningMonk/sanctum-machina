@@ -163,9 +163,7 @@ internal constructor(
     viewModelScope.launch {
       if (newTitle.isBlank()) {
         val chat = chatDao.getById(chatId) ?: return@launch
-        val firstUserText = messageDao.getByChatId(chatId)
-          .firstOrNull { it.role == ROLE_USER }
-          ?.text
+        val firstUserText = messageDao.firstByChatIdAndRole(chatId, ROLE_USER)?.text
         val auto = AutoTitleGenerator.generateTitle(firstUserText, chat.createdAt)
         chatRepository.updateChatTitle(chatId, auto, isManuallyTitled = false)
       } else {
@@ -177,27 +175,29 @@ internal constructor(
 
   /**
    * Count messages for [chatId] — surfaced by the delete-confirmation dialog
-   * so the user sees how much history they're about to drop. Called
-   * on-demand when the dialog opens rather than eagerly per drawer render.
+   * so the user sees how much history they're about to drop. Called on demand
+   * when the dialog opens rather than eagerly per drawer render. Returns
+   * `null` on any I/O failure so the dialog can fall back to the no-count
+   * body; the caller never sees a misleading `0` right before CASCADE DELETE.
    */
-  suspend fun getMessageCount(chatId: Long): Int = messageDao.countByChatId(chatId)
+  suspend fun getMessageCount(chatId: Long): Int? =
+    runCatching { messageDao.countByChatId(chatId) }.getOrNull()
 
   /**
-   * Pre-navigation check for the tap handler (Decision 7): returns `true` iff
-   * the chat's `model_id` is in `SUCCEEDED` state on disk. An unknown chatId
-   * (e.g. row was deleted between the drawer render and the tap) returns
-   * `false` so the caller shows the "Модель недоступна" dialog rather than
-   * attempting navigation to a chat that no longer exists.
+   * Pre-navigation check for the tap handler (Decision 7). Resolves the chat
+   * via [ChatDao] (a `SELECT … WHERE id = :id LIMIT 1`) and checks the
+   * corresponding [ModelEntry] in [ModelRegistry.models] — deliberately does
+   * NOT read [drawerUiState], which is a `WhileSubscribed(5_000L)` flow that
+   * resets to `Initial` once no subscriber is attached (off-screen tap would
+   * spuriously return `false`).
+   *
+   * Unknown chatId returns `false` so the caller shows the "Модель
+   * недоступна" dialog rather than navigating to a chat that no longer
+   * exists.
    */
-  fun checkModelAvailable(chatId: Long): Boolean {
-    val chatModelId = drawerUiState.value.sections
-      .asSequence()
-      .flatMap { it.chats.asSequence() }
-      .firstOrNull { it.id == chatId }
-      ?.modelId
-      ?: return false
-    val entry = registry.models.value
-      .firstOrNull { it.model.modelId == chatModelId }
+  suspend fun checkModelAvailable(chatId: Long): Boolean {
+    val chat = chatDao.getById(chatId) ?: return false
+    val entry = registry.models.value.firstOrNull { it.model.modelId == chat.modelId }
     return entry?.downloadStatus?.status == ModelDownloadStatusType.SUCCEEDED
   }
 

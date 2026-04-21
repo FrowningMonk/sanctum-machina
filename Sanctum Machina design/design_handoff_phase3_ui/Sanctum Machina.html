@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Sanctum Machina — Phase 3 UI</title>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="sanctum-tokens.jsx"></script>
+<script type="text/babel" src="sanctum-atoms.jsx"></script>
+<script type="text/babel" src="sanctum-frame.jsx"></script>
+<script type="text/babel" src="sanctum-screen-home.jsx"></script>
+<script type="text/babel" src="sanctum-screen-drawer.jsx"></script>
+<script type="text/babel" src="sanctum-screen-chat.jsx"></script>
+<script type="text/babel" src="sanctum-screen-quick.jsx"></script>
+<script type="text/babel" src="sanctum-screen-more.jsx"></script>
+
+<script type="text/babel">
+const TWEAKS = /*EDITMODE-BEGIN*/{
+  "bubbleStyle": "gpt",
+  "accent": "cinnabar"
+}/*EDITMODE-END*/;
+
+const ACCENTS = {
+  cinnabar: { light: 'oklch(0.58 0.14 40)',  dark: 'oklch(0.68 0.14 42)'  },
+  brass:    { light: 'oklch(0.62 0.10 82)',  dark: 'oklch(0.72 0.10 82)'  },
+  verdigris:{ light: 'oklch(0.55 0.08 170)', dark: 'oklch(0.68 0.08 170)' },
+  ink:      { light: 'oklch(0.25 0.02 260)', dark: 'oklch(0.78 0.02 260)' },
+};
+
+function applyAccent(theme, accent) {
+  const v = ACCENTS[accent] || ACCENTS.cinnabar;
+  return { ...theme, accent: theme.name === 'dark' ? v.dark : v.light };
+}
+
+function App() {
+  const [tw, setTw] = React.useState(TWEAKS);
+  const [editMode, setEditMode] = React.useState(false);
+
+  React.useEffect(() => {
+    const onMsg = (e) => {
+      if (!e.data || typeof e.data !== 'object') return;
+      if (e.data.type === '__activate_edit_mode')   setEditMode(true);
+      if (e.data.type === '__deactivate_edit_mode') setEditMode(false);
+    };
+    window.addEventListener('message', onMsg);
+    window.parent.postMessage({ type: '__edit_mode_available' }, '*');
+    return () => window.removeEventListener('message', onMsg);
+  }, []);
+
+  const setKey = (k, v) => {
+    setTw(prev => {
+      const next = { ...prev, [k]: v };
+      window.parent.postMessage({ type: '__edit_mode_set_keys', edits: { [k]: v } }, '*');
+      return next;
+    });
+  };
+
+  const LIGHT = applyAccent(SANCTUM_LIGHT, tw.accent);
+  const DARK  = applyAccent(SANCTUM_DARK,  tw.accent);
+
+  return (
+    <>
+      <SanctumGlobalStyle/>
+
+      <DesignCanvas>
+        {/* Заголовок */}
+        <div style={{ padding: '0 60px 40px', maxWidth: 820 }}>
+          <div className="sm-kicker" style={{ color: 'rgba(60,50,40,0.7)', marginBottom: 8 }}>
+            Phase 3 · История + On-device · v0.3-ui
+          </div>
+          <div className="sm-display" style={{ fontSize: 56, lineHeight: 0.95, color: 'rgba(40,30,20,0.88)' }}>
+            Sanctum <em style={{ fontStyle: 'italic', fontWeight: 400 }}>Machina</em>
+          </div>
+          <div style={{ fontFamily: FONT.ui, fontSize: 15, color: 'rgba(60,50,40,0.72)', marginTop: 10, maxWidth: 640, lineHeight: 1.5 }}>
+            UI-концепт для Phase 3: персистентная история в drawer, инкогнито «быстрый чат»,
+            прогретая локальная Gemma. Типографика — Cormorant + Inter + JetBrains Mono.
+            Акцент — приглушённый киноварно-латунный, читается и в светлой, и в тёмной теме.
+          </div>
+        </div>
+
+        <DCPostIt top={40} right={80} rotate={-3} width={220}>
+          Tweaks: включи режим и поменяй стиль сообщений и акцент на лету.
+        </DCPostIt>
+
+        {/* ── Light theme row ── */}
+        <DCSection title="Светлая тема" subtitle="Основной проход — пергамент + латунь">
+          <DCArtboard label="01 · Home hub" width={380} height={780} style={{ background: 'transparent', boxShadow: 'none' }}>
+            <SmPhoneFrame theme={LIGHT}>
+              <ScreenHome theme={LIGHT}/>
+            </SmPhoneFrame>
+          </DCArtboard>
+          <DCArtboard label="02 · Drawer / История" width={380} height={780} style={{ background: 'transparent', boxShadow: 'none' }}>
+            <SmPhoneFrame theme={LIGHT}>
+              <ScreenDrawer theme={LIGHT}/>
+            </SmPhoneFrame>
+          </DCArtboard>
+          <DCArtboard label="03 · Persistent chat" width={380} height={780} style={{ background: 'transparent', boxShadow: 'none' }}>
+            <SmPhoneFrame theme={LIGHT}>
+              <ScreenChat theme={LIGHT} bubbleStyle={tw.bubbleStyle}/>
+            </SmPhoneFrame>
+          </DCArtboard>
+          <DCArtboard label="04 · Quick chat (incognito)" width={380} height={780} style={{ background: 'transparent', boxShadow: 'none' }}>
+            <SmPhoneFrame theme={LIGHT}>
+              <ScreenQuickChat theme={LIGHT}/>
+            </SmPhoneFrame>
+          </DCArtboard>
+          <DCArtboard label="05 · Draft + model picker" width={380} height={780} style={{ background: 'transparent', boxShadow: 'none' }}>
+            <SmPhoneFrame theme={LIGHT}>
+              <ScreenDraft theme={LIGHT}/>
+            </SmPhoneFrame>
+          </DCArtboard>
+          <DCArtboard label="06 · TopAppBar: 4 состояния" width={380} height={780} style={{ background: 'transparent', boxShadow: 'none' }}>
+            <SmPhoneFrame theme={LIGHT}>
+              <ScreenStates theme={LIGHT}/>
+            </SmPhoneFrame>
+          </DCArtboard>
+          <DCArtboard label="07 · Model Manager" width={380} height={780} style={{ background: 'transparent', boxShadow: 'none' }}>
+            <SmPhoneFrame theme={LIGHT}>
+              <ScreenModels theme={LIGHT}/>
+            </SmPhoneFrame>
+          </DCArtboard>
+        </DCSection>
+
+        {/* ── Dark theme row ── */}
+        <DCSection title="Тёмная тема" subtitle="Смолистый чёрный, тот же акцент читается ярче">
+          <DCArtboard label="01 · Home hub" width={380} height={780} style={{ background: 'transparent', boxShadow: 'none' }}>
+            <SmPhoneFrame theme={DARK}>
+              <ScreenHome theme={DARK}/>
+            </SmPhoneFrame>
+          </DCArtboard>
+          <DCArtboard label="02 · Drawer / История" width={380} height={780} style={{ background: 'transparent', boxShadow: 'none' }}>
+            <SmPhoneFrame theme={DARK}>
+              <ScreenDrawer theme={DARK}/>
+            </SmPhoneFrame>
+          </DCArtboard>
+          <DCArtboard label="03 · Persistent chat" width={380} height={780} style={{ background: 'transparent', boxShadow: 'none' }}>
+            <SmPhoneFrame theme={DARK}>
+              <ScreenChat theme={DARK} bubbleStyle={tw.bubbleStyle}/>
+            </SmPhoneFrame>
+          </DCArtboard>
+          <DCArtboard label="04 · Quick chat (incognito)" width={380} height={780} style={{ background: 'transparent', boxShadow: 'none' }}>
+            <SmPhoneFrame theme={DARK}>
+              <ScreenQuickChat theme={DARK}/>
+            </SmPhoneFrame>
+          </DCArtboard>
+          <DCArtboard label="05 · Draft + model picker" width={380} height={780} style={{ background: 'transparent', boxShadow: 'none' }}>
+            <SmPhoneFrame theme={DARK}>
+              <ScreenDraft theme={DARK}/>
+            </SmPhoneFrame>
+          </DCArtboard>
+          <DCArtboard label="06 · TopAppBar: 4 состояния" width={380} height={780} style={{ background: 'transparent', boxShadow: 'none' }}>
+            <SmPhoneFrame theme={DARK}>
+              <ScreenStates theme={DARK}/>
+            </SmPhoneFrame>
+          </DCArtboard>
+          <DCArtboard label="07 · Model Manager" width={380} height={780} style={{ background: 'transparent', boxShadow: 'none' }}>
+            <SmPhoneFrame theme={DARK}>
+              <ScreenModels theme={DARK}/>
+            </SmPhoneFrame>
+          </DCArtboard>
+        </DCSection>
+
+        {/* Футер */}
+        <div style={{ padding: '0 60px 80px', maxWidth: 900, fontFamily: FONT.ui, color: 'rgba(60,50,40,0.72)', fontSize: 13, lineHeight: 1.6 }}>
+          <div className="sm-kicker" style={{ color: 'rgba(60,50,40,0.7)', marginBottom: 10 }}>Что показано</div>
+          <ul style={{ paddingLeft: 18, margin: 0 }}>
+            <li><b>Home hub</b> (AC-P3): крупное имя продукта, одна основная кнопка, фоновый прогрев видно в футере.</li>
+            <li><b>Drawer</b>: группы Сегодня / Вчера / Неделя / Раньше; чип модели E2B/E4B в моно-шрифте; отдельная кнопка для incognito.</li>
+            <li><b>Persistent chat</b>: ChatGPT-стиль — USER в пергаментном bubble, ASSISTANT во всю ширину, с сигилом вместо аватарки.</li>
+            <li><b>Quick chat</b> (US-1, AC-U5): тёмная плашка, киноварная кайма по всему экрану, «печать Sigillum».</li>
+            <li><b>Draft + picker</b> (AC-E7, US-2): имя модели в topbar кликабельно, ⭐ — default.</li>
+            <li><b>TopAppBar states</b> (AC-U6): ready / warming / loading / failed.</li>
+            <li><b>Model Manager</b> (AC-F7): ⭐ на default; «Скачано/прогрета»; «Доступно» пунктиром.</li>
+          </ul>
+        </div>
+      </DesignCanvas>
+
+      {editMode && (
+        <div style={{
+          position: 'fixed', right: 20, bottom: 20, zIndex: 1000,
+          background: '#1a1714', color: '#e8dfcb',
+          border: '1px solid rgba(232,223,203,0.18)',
+          padding: 16, width: 260,
+          fontFamily: FONT.ui, fontSize: 13,
+          boxShadow: '0 20px 40px rgba(0,0,0,0.35)',
+        }}>
+          <div className="sm-kicker" style={{ color: 'rgba(232,223,203,0.55)', marginBottom: 10 }}>
+            Tweaks
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.1em' }}>Стиль сообщений</div>
+            {[['gpt','ChatGPT (USER в bubble)'],['flat','Flat divider']].map(([id,label]) => (
+              <label key={id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', cursor: 'pointer' }}>
+                <input type="radio" name="bs" checked={tw.bubbleStyle===id} onChange={() => setKey('bubbleStyle', id)}/>
+                {label}
+              </label>
+            ))}
+          </div>
+
+          <div>
+            <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.1em' }}>Акцент</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {Object.entries(ACCENTS).map(([id, v]) => (
+                <button key={id} onClick={() => setKey('accent', id)} title={id}
+                  style={{
+                    width: 28, height: 28, borderRadius: '50%', cursor: 'pointer',
+                    background: v.dark, border: `2px solid ${tw.accent === id ? '#e8dfcb' : 'transparent'}`,
+                    padding: 0,
+                  }}/>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

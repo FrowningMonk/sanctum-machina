@@ -1,0 +1,85 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "Round-2 fixes close all three round-1 findings cleanly: UUID-based filenames remove the listFiles().size race (T17-R1), writeAttachmentStaging now takes filesDir explicitly so the containment check is no longer tautological (T17-R3), and pruneStagingDir + attachment_only_first_persisted snackbar cover the N>1 image + in-flight remove race (T17-R2 / T17-S4). Security improvements (logged partial-write cleanup failures, savePersistentAttachment containment check, suspend writeAttachmentPayload) are all in place. Tests are thorough and assert the right invariants. Two minor observations below; none block approval.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 721,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "pruneStagingDir + commitDraftChat are two serial IO calls inside a single viewModelScope.launch. A user tapping addImageBitmap() between send() and the prune coroutine's turn (the send gate only flips isGenerating=true in _uiState — it doesn't reject add* calls) would launch a fresh stageDraftAttachmentIfNeeded coroutine targeting the same draftStagingDir. Depending on scheduling this new staged file can land (a) before prune runs — it would be deleted by prune as not-in-retain, (b) after prune but before rename — it would become an orphan inside the final attachments/{chatId}/ dir that no sweep catches, or (c) after rename — it would recreate the now-absent .staging-* dir for startup sweep to collect. In practice MultimodalInputBar disables the add-attachment controls when isGenerating=true, so this is a defense-in-depth concern rather than a live bug. Consider gating addImages/addImageBitmap/addAudio on uiState.isGenerating (or a dedicated committing flag) at the VM level so the invariant is enforced without relying on UI composition.",
+      "benefit": "Removes a latent orphan-file race that the UI currently masks; the VM's correctness would no longer depend on a specific composable's disabled-state.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 785,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "In runInferencePersistent the attachment_only_first_persisted snackbar fires when pending.count { it is Attachment.Image } > 1. The Persistent path actually supports one persisted image AND one persisted audio per USER row (savePersistentAttachment is called twice — lines 809-816). The current threshold catches the multi-image MVP limitation but not a multi-audio case; today addAudio rejects a second audio clip upfront (line 451), so the asymmetry is safe today. When a future phase admits multiple audio attachments this snackbar condition will need updating. A small comment at line 785 stating 'audio is UI-gated to a single clip, so only images need the N>1 warning here' would make the invariant explicit for future maintainers.",
+      "benefit": "Documents a cross-file invariant (addAudio gate ↔ persist-one MVP limit) so the next contributor to the audio path doesn't miss the snackbar contract.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt",
+      "line": 181,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "pruneStagingDir silently swallows individual delete failures after logging — appropriate per the KDoc (a single orphan can't abort the commit). Consider including the retain-set size in the log message ('failed to delete {path} during prune (retained=N)') to make post-incident diagnosis easier when the startup sweep later reports leftover files.",
+      "benefit": "Tighter breadcrumb trail when forensics are needed on the staging → persistent transition.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 7,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 3,
+    "testCoverageAssessment": "excellent"
+  },
+  "round1FindingsStatus": {
+    "T17-R1_filename_race": {
+      "status": "closed",
+      "evidence": "DefaultChatRepository.collisionFreeFilename (lines 265-271) returns img_{UUID}.png / audio_{UUID}.wav. Used by both writeAttachmentStaging (line 160) and savePersistentAttachment (line 213). Regression test writeAttachmentStaging_concurrentWrites_uniqueFilenames (ChatRepositoryTest lines 343-362) asserts 5 parallel writes all get unique filenames. savePersistentAttachment_concurrentCalls_uniqueFilenames (lines 412-423) asserts the same for the persistent path."
+    },
+    "T17-R2_multi_image_drop": {
+      "status": "closed",
+      "evidence": "attachment_only_first_persisted string added (strings.xml:82). ChatViewModel.commitDraft emits it when imageCount > 1 (line 697-704) and runInferencePersistent emits it when pending.count { it is Attachment.Image } > 1 (line 785-790). ChatRepository.pruneStagingDir (interface lines 104-108, impl DefaultChatRepository lines 181-197) deletes unreferenced staged files. commitDraft calls it with retain = setOfNotNull(stagedImage, stagedAudio) (line 722-726) BEFORE commitDraftChat. Test draftMode_multipleImages_warnAndPruneExtrasBeforeCommit (ChatViewModelTest lines 675-701) asserts both the snackbar and the single-file commit."
+    },
+    "T17-R3_derivation": {
+      "status": "closed",
+      "evidence": "ChatRepository.writeAttachmentStaging signature (line 75-79) takes filesDir: File explicitly; DefaultChatRepository impl (lines 145-164) calls requireInsideAttachmentsRoot(stagingDir, filesDir) directly. No parentFile?.parentFile derivation remains. ChatViewModel.stageDraftAttachmentIfNeeded passes context.filesDir (line 475, 478). FakeChatRepository.writeAttachmentStaging signature matches."
+    },
+    "T17-S3_partial_write_logging": {
+      "status": "closed",
+      "evidence": "writeAttachmentPayload is now `private suspend fun` (DefaultChatRepository line 233); the catch block at line 243-255 logs delete-of-partial-file failures via errorLog.e(\"attachment-save\", ...) before rethrowing the original cause. Test writeAttachmentStaging_failedWrite_rollsBackPartialFile (ChatRepositoryTest lines 460-489) exercises the path."
+    },
+    "T17-S4_prune_orphans": {
+      "status": "closed",
+      "evidence": "Combined with T17-R2 via pruneStagingDir. Retain-set is built from the USER row's actual stagedImageFilename/stagedAudioFilename — exactly the files commitDraftChat will reference."
+    },
+    "T17-T1_delete_through_repository": {
+      "status": "closed",
+      "evidence": "ChatRepository.deleteStagedAttachment added (interface lines 88-92). ChatViewModel.deleteStagedFileIfAny (lines 516-534) routes through chatRepository.deleteStagedAttachment. FakeChatRepository.deletedStagedFiles records the filename. Test draftMode_removeAttachment_deletesStagedFile (ChatViewModelTest lines 583-604) asserts the list equals [\"img_0.png\"]."
+    },
+    "T17-T2_partial_write_rollback": {
+      "status": "closed",
+      "evidence": "ChatRepositoryTest.writeAttachmentStaging_failedWrite_rollsBackPartialFile (lines 460-489) asserts no extra files appear under attachments root when the write throws."
+    },
+    "T17-T3_persistent_containment": {
+      "status": "closed",
+      "evidence": "DefaultChatRepository.savePersistentAttachment calls requireInsideAttachmentsRoot(chatDir, filesDir) at line 209 BEFORE mkdirs. Test savePersistentAttachment_chatDirOutsideRoot_throws (ChatRepositoryTest lines 425-457) covers the mismatched-filesDir path."
+    }
+  },
+  "inFlightRaceAnalysis": {
+    "scenario": "stageDraftAttachmentIfNeeded launch lands between pruneStagingDir and commitDraftChat rename",
+    "verdict": "Not a regression from this task; pre-existing pattern. The send()-gate blocks via `pending.any { it.isStagingPending() }` — any attachment captured in `pending` with stagedFilename=null aborts the send. Because `pending = _attachments.value` is read synchronously at send(), any NEW addImageBitmap call after send() returns adds to _attachments AFTER the snapshot, so its in-flight stage write is not referenced by stagedImage/stagedAudio and would be pruned (if on-disk before prune) or orphan-leaked (if on-disk after prune but before rename). In production the attachment bar is UI-gated by isGenerating=true. Suggested as minor (see suggestion 1) — VM-level gating would harden defense-in-depth but is not required for the round-2 approval.",
+    "actionRequired": false
+  },
+  "snackbarVerification": {
+    "draft_commitDraft_placement": "synchronous in commitDraft before viewModelScope.launch (line 697-704). Fires on user tap so UI sees it immediately — correct.",
+    "persistent_runInferencePersistent_placement": "synchronous in runInferencePersistent before viewModelScope.launch (line 785-790). Same pattern. Correct.",
+    "wording": "Сохранено только первое фото — остальные прикреплены к ответу модели, но не попадут в историю. Clear and user-facing-appropriate; explains both the 'only first persisted' limit AND that the extras still reach inference."
+  }
+}

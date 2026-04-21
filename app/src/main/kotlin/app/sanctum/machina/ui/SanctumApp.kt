@@ -31,9 +31,11 @@ fun SanctumApp() {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
     val currentBackStackEntry by navController.currentBackStackEntryAsState()
-    val currentChatId: Long? = currentBackStackEntry?.takeIf {
-        it.destination.route == "chat/{chatId}"
-    }?.arguments?.getLong("chatId")
+    val currentChatId: Long? = currentBackStackEntry
+        ?.takeIf { it.destination.route == "chat/{chatId}" }
+        ?.arguments
+        ?.takeIf { it.containsKey("chatId") }
+        ?.getLong("chatId")
 
     SanctumTheme {
         ModalNavigationDrawer(

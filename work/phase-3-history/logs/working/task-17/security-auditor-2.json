@@ -1,0 +1,86 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 2,
+    "critical": 0,
+    "major": 0,
+    "minor": 1,
+    "info": 1
+  },
+  "round1_closures": {
+    "T17-S1": {
+      "status": "closed",
+      "evidence": "DefaultChatRepository.kt:145-164 — writeAttachmentStaging now takes `filesDir: File` as an explicit parameter and calls `requireInsideAttachmentsRoot(stagingDir, filesDir)` on line 155. The private `requireInsideAttachmentsRoot` at 273-281 canonicalises both candidate and `File(filesDir, ATTACHMENTS_DIR)` and does a prefix startsWith check with `File.separator` as boundary (preventing the classic `attachments2/` false-prefix). No `attachmentsRootFor(...)` derivation remains — a grep over the package finds no such symbol. savePersistentAttachment (line 209), deleteStagedAttachment (line 171), pruneStagingDir (line 186) all share the same anchor. The tautology is genuinely removed; the trust anchor (filesDir) is now independent of the candidate path."
+    },
+    "T17-S2": {
+      "status": "closed",
+      "evidence": "DefaultChatRepository.kt:265-271 — `collisionFreeFilename` returns `img_${UUID.randomUUID()}.png` or `audio_${UUID.randomUUID()}.wav`. Grep for `listFiles().size` / `listFiles().length` / `nextAttachmentFilename` across app/src/main/kotlin returns only the KDoc reference at line 260 that documents the fix. UUID v4 collision probability with <10 staged files per chat is effectively zero. No enumeration/information-disclosure concern (CWE-330 not applicable: no authorisation decision depends on filename unpredictability — the filename is written inside app-private storage and never exposed to external surfaces)."
+    },
+    "T17-S3": {
+      "status": "closed",
+      "evidence": "DefaultChatRepository.kt:243-255 — `writeAttachmentPayload` is now a `suspend` function; the catch block logs via `errorLog.e(\"attachment-save\", \"writeAttachmentPayload: delete of partial file failed: ${target.absolutePath}\")` when `target.delete()` returns false AND the file still exists (the dual check avoids a false-positive log on a Bitmap.compress failure that never created the file). The original throwable is rethrown AFTER the delete attempt so the caller's onFailure path still runs. Error component `attachment-save` matches the patterns.md convention and is reused for deleteStagedAttachment / pruneStagingDir / stageDraftAttachmentIfNeeded."
+    },
+    "T17-S4": {
+      "status": "closed",
+      "evidence": "ChatRepository.pruneStagingDir (interface at lines 104-108, impl at DefaultChatRepository.kt:181-197) deletes every file in stagingDir whose name is NOT in `retain`. Runs on `Dispatchers.IO` via the repository's `withContext(ioDispatcher)`. ChatViewModel.commitDraft (lines 721-727) invokes it with `retain = setOfNotNull(stagedImage, stagedAudio)` — the send-time snapshot drawn from `pending.firstNotNullOfOrNull { stagedFilename }`. The retain set is CORRECT: it contains exactly the two filenames that commitDraftChat will rewrite into `firstMessage.imagePath` / `audioPath`, and nothing else. The remove-during-inflight race is genuinely closed — if `removeAttachment` fires after the staging write completes but before commit, `_attachments` no longer contains the attachment, so `firstNotNullOfOrNull { stagedFilename }` never picks its filename, so its filename is not in `retain`, so prune deletes it. Prune runs BEFORE the commit rename (line 722 vs line 729), so the orphan is gone before the whole directory moves to `attachments/{chatId}/`. Delete failures in prune are logged via `attachment-save` and swallowed — a single failed delete cannot abort the commit, which is the right trade-off (the startup sweep catches any surviving `.staging-*` dir on next launch)."
+    },
+    "T17-S5": {
+      "status": "closed",
+      "evidence": "Same UUID fix as T17-S2 — dense per-prefix indexing is no longer relevant because filenames are UUIDs, not indices. The gap-index reasoning no longer applies."
+    }
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "id": "T17R2-S1",
+      "category": "A04: Insecure Design (robustness / TOCTOU)",
+      "title": "pruneStagingDir follows directory entries and symlinks — non-flat staging tree would corrupt state",
+      "description": "`pruneStagingDir` (DefaultChatRepository.kt:187-196) iterates `stagingDir.listFiles()` and calls `file.delete()` on anything not in `retain`. `File.delete()` on a non-empty directory returns `false` (Java semantics) — which is handled by the error-log branch — but `File.delete()` on a symlink deletes the link, not the target, and `File.delete()` on an empty directory succeeds silently. Today the staging tree is flat (ChatViewModel only writes `img_{uuid}.png` / `audio_{uuid}.wav` files at the top level via `writeAttachmentStaging`), so neither case is reachable — this is a robustness/contract gap, not an active vulnerability.\n\nAdditionally, the containment check on line 186 canonicalises `stagingDir` itself but the per-file delete on line 189 operates on `file.name` without re-canonicalising. If a future feature (media transcoding, thumbnail generation) drops a symlink inside the staging dir pointing OUT of `filesDir/attachments/`, prune would follow the link's basename (safe — delete unlinks) but a follow-up feature that reads `file.canonicalPath` before deleting could traverse outside. Defence-in-depth: reject non-regular-files and stop on containment violation per-entry rather than trusting the top-level check.\n\nThe retain set is `Set<String>` (filenames only). A malformed filename in `retain` cannot escape the directory because prune only consults it via `file.name in retain` (membership test, not path join), so there is no traversal vector via the retain set itself. That is correct.",
+      "location": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt:181-197",
+      "impact": "Not reachable today — `ChatViewModel.ensureDraftStagingDir` + `writeAttachmentStaging` only creates regular PNG/WAV files at the top of `.staging-{uuid}/`. Future change risk: if anyone adds a sub-directory (thumbnail cache, WAV-to-OGG transcode temp) or a symlink inside the staging dir, prune silently skips sub-directories (delete returns false → log-and-continue) and the commit-rename then carries them into the final chat dir as orphans.",
+      "recommendation": "Two small hardenings: (1) In `pruneStagingDir`, skip non-regular-file entries explicitly: `if (!file.isFile) { errorLog.e(\"attachment-save\", \"pruneStagingDir: unexpected entry ${file.absolutePath}\"); return@forEach }`. This surfaces a contract violation rather than silently swallowing it. (2) Document on the interface KDoc (ChatRepository.kt:95-108) that `stagingDir` is expected to be flat — callers must not create sub-dirs. Neither change alters behaviour today; both are cheap insurance for Task 22+.",
+      "cwe": "CWE-59 (Link Following) / CWE-1188 (Initialization of a Resource with an Insecure Default)"
+    },
+    {
+      "severity": "info",
+      "id": "T17R2-I1",
+      "category": "A04: Insecure Design (interaction with known debt T4-S6)",
+      "title": "T4-S6 orphan-dir window is unchanged; strings.xml addition carries no PII",
+      "description": "Confirmed scope boundaries for Round 2:\n\n1. T4-S6 (kill-window between successful rename and SQLite WAL commit leaves `attachments/{chatId}/` dir orphaned) is unchanged. Round 2 did not touch commitDraftChat's transaction order (DefaultChatRepository.kt:111-142 still folds the rename inside `transactionRunner`, and the outer catch's `stagingDir.deleteRecursively()` remains a no-op after rename). This matches the scope statement in the round-2 prompt.\n\n2. New snackbar string `attachment_only_first_persisted` (res/values/strings.xml:82) reads `Сохранено только первое фото — остальные прикреплены к ответу модели, но не попадут в историю.` — a static UI hint. No interpolation, no user content, no file paths, no attachment IDs. Safe.\n\n3. Log payloads in all new `attachment-save` lines carry only `target.absolutePath` (staging dir path — process-local, no PII), `attachment.id` (in-process AtomicLong counter, no PII), `chatId` (row id, not user content), and `filename` (UUID + stable prefix). No image/audio bytes, no text from the user. `patterns.md § Error logging conventions` is respected.\n\n4. `Attachment.Audio.equals/hashCode` now includes `stagedFilename` in the tuple (Attachment.kt:48-61). This is benign for the send-gate: `isStagingPending()` at ChatViewModel.kt:210-213 reads the field directly off the instance, not via equals, so two Audio instances with different staged states remain distinguishable for gating regardless of equals. Tests that compare by value still get correct semantics.\n\n5. `collisionFreeFilename` uses `UUID.randomUUID()` which on the JVM delegates to `SecureRandom` (java.util.UUID.randomUUID Javadoc — \"cryptographically strong pseudo random number generator\"). No CWE-330 concern.",
+      "location": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt:75-142, 265-271; app/src/main/kotlin/app/sanctum/machina/ui/chat/Attachment.kt:48-61; app/src/main/res/values/strings.xml:82",
+      "impact": "Informational. No action required for Task 17 Round 2.",
+      "recommendation": "None. Consider mentioning in decisions.md that the staging tree is deliberately flat — prune's current one-level semantics depend on it (see T17R2-S1 recommendation)."
+    }
+  ],
+  "notes": {
+    "existing_debt_touched": [
+      {
+        "id": "T4-S6",
+        "status": "unchanged",
+        "detail": "Kill-window between rename(2) and SQLite WAL commit still leaves attachments/{chatId}/ orphans on process death. Round 2 did not alter commitDraftChat's transaction order. Scope-consistent with the round-2 prompt."
+      }
+    ],
+    "new_debt_introduced": [
+      {
+        "id": "T17R2-S1",
+        "detail": "pruneStagingDir silently skips non-file entries and follows symlinks. Non-exploitable today (staging tree is flat) but a one-line isFile() guard + KDoc note is cheap insurance before Task 22+ adds any transcoding/thumbnailing."
+      }
+    ],
+    "checked_and_clear": [
+      "Containment check is no longer tautological: requireInsideAttachmentsRoot compares candidate.canonicalPath against File(filesDir, \"attachments\").canonicalPath with File.separator as the trust-boundary delimiter. Same anchor used in writeAttachmentStaging, deleteStagedAttachment, pruneStagingDir, savePersistentAttachment, and commitDraftChat (T17-S1 closed).",
+      "Filename race closed by UUID.randomUUID() (T17-S2 closed). No listFiles().size / nextAttachmentFilename remains in the codebase.",
+      "Partial-write cleanup now logs under 'attachment-save' with dual check `target.exists() && !target.delete()` (T17-S3 closed). writeAttachmentPayload is a suspend fun so the log call compiles correctly.",
+      "Remove-during-inflight race closed by pruneStagingDir + setOfNotNull(stagedImage, stagedAudio) retain set computed from the send-time pending snapshot (T17-S4 closed). Prune runs on Dispatchers.IO before commitDraftChat.",
+      "Gap-indices finding (T17-S5) made moot by UUID filenames.",
+      "New interface surface (deleteStagedAttachment, pruneStagingDir) both carry the containment check and run on Dispatchers.IO.",
+      "attachment_only_first_persisted snackbar string is static Russian text — no PII, no format args.",
+      "UUID.randomUUID() uses SecureRandom on JVM — filename unpredictability is cryptographically sound (no CWE-330).",
+      "Attachment.Audio equals/hashCode change (adding stagedFilename) does not affect isStagingPending gate — gate uses instance field, not equals.",
+      "Log payloads (`attachment-save`, `history-write`) carry only paths inside app-private storage, row ids, and UUID filenames — no user content, no PII.",
+      "No hardcoded secrets in the diff.",
+      "No user-controlled filenames or shell paths — all filenames are UUIDs with fixed prefix/extension.",
+      "No new deserialisation surface: PNG via Bitmap.compress (Android codec, write-only here) and WAV via in-house pcmToWav (ByteArray blob).",
+      "No new network surface; no SSRF vector."
+    ]
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "verdict": "APPROVED_WITH_SUGGESTIONS",
+  "summary": "On-device-only data layer with no network surface and no untrusted input parsing. Path construction uses Long chatIds (AUTOINCREMENT) so traversal via id is impossible. Two low/medium hardening items: (1) commitDraftChat trusts the caller's stagingDir.parentFile to be inside filesDir/attachments — a defensive containment check would harden against an internal-API misuse; (2) the post-transaction rollback path (chatDao.deleteById after rename failure) runs outside the Room transaction, so a process kill in that window leaves an orphan chat+message that sweepZombieChats cannot detect (it has a message). Neither is exploitable on-device by an external party; both are residual robustness/atomicity gaps already partially acknowledged in tech-spec Decision 6.",
+  "findings": [
+    {
+      "severity": "medium",
+      "id": "T4-S1",
+      "file": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt",
+      "line": 93,
+      "issue": "commitDraftChat derives `attachmentsRoot = stagingDir.parentFile` without verifying the staging dir lives inside the app's filesDir/attachments tree. A misbehaving caller (or future refactor) that constructs `stagingDir` outside the expected root would cause the final rename target — and any later deleteChat/sweep operations on the resulting chatId — to land in an unintended directory. Combined with `attachmentsRoot.mkdirs()`, this could create directories outside filesDir/attachments. There is no path-traversal exploit from an external attacker (chatId is a Long), but the contract relies entirely on caller discipline.",
+      "recommendation": "Take the canonical attachments root as an explicit parameter (e.g., `commitDraftChat(..., filesDir: File, stagingDir: File?)`) and assert `stagingDir.canonicalPath.startsWith(File(filesDir, ATTACHMENTS_DIR).canonicalPath + File.separator)` before any mkdirs/rename. This mirrors the parameter shape of deleteChat/sweepZombieChats and removes the implicit `parentFile` trust. Throw IOException on mismatch BEFORE the Room transaction so no row is inserted."
+    },
+    {
+      "severity": "low",
+      "id": "T4-S2",
+      "file": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt",
+      "line": 100,
+      "issue": "Rollback after rename failure (`chatDao.deleteById(chatId)`) runs OUTSIDE the Room transaction (transaction already committed at line 88). If the process is killed between line 97 (rename returns false) and line 100 (deleteById completes), the chat row AND the first message row both survive while the on-disk attachments are gone. sweepZombieChats only detects rows with zero messages, so this orphan is not garbage-collected and would surface in the chat list pointing to missing attachment files. Tech-spec Decision 6 acknowledges sweep handles the `INSERT-then-rename` crash window, but does not cover this `rename-fail then crash before rollback` window.",
+      "recommendation": "Two options: (a) Move the rename inside the Room transaction so a deleteById failure rolls back automatically — requires turning the rename rollback into a transaction-aborting throw. (b) Extend sweepZombieChats (or add a separate sweep) to also flag chats whose attachments_dir is missing AND whose messages all reference imagePath/audioPath under that missing dir. Even a simpler heuristic — sweep chats where lastMessageAt == createdAt AND no attachments dir AND only one message — would catch this narrow window. At minimum, document the residual gap in tech-spec Decision 6."
+    },
+    {
+      "severity": "info",
+      "id": "T4-S3",
+      "file": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt",
+      "line": 158,
+      "issue": "sweepZombieChats reads the snapshot via `chatDao.observeAll().first()`. Between that snapshot and the subsequent `messageDao.countByChatId` / `dir.exists()` / `chatDao.deleteById` calls, a concurrent commitDraftChat could insert a chat that appears in the snapshot with zero messages (race window between Room transaction commit and the post-transaction rename). Result: sweep races commitDraftChat and may delete a chat that is mid-commit. Per tech-spec sweep is invoked once at SanctumApplication.onCreate so concurrent commits are unlikely in practice, but it is not enforced.",
+      "recommendation": "Either (a) document the single-shot invocation contract in the KDoc on sweepZombieChats and add a comment in SanctumApplication that no UI flow may run before sweep completes, or (b) wrap the per-chat check + delete in a Room transaction that also re-reads countByChatId, and require commitDraftChat's rename to happen INSIDE the Room transaction (combined with T4-S2 fix). Lowest-effort fix: tighten KDoc to state the single-thread-at-startup invariant."
+    },
+    {
+      "severity": "info",
+      "id": "T4-S4",
+      "file": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt",
+      "line": 166,
+      "issue": "Zombie-sweep ErrorLog line includes `model=${chat.modelId}`. modelId today is a HuggingFace identifier (e.g. `litert-community/gemma-4-E4B-it-litert-lm`) — no PII. ErrorLog already sanitizes control chars and truncates to 500. No issue today, but if modelId ever expands to include user-derived alias text, the on-device error log would carry it. Worth a one-line comment that modelId is treated as non-sensitive metadata.",
+      "recommendation": "Add a brief KDoc note on the zombie-sweep log line stating that modelId is intentionally logged for diagnostics and must remain non-PII. No code change required for the current data shape."
+    },
+    {
+      "severity": "info",
+      "id": "T4-S5",
+      "file": "app/src/test/kotlin/app/sanctum/machina/data/ChatRepositoryTest.kt",
+      "line": 52,
+      "issue": "Test setup uses `context.filesDir` (Robolectric application context) for the ErrorLog state and clears it via `errorLogFile.parentFile?.deleteRecursively()` in @Before/@After. Robolectric reuses the same application context across tests in the same JVM. JUnit4 runs test methods serially within a class, so the cleanup pair brackets each test correctly. However, if any other test in the suite uses the same `logs/errors.log` path concurrently (e.g., a future Robolectric test in another class running in parallel via a Gradle test parallelism setting), they would race on the same file. No bug today; flagging for awareness if test parallelism is ever enabled.",
+      "recommendation": "Optional: redirect ErrorLog under test to a per-test TemporaryFolder by injecting a Context wrapper, or document in the test KDoc that ErrorLog reads/writes shared Robolectric filesDir and tests must remain serial. No action required while `maxParallelForks = 1` (current default)."
+    }
+  ]
+}

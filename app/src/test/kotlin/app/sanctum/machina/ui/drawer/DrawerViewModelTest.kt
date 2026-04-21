@@ -134,6 +134,98 @@ class DrawerViewModelTest {
     assertEquals(listOf(4L), earlier!!.chats.map { it.id })
   }
 
+  @Test
+  fun dateBucketsHonorExactDayBoundaries() = runTest {
+    // Pins the `2..6`-day window (inclusive) and "day 7 is EARLIER" off-by-one:
+    //   0d → TODAY, 1d → YESTERDAY, 2d/6d → THIS_WEEK, 7d/10d → EARLIER.
+    listOf(
+      100L to 0L,
+      101L to 1L,
+      102L to 2L,
+      103L to 6L,
+      104L to 7L,
+      105L to 10L,
+    ).forEach { (id, offset) ->
+      seedChat(id = id, lastMessageDate = today.minusDays(offset))
+    }
+
+    val viewModel = subscribedViewModel()
+    advanceUntilIdle()
+
+    val sections = viewModel.drawerUiState.value.sections
+      .associate { it.kind to it.chats.map { row -> row.id }.toSet() }
+
+    assertEquals(setOf(100L), sections[DateSectionKind.TODAY])
+    assertEquals(setOf(101L), sections[DateSectionKind.YESTERDAY])
+    assertEquals(setOf(102L, 103L), sections[DateSectionKind.THIS_WEEK])
+    assertEquals(setOf(104L, 105L), sections[DateSectionKind.EARLIER])
+  }
+
+  @Test
+  fun sectionBoundaryIsLocalMidnightNotRolling24Hours() = runTest {
+    // A message stamped 23:59 local time "yesterday" must still land in
+    // YESTERDAY, not TODAY — Decision 7 pins local-date granularity even
+    // though the timestamp is only ~1 minute old in wall-clock terms.
+    val lateYesterday = ZonedDateTime.of(
+      today.minusDays(1),
+      java.time.LocalTime.of(23, 59),
+      zone,
+    ).toInstant().toEpochMilli()
+    chatDao.put(
+      ChatEntity(
+        id = 200L,
+        modelId = "m",
+        title = "Late yesterday",
+        isManuallyTitled = 0,
+        createdAt = lateYesterday,
+        lastMessageAt = lateYesterday,
+      )
+    )
+    chatRepo.emitChats(chatDao.snapshot())
+
+    val viewModel = subscribedViewModel()
+    advanceUntilIdle()
+
+    val yesterday = viewModel.drawerUiState.value.sections
+      .firstOrNull { it.kind == DateSectionKind.YESTERDAY }
+    assertNotNull("expected YESTERDAY section", yesterday)
+    assertEquals(listOf(200L), yesterday!!.chats.map { it.id })
+  }
+
+  @Test
+  fun chatsWithinSectionSortedByLastMessageDesc() = runTest {
+    // AC-P4: within a section, newest first. Seed three TODAY rows with
+    // increasing timestamps — the section list must reverse that order.
+    val base = atStartOfDayEpoch(today)
+    chatDao.put(
+      ChatEntity(id = 300L, modelId = "m", title = "A", createdAt = base, lastMessageAt = base + 100)
+    )
+    chatDao.put(
+      ChatEntity(id = 301L, modelId = "m", title = "B", createdAt = base, lastMessageAt = base + 300)
+    )
+    chatDao.put(
+      ChatEntity(id = 302L, modelId = "m", title = "C", createdAt = base, lastMessageAt = base + 200)
+    )
+    chatRepo.emitChats(chatDao.snapshot())
+
+    val viewModel = subscribedViewModel()
+    advanceUntilIdle()
+
+    val today = viewModel.drawerUiState.value.sections
+      .first { it.kind == DateSectionKind.TODAY }
+    assertEquals(listOf(301L, 302L, 300L), today.chats.map { it.id })
+  }
+
+  @Test
+  fun emptyChatListYieldsEmptySections() = runTest {
+    val viewModel = subscribedViewModel()
+    advanceUntilIdle()
+
+    val state = viewModel.drawerUiState.value
+    assertTrue("sections must be empty", state.sections.isEmpty())
+    assertFalse("isLoading must resolve to false after first combine", state.isLoading)
+  }
+
   // ---- delete + PopBack ----
 
   @Test
@@ -174,6 +266,10 @@ class DrawerViewModelTest {
 
   @Test
   fun renameChatWithBlankTitleResetsAutoTitle() = runTest {
+    // Litmus: the regenerated title MUST derive from the first USER message via
+    // AutoTitleGenerator. A weaker `title.isNotBlank()` assertion would pass if
+    // the VM wrote back `"Old manual"` (the pre-existing manual title) — which
+    // would silently break AC-U1.
     chatDao.put(
       ChatEntity(
         id = 7L,
@@ -189,7 +285,7 @@ class DrawerViewModelTest {
         id = 70L,
         chatId = 7L,
         role = "user",
-        text = "Привет, как дела?",
+        text = "Привет",
         createdAt = atStartOfDayEpoch(today),
       )
     )
@@ -201,8 +297,49 @@ class DrawerViewModelTest {
     val call = chatRepo.titleUpdates.single()
     assertEquals(7L, call.chatId)
     assertFalse("isManuallyTitled must be false on reset", call.isManuallyTitled)
-    // Auto-title is non-blank — either the first-user-text slice or the fallback.
-    assertTrue("expected non-blank auto-title, was '${call.title}'", call.title.isNotBlank())
+    assertEquals("Привет", call.title)
+  }
+
+  @Test
+  fun renameChatWithBlankTitleAndNoUserMessageFallsBackToTimestampTitle() = runTest {
+    // Companion litmus: when there is no first-user-message, AutoTitleGenerator
+    // emits the `"Чат от DD.MM HH:mm"` fallback — pins that branch.
+    chatDao.put(
+      ChatEntity(
+        id = 71L,
+        modelId = "m",
+        title = "Old manual",
+        isManuallyTitled = 1,
+        createdAt = atStartOfDayEpoch(today),
+        lastMessageAt = atStartOfDayEpoch(today),
+      )
+    )
+    val viewModel = subscribedViewModel()
+
+    viewModel.renameChat(chatId = 71L, newTitle = "")
+    advanceUntilIdle()
+
+    val call = chatRepo.titleUpdates.single()
+    assertFalse(call.isManuallyTitled)
+    assertTrue(
+      "expected fallback title prefix, was '${call.title}'",
+      call.title.startsWith("Чат от "),
+    )
+  }
+
+  @Test
+  fun renameChatTrimsAndCapsAtSixtyChars() = runTest {
+    // AC-U1 60-char cap. Use a 70-char input; expected output is the first 60
+    // characters after trim (input is already trimmed of outer whitespace).
+    val input = "A".repeat(70)
+    val viewModel = subscribedViewModel()
+
+    viewModel.renameChat(chatId = 80L, newTitle = input)
+    advanceUntilIdle()
+
+    val call = chatRepo.titleUpdates.single()
+    assertEquals(60, call.title.length)
+    assertTrue(call.isManuallyTitled)
   }
 
   @Test
@@ -248,12 +385,28 @@ class DrawerViewModelTest {
 
   @Test
   fun checkModelAvailableReturnsFalseWhenChatUnknown() = runTest {
-    // Regression pin: unknown chatId returns false, not NPE — UI taps an id that is no
-    // longer in the uiState (e.g. chat just deleted by another trigger).
+    // Regression pin: unknown chatId returns false, not NPE — UI taps an id
+    // that is no longer in the registry (e.g. chat just deleted by another
+    // trigger). Also covers the case where the chat row is gone from the DAO
+    // but a stale `ChatRowUiModel` still lived in the last drawer emission.
     val viewModel = subscribedViewModel()
     advanceUntilIdle()
 
     assertFalse(viewModel.checkModelAvailable(chatId = 9999L))
+  }
+
+  @Test
+  fun checkModelAvailableReturnsFalseWhenModelRemovedFromRegistry() = runTest {
+    // Chat exists but its model has been removed from the allowlist — registry
+    // has no matching entry. Pin returns false (→ UI opens the
+    // model-unavailable dialog rather than attempting navigation).
+    seedChat(id = 400L, lastMessageDate = today, modelId = "removed-model")
+    registry.emit(emptyList())
+
+    val viewModel = subscribedViewModel()
+    advanceUntilIdle()
+
+    assertFalse(viewModel.checkModelAvailable(chatId = 400L))
   }
 
   // ---- helpers ----
@@ -416,4 +569,7 @@ private class FakeMessageDao : MessageDao {
     MutableStateFlow(rows.filter { it.chatId == chatId }).asStateFlow()
   override suspend fun countByChatId(chatId: Long): Int =
     rows.count { it.chatId == chatId }
+  override suspend fun firstByChatIdAndRole(chatId: Long, role: String): MessageEntity? =
+    rows.filter { it.chatId == chatId && it.role == role }
+      .minByOrNull { it.createdAt }
 }

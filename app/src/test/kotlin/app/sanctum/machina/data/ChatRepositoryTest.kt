@@ -650,4 +650,7 @@ private class FakeMessageDao : MessageDao {
     state.map { it[chatId].orEmpty() }
 
   override suspend fun countByChatId(chatId: Long): Int = byChat[chatId]?.size ?: 0
+
+  override suspend fun firstByChatIdAndRole(chatId: Long, role: String): MessageEntity? =
+    byChat[chatId]?.firstOrNull { it.role == role }
 }

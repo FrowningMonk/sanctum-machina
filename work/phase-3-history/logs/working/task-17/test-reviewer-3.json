@@ -1,0 +1,36 @@
+{
+  "status": "passed",
+  "summary": "Round 3 cleanly closes all three round-2 litmus failures. T17-T2 now exercises the real rollback branch via an injected `payloadWriter` seam that creates a partial file on disk and then throws — `writeAttachmentStaging` runs `stagingDir.mkdirs()` before invoking the writer, so `target.writeBytes(byteArrayOf(0x01, 0x02, 0x03))` lands a real 3-byte file, and the final assertion `staging.listFiles()?.isEmpty()` fails if `target.delete()` is stripped from `writeAttachmentPayload`'s catch block. The seam is minimal: `@VisibleForTesting` primary constructor gains a `payloadWriter: (Attachment, File) -> Unit = ::defaultPayloadWriter` parameter, with the Hilt `@Inject` ctor omitting it — production wiring unchanged. T17-T3 is honestly renamed to `savePersistentAttachment_badFilesDir_throwsAndWritesNothing` with explicit KDoc acknowledging Robolectric cannot model symlinks; the test no longer falsely claims to exercise `requireInsideAttachmentsRoot` and instead pins the composite gate + an observable 'nothing-was-written' invariant (strengthened with `readText() == \"tamper\"` to prove the attacker-controlled file is byte-identical afterwards). The draftStagingDir-reset test abandons the vacuous `forEach` pattern and uses a direct `assertNotEquals(firstStaging, secondStaging)` comparison after a second `addImageBitmap + send` cycle; `stop()` verified not to touch `draftStagingDir` (ChatViewModel.kt:215-231 only resets uiState), so the only way `secondStaging` equals `firstStaging` is if production's `draftStagingDir = null` on commit success (line 744) is removed, at which point `ensureDraftStagingDir()` returns the stale handle. The minor prune-log assertion in `draftMode_multipleImages_warnAndPruneExtrasBeforeCommit` now pins both invocation count and retain-set contents (`listOf(setOf(\"img_0.png\"))`), closing the final round-2 minor. All 18 litmus-tracked tests now pass; pyramid balance healthy; closure verification complete. Task 17 tests are ready for the next quality gate.",
+  "findings": [],
+  "metrics": {
+    "filesReviewed": 3,
+    "litmusTest": {
+      "checked": 18,
+      "passed": 18,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 18,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    },
+    "closureVerification": {
+      "T17-T1_removeAttachmentDeletes": "closed (round 2)",
+      "T17-T2_partialWriteRollback": "closed — payloadWriter seam creates real partial file via target.writeBytes, rollback assertion staging.listFiles().isEmpty() fails if target.delete() removed",
+      "T17-T3_savePersistentAttachmentContainment": "closed as honest rename (badFilesDir_throwsAndWritesNothing); KDoc acknowledges Robolectric symlink gap; readText() assertion hardens 'nothing written' invariant",
+      "draftStagingDir_nulledOnCommit": "closed — assertNotEquals(firstStaging, secondStaging) fails if draftStagingDir=null is removed from commitDraft onSuccess",
+      "multipleImages_prune": "closed — pruneRetainLog == listOf(setOf(\"img_0.png\")) pins both call count and retain contents",
+      "concurrent_unique_filenames": "closed (round 2)",
+      "deleteStagedAttachment_contract": "closed (round 2)",
+      "removeBeforeStagingSettles": "closed (round 2)",
+      "persistentMode_audio": "closed (round 2)",
+      "fake_persistentAttachment_sequential": "closed (round 2)",
+      "sendWhileStagingInFlight_commentaryTrimmed": "closed (round 2)"
+    },
+    "productionChangeReview": {
+      "payloadWriter_seam": "minimal and appropriate — top-level defaultPayloadWriter holds the original production body; @Inject ctor omits the parameter so Hilt wiring is untouched; documented with KDoc pointing at test-reviewer-2 T17-T2"
+    }
+  }
+}

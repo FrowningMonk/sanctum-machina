@@ -394,13 +394,17 @@ private fun RenameChatDialog(
 private fun DeleteChatDialog(
     chatId: Long,
     chatTitle: String,
-    messageCountProvider: suspend () -> Int,
+    messageCountProvider: suspend () -> Int?,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    // `null` covers two cases we want to render identically: (1) the count is
+    // still loading, and (2) the count query failed. In both cases we show
+    // the no-count body so the user never sees a misleading "0 сообщ." right
+    // before an irreversible CASCADE DELETE.
     var messageCount by remember(chatId) { mutableStateOf<Int?>(null) }
     LaunchedEffect(chatId) {
-        messageCount = runCatching { messageCountProvider() }.getOrDefault(0)
+        messageCount = messageCountProvider()
     }
     AlertDialog(
         onDismissRequest = onDismiss,
