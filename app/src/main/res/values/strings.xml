@@ -125,4 +125,25 @@
   <string name="home_status_model_cold">Модель не прогрета</string>
   <string name="home_menu_open">Открыть меню</string>
   <string name="home_settings_open">Настройки</string>
+
+  <!-- Drawer (Phase 3 Task 9) -->
+  <string name="drawer_title">История чатов</string>
+  <string name="drawer_new_chat">Новый чат</string>
+  <string name="drawer_empty">Нет сохранённых чатов.</string>
+  <string name="drawer_untitled_chat">Без названия</string>
+  <string name="drawer_section_today">Сегодня</string>
+  <string name="drawer_section_yesterday">Вчера</string>
+  <string name="drawer_section_this_week">На этой неделе</string>
+  <string name="drawer_section_earlier">Раньше</string>
+  <string name="drawer_delete_action">Удалить</string>
+  <string name="drawer_delete_title">Удалить чат?</string>
+  <string name="drawer_delete_body_with_count">Чат «%1$s» содержит %2$d сообщ. Это действие нельзя отменить.</string>
+  <string name="drawer_delete_body_without_count">Удалить чат «%1$s»? Это действие нельзя отменить.</string>
+  <string name="drawer_delete_confirm">Удалить</string>
+  <string name="drawer_rename_title">Переименовать чат</string>
+  <string name="drawer_rename_placeholder">Оставьте пустым для авто-названия</string>
+  <string name="drawer_rename_save">Сохранить</string>
+  <string name="drawer_model_unavailable_title">Модель недоступна</string>
+  <string name="drawer_model_unavailable_body">Файл модели «%1$s» отсутствует на устройстве. Скачайте её заново, чтобы открыть чат.</string>
+  <string name="drawer_model_unavailable_download">Скачать</string>
 </resources>
