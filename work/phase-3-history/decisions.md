@@ -303,6 +303,37 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL (полный `:app` unit-тест, без регрессий)
 - `./gradlew :core-runtime:testDebugUnitTest :core-settings:testDebugUnitTest` → BUILD SUCCESSFUL
 
+## Task 9: Drawer UI
+
+**Status:** Done
+**Commit:** 08f6769 (impl), 8018a28 (review round 1 fixes)
+**Agent:** main agent
+**Summary:** Создан `DrawerViewModel` + `DrawerContent` для Phase-3 drawer'а истории. VM комбинирует `chatRepository.observeChats()` с `registry.models` в `drawerUiState: StateFlow<DrawerUiState>` с секционированием по `LocalDate` в системном часовом поясе («Сегодня» / «Вчера» / «На этой неделе» / «Раньше»). `ChatRowUiModel.isModelAvailable` вычисляется eagerly как `entry.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED` (Decision 7: on-disk predicate, не runtime-движок). `DrawerContent` использует Material 3 `SwipeToDismissBox` (swipe-to-confirm) + `combinedClickable` для long-press rename + tap с model-availability dialog. `DrawerEvent.PopBack` эмитится когда удалён текущий открытый чат; VM не держит ссылку на NavController — `DrawerContent` форвардит событие через `onPopCurrentChat` callback в `SanctumApp`, который делает `navController.popBackStack()`. Для blank-rename VM регенерирует auto-title через `messageDao.firstByChatIdAndRole(chatId, "user")` + `AutoTitleGenerator` без расширения `ChatRepository.updateChatTitle` signature. Тестов: 18 unit-тестов (hand-rolled fakes, `StandardTestDispatcher`, `Dispatchers.setMain`).
+**Deviations:**
+- **Swipe-to-confirm вместо swipe-to-reveal-button.** Task-text предписывал «swipe влево → красная кнопка "Удалить" → dialog», имплементировано как «swipe влево past threshold → dialog напрямую» (красный background + delete-icon видны во время свайпа). Material 3 `SwipeToDismissBox` нативно поддерживает этот паттерн; reveal-button-then-tap потребовал бы кастомного `AnchoredDraggableState`. AC-U3 intent (CASCADE DELETE только после явного подтверждения) сохранён. Code-reviewer-1 одобрил.
+- **`messageCount` удалён из `ChatRowUiModel`, считается on-demand в `DeleteChatDialog`.** Task Details указывал `messageCount: Int` в ChatRowUiModel; выполнять COUNT(*) per-row per-emission дорого, а нужно только в delete dialog. `VM.getMessageCount(chatId): Int?` — nullable, возвращает null при I/O failure, dialog тогда показывает no-count body (без misleading "0 сообщ." перед CASCADE DELETE).
+- **Новый `MessageDao.firstByChatIdAndRole(chatId, role) LIMIT 1`** добавлен вместо `getByChatId(chatId).firstOrNull { role == "user" }` — O(1) vs O(N) для blank-rename path. Все три test fakes (ChatRepositoryTest / ChatViewModelTest / DrawerViewModelTest) получили стабы нового метода.
+- **`checkModelAvailable(chatId)` — `suspend fun`, читает из `chatDao.getById + registry.models.value`.** Изначально читал `drawerUiState.value.sections`, но StateFlow сбрасывается в `Initial` после `WhileSubscribed(5_000L)` без подписчиков → off-screen tap возвращал spurious false. Метод в production имеет только stale-drawer-guard назначение — UI обычный tap-path использует precomputed `ChatRowUiModel.isModelAvailable`. Code-reviewer-2 оптимально предложил либо дропнуть, либо wire в tap-handler; оставлен как test-exposed API (не блокер, 2 optional minors открытыми).
+- **Остаточные optional minors** (не блокеры, не исправлены): `SimpleDateFormat` per-call allocation в `formatRelative`; duplicate `MAX_MANUAL_TITLE_LEN` между VM и Content; `checkModelAvailable` без production call site; `getMessageCount` ловит Room failure через `runCatching.getOrNull()` без `ErrorLog.e("history-read", ...)` — Phase-2.5 диагностика не увидит устойчивый Room-сбой в delete-dialog.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: APPROVED_WITH_SUGGESTIONS, 0 critical / 3 major (swallowed history-read error в DeleteChatDialog, O(N) getByChatId в blank-rename, fragile StateFlow read в checkModelAvailable) + 9 minor → [logs/working/task-9/code-reviewer-1.json](logs/working/task-9/code-reviewer-1.json)
+- test-reviewer: NEEDS_IMPROVEMENT, 0 critical / 2 major (blank-rename litmus не пинил AutoTitleGenerator; date boundary недостаточно покрыт — одна точка на секцию не ловит off-by-one на day 7) + 5 minor → [logs/working/task-9/test-reviewer-1.json](logs/working/task-9/test-reviewer-1.json)
+
+*Round 2 (after fixes):*
+- code-reviewer: APPROVED, 0 findings — все 3 major закрыты, 2 optional minor (checkModelAvailable без production caller, getMessageCount без ErrorLog) → [logs/working/task-9/code-reviewer-2.json](logs/working/task-9/code-reviewer-2.json)
+- test-reviewer: PASSED, 0 critical / 0 major / 1 minor (60-char cap test не покрывает trim-before-take ordering) → [logs/working/task-9/test-reviewer-2.json](logs/working/task-9/test-reviewer-2.json)
+
+**Verification:**
+- `./gradlew :app:testDebugUnitTest --tests "*.DrawerViewModelTest"` → BUILD SUCCESSFUL (18 тестов, 0 failures — 10 TDD-anchor + 8 добавленных по ревью: blank-rename exact-title + fallback, 60-char cap, boundary {0,1,2,6,7,10}-дней, local-midnight 23:59-yesterday, DESC sort within section, empty-list pin, checkModelAvailable model-removed branch)
+- `./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL (полный `:app` unit-test, без регрессий Phase 1/2/2.5/3)
+- `./gradlew :app:kspDebugKotlin` → BUILD SUCCESSFUL (Hilt граф с `DrawerViewModel` резолвится)
+- `./gradlew :app:lintDebug` → BUILD SUCCESSFUL (нет критичных ошибок)
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL (APK собран)
+- User device smoke — **deferred to phase-level QA** (memory: `Verify UI chain before device smoke`). Task 9 замыкает drawer + tap navigation, но chat/{chatId} (Task 10) и ChatScreen reshape для ChatIdentity.Persistent (Task 10) ещё не сделаны — полноценный device smoke из `tasks/9.md → Verification Steps → User` (открыть drawer, swipe-delete, long-press rename, tap unavailable model, tap available model → открыть чат) требует UI-цепочки, которой всё ещё нет. Прогон выполнится когда Wave 5 Phase 3 закроется.
+
 ## Task 17: Attachment staging (Draft→Persistent file atomicity)
 
 **Status:** Done
