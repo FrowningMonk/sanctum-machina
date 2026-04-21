@@ -135,3 +135,33 @@ Review details — in JSON files via links. QA report — in logs/working/.
 **Verification:**
 - `./gradlew :core-runtime:testDebugUnitTest` → BUILD SUCCESSFUL (7/7 новых тестов прошли, без регрессий в `ErrorLogTest`, `SystemInstructionTest`, `AllowlistLoaderTest`, `AudioClipTest`, `MediaUtils*Test`, `MultimodalContentsBuilderTest`)
 - `./gradlew :app:compileDebugKotlin` → BUILD SUCCESSFUL (Hilt-граф резолвится с новым интерфейс-членом)
+
+## Task 4: ChatRepository
+
+**Status:** Done
+**Commit:** 2c1a8b6 (impl), 99ebbd9 (review round 1 fixes)
+**Agent:** main agent
+**Summary:** Создан data-layer Phase 3: интерфейс `ChatRepository` + `DefaultChatRepository` (атомарный `commitDraftChat` через `database.withTransaction { … }` с rename внутри транзакции — если `rename()` возвращает false, бросаем IOException, Room откатывает оба INSERT'а; outer-catch чистит staging) + pure-функция `AutoTitleGenerator` (AC-U2: trim → collapse `\s+` → cut по последнему пробелу ≤20 + "…", fallback `"Чат от DD.MM HH:mm"`). `deleteChat` логирует `ErrorLog.e("history-write", ...)` если `deleteRecursively()` упал. `sweepZombieChats` удаляет чаты с 0 сообщений и отсутствующей директорией с логом по каждому. Тесты — 10 для AutoTitleGenerator + 11 для ChatRepository (Robolectric + hand-rolled FakeDAOs + TemporaryFolder + injectable rename/transactionRunner seam через `@VisibleForTesting` primary ctor).
+**Deviations:**
+- `commitDraftChat` принимает `stagingDir: File?` (вместо `File` из task) и **дополнительно** `filesDir: File` (4-й параметр, не указан в task signature) — после security-review T4-S1 (medium). Containment-check `stagingDir.canonicalPath.startsWith(filesDir/attachments + File.separator)` отбивает попытки stage-вне-attachments-tree до Room INSERT. Без filesDir этот check был бы привязан к `stagingDir.parentFile` — фрагильно (T4-m4).
+- Rename перенесён ВНУТРЬ `database.withTransaction { … }` (вместо двухшаговой схемы из task: "после успеха transaction → rename; при падении → `chatDao.deleteById(chatId)`"). Причина — T4-S2 (low) security: двухшаговая схема имеет kill-window между rename-fail и deleteById. Внутри транзакции — Room откатывает автоматически. Outer try/catch чистит staging.
+- Затронуты файлы вне scope: `SettingsMigrationHelperTest.kt` и `ChatViewModelTest.kt` — добавлен недостающий `override val activeModelName: StateFlow<String?>` в их FakeModelRegistry-стабы (Task-3 добавил член интерфейса, но эти fakes в Task 3 не были обновлены; без фикса `:app:compileDebugUnitTestKotlin` падал).
+- Отложено до Task 5/8 (с пояснением в commit message): T4-m2 (focused `@Query("UPDATE …")` методы в `ChatDao` для `updateChatLastMessage` / `updateChatTitle`), T4-m3 (`suspend fun getAll()` в `ChatDao` вместо `observeAll().first()` в sweep), T4-T3 (assertion на dispatcher-hop), T4-T5 (отдельные unit-тесты на `updateChatTitle` / `updateChatLastMessage`). Все — изменения DAO либо out-of-scope для Task 4.
+- Известная остаточная щель (документирована security-auditor round 2 как T4-S6, low): kill между успешным `rename(2)` и SQLite WAL-commit может оставить orphan-директорию без chat-row. Текущий `sweepZombieChats` ловит row-orphans, не dir-orphans. Лечится отдельным sweep в SanctumApplication (Task 6) — фиксируем как known follow-up.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: APPROVED_WITH_SUGGESTIONS, 5 minor (deleteChat без warn-log, read-modify-write update, observeAll().first() в sweep, stagingDir.parentFile coupling, ctor seam visibility) + 4 nit → [logs/working/task-4/code-reviewer-1.json](logs/working/task-4/code-reviewer-1.json)
+- security-auditor: APPROVED_WITH_SUGGESTIONS, 1 medium (T4-S1 containment), 1 low (T4-S2 rollback kill-window), 3 info → [logs/working/task-4/security-auditor-1.json](logs/working/task-4/security-auditor-1.json)
+- test-reviewer: APPROVED_WITH_SUGGESTIONS, 10 minor/nit (test name overpromise, no in-tx rollback test, dispatcher hop, missing null/outside/update coverage, log-id substring, weak nullText assertion) → [logs/working/task-4/test-reviewer-1.json](logs/working/task-4/test-reviewer-1.json)
+
+*Round 2 (after fixes):*
+- code-reviewer: APPROVED, 4 optional nits (VisibleForTesting=PRIVATE vs INTERNAL, TODO breadcrumb, modelId logging contract, transactionRunner deep-copy helper) → [logs/working/task-4/code-reviewer-2.json](logs/working/task-4/code-reviewer-2.json)
+- security-auditor: APPROVED, 1 low T4-S6 (orphan dir window — тех. долг для Task 6 sweep), 2 info → [logs/working/task-4/security-auditor-2.json](logs/working/task-4/security-auditor-2.json)
+- test-reviewer: PASSED, 3 minor (helper-extension возможность, runner asymmetry, duplicated rollback closures) → [logs/working/task-4/test-reviewer-2.json](logs/working/task-4/test-reviewer-2.json)
+
+**Verification:**
+- `./gradlew :app:testDebugUnitTest --tests "app.sanctum.machina.data.AutoTitleGeneratorTest" --tests "app.sanctum.machina.data.ChatRepositoryTest"` → BUILD SUCCESSFUL (10 + 11 = 21 тестов, 0 failures, 0 errors)
+- `./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL (полный `:app` unit-test без регрессий после фикса FakeModelRegistry-стабов)
+- `./gradlew :app:compileDebugKotlin` → BUILD SUCCESSFUL (Hilt-граф резолвится — `DefaultChatRepository` готов к биндингу из `AppModule` в Task 5)
