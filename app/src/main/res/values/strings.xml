@@ -110,4 +110,16 @@
   <string name="about_diagnostics_title">Диагностика</string>
   <string name="dev_crash_dialog_title">Спровоцировать тест-краш?</string>
   <string name="dev_crash_dialog_confirm">Да</string>
+
+  <!-- Home screen (Phase 3 Task 7) -->
+  <string name="home_title">Sanctum · Home</string>
+  <string name="home_product_name">Sanctum Machina</string>
+  <string name="home_kicker">Локальный ИИ — тихий сосредоточенный труд</string>
+  <string name="home_action_new_quick_chat">Новый быстрый чат</string>
+  <string name="home_action_open_history">Открыть историю</string>
+  <string name="home_no_models_body">Для начала работы скачайте модель.</string>
+  <string name="home_action_open_model_manager">Открыть Model Manager</string>
+  <string name="home_status_model_cold">Модель не прогрета</string>
+  <string name="home_menu_open">Открыть меню</string>
+  <string name="home_settings_open">Настройки</string>
 </resources>
