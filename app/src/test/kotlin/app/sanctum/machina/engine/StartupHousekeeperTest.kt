@@ -126,6 +126,37 @@ class StartupHousekeeperTest {
     }
 
     @Test
+    fun sweepZombieChatsFailureLogsHistoryWriteAndDoesNotThrow() = runBlocking {
+        val throwingRepo = FakeChatRepository().apply {
+            sweepThrowable = IOException("synthetic sweep failure")
+        }
+        val housekeeper = StartupHousekeeper(context, errorLog, throwingRepo)
+
+        // Implicit assertion: run() completes normally despite the underlying throw.
+        housekeeper.run()
+
+        awaitHistoryWriteEntry()
+        val logged = errorLogFile.readText()
+        assertTrue(
+            "expected history-write entry for sweep failure; got: $logged",
+            logged.contains("ERROR [history-write]") && logged.contains("sweepZombieChats failed"),
+        )
+    }
+
+    private fun awaitHistoryWriteEntry() {
+        val deadlineMs = System.currentTimeMillis() + 2_000
+        while (System.currentTimeMillis() < deadlineMs) {
+            if (errorLogFile.exists() &&
+                errorLogFile.length() > 0 &&
+                errorLogFile.readText().contains("ERROR [history-write]")
+            ) {
+                return
+            }
+            Thread.sleep(20)
+        }
+    }
+
+    @Test
     fun missingQuickAndAttachmentsDirsAreSilent() = runBlocking {
         val housekeeper = StartupHousekeeper(context, errorLog, chatRepository)
 
@@ -154,6 +185,7 @@ class StartupHousekeeperTest {
 
     private class FakeChatRepository : ChatRepository {
         val sweepCalls = mutableListOf<File>()
+        var sweepThrowable: Throwable? = null
 
         override suspend fun commitDraftChat(
             modelId: String,
@@ -171,6 +203,7 @@ class StartupHousekeeperTest {
 
         override suspend fun sweepZombieChats(filesDir: File) {
             sweepCalls += filesDir
+            sweepThrowable?.let { throw it }
         }
     }
 }

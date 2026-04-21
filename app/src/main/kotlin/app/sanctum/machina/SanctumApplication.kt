@@ -32,10 +32,14 @@ class SanctumApplication : Application() {
         if (getProcessName() == packageName) {
             installCrashHandler()
 
+            // `warmupDefault()` is non-suspend — it schedules its own coroutine on
+            // WarmupCoordinator's internal scope. Calling it directly avoids a redundant
+            // outer launch whose body would be a synchronous function call.
+            warmupCoordinator.warmupDefault()
+
             val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-            // Separate Jobs so a warmup failure cannot short-circuit DataStore migration or
-            // on-disk housekeeping, and vice versa. SupervisorJob enforces independence.
-            appScope.launch { warmupCoordinator.warmupDefault() }
+            // Separate Jobs so a migration failure cannot short-circuit on-disk housekeeping,
+            // and vice versa. SupervisorJob enforces independence.
             appScope.launch { settingsMigrationHelper.migrateIfNeeded() }
             appScope.launch(Dispatchers.IO) { startupHousekeeper.run() }
         }

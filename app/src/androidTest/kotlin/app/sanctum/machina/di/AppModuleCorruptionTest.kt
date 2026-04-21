@@ -57,6 +57,15 @@ class AppModuleCorruptionTest {
     fun testCorruptDbRenamedAndFreshDbCreated() {
         dbDir.mkdirs()
         dbFile.writeBytes(ByteArray(32) { 0x5A })
+        // Pre-plant the three SQLite sidecars so the test can observe that the corruption
+        // branch deletes them — otherwise a surviving `-journal` / `-wal` / `-shm` would let
+        // the fresh Room build reopen against zombie state.
+        val journalFile = File(dbDir, "${SanctumDatabase.DATABASE_NAME}-journal")
+        val walFile = File(dbDir, "${SanctumDatabase.DATABASE_NAME}-wal")
+        val shmFile = File(dbDir, "${SanctumDatabase.DATABASE_NAME}-shm")
+        journalFile.writeBytes(ByteArray(8) { 0x11 })
+        walFile.writeBytes(ByteArray(8) { 0x22 })
+        shmFile.writeBytes(ByteArray(8) { 0x33 })
         val corruptionState = AppCorruptionState()
 
         val db = AppModule.provideSanctumDatabase(context, corruptionState, errorLog)
@@ -69,6 +78,24 @@ class AppModuleCorruptionTest {
         assertNotNull(
             "expected sanctum.db.corrupt_* in ${dbDir.absolutePath}, got ${dbDir.list()?.toList()}",
             renamedFile,
+        )
+        // Timestamp shape must be Locale.ROOT digits so logs are grep-able across device locales.
+        val nameRegex = Regex("^${Regex.escape(SanctumDatabase.DATABASE_NAME)}\\.corrupt_\\d{8}-\\d{6}$")
+        assertTrue(
+            "renamed file ${renamedFile?.name} must match yyyyMMdd-HHmmss shape",
+            renamedFile != null && nameRegex.matches(renamedFile.name),
+        )
+        assertFalse(
+            "sanctum.db-journal must be deleted so fresh build cannot reopen zombie state",
+            journalFile.exists(),
+        )
+        assertFalse(
+            "sanctum.db-wal must be deleted so fresh build cannot reopen zombie state",
+            walFile.exists(),
+        )
+        assertFalse(
+            "sanctum.db-shm must be deleted so fresh build cannot reopen zombie state",
+            shmFile.exists(),
         )
         assertTrue(
             "corruption flag must flip so HomeScreen can show the banner",

@@ -15,5 +15,9 @@ import javax.inject.Singleton
  */
 @Singleton
 class AppCorruptionState @Inject constructor() {
-    var corruptionOccurred: Boolean = false
+    // `@Volatile` because the write happens on the Hilt injection thread during
+    // `provideSanctumDatabase` (typically main) while `HomeScreen`'s `LaunchedEffect` (Task 10)
+    // reads on the Compose main thread — guarantees happens-before visibility so the one-time
+    // "история повреждена" banner actually fires on ARM without a missed memory barrier.
+    @Volatile var corruptionOccurred: Boolean = false
 }

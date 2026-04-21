@@ -59,27 +59,39 @@ abstract class AppModule {
       errorLog: ErrorLog,
     ): SanctumDatabase {
       val dbFile = context.getDatabasePath(SanctumDatabase.DATABASE_NAME)
-      val firstAttempt = buildSanctumDatabase(context)
+      var firstAttempt: SanctumDatabase? = null
       try {
+        firstAttempt = buildSanctumDatabase(context)
         firstAttempt.openHelper.writableDatabase
         return firstAttempt
       } catch (cause: Exception) {
-        runCatching { firstAttempt.close() }
+        runCatching { firstAttempt?.close() }
 
         val parent = dbFile.parentFile
         val corruptName = "${SanctumDatabase.DATABASE_NAME}.corrupt_${corruptTimestamp()}"
-        if (parent != null && dbFile.exists()) {
-          val target = File(parent, corruptName)
-          dbFile.renameTo(target)
-          // Drop SQLite sidecar files so the fresh build cannot resurrect the corrupt state
-          // via a surviving `-journal` / `-wal` / `-shm` alongside the renamed main file.
-          File(parent, "${SanctumDatabase.DATABASE_NAME}-journal").delete()
-          File(parent, "${SanctumDatabase.DATABASE_NAME}-wal").delete()
-          File(parent, "${SanctumDatabase.DATABASE_NAME}-shm").delete()
+        val renameOutcome: String = when {
+          parent == null || !dbFile.exists() -> "no-op (missing parent or file)"
+          dbFile.renameTo(File(parent, corruptName)) -> {
+            // Drop SQLite sidecar files so the fresh build cannot resurrect the corrupt state
+            // via a surviving `-journal` / `-wal` / `-shm` alongside the renamed main file.
+            File(parent, "${SanctumDatabase.DATABASE_NAME}-journal").delete()
+            File(parent, "${SanctumDatabase.DATABASE_NAME}-wal").delete()
+            File(parent, "${SanctumDatabase.DATABASE_NAME}-shm").delete()
+            "renamed to $corruptName"
+          }
+          else -> {
+            // Rename refused (cross-device, locked file, etc.) — last-resort purge so the
+            // fresh build does not try to open on top of the still-corrupt main file.
+            dbFile.delete()
+            File(parent, "${SanctumDatabase.DATABASE_NAME}-journal").delete()
+            File(parent, "${SanctumDatabase.DATABASE_NAME}-wal").delete()
+            File(parent, "${SanctumDatabase.DATABASE_NAME}-shm").delete()
+            "rename refused — corrupt file deleted"
+          }
         }
         appCorruptionState.corruptionOccurred = true
         runBlocking {
-          errorLog.e(LOG_COMPONENT, "db open failed — renamed to $corruptName", cause)
+          errorLog.e(LOG_COMPONENT, "db open failed — $renameOutcome", cause)
         }
         // Fresh build must not be wrapped: if it throws, `CrashHandler` (already installed
         // by this point) surfaces a deterministic crash instead of an infinite recovery loop.

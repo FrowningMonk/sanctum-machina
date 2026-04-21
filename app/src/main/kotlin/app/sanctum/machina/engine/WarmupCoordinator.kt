@@ -44,7 +44,9 @@ private const val LOG_SETTINGS = "settings-io"
  * [ModelDownloadStatusType.SUCCEEDED] while the setting is still empty.
  */
 @Singleton
-class WarmupCoordinator @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE) internal constructor(
+// `open` so `SanctumApplicationTest` can substitute a recording fake to prove `warmupDefault()`
+// is launched inside the `packageName` guard (AC / tech-spec Cold start sequence step 1).
+open class WarmupCoordinator @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE) internal constructor(
   private val registry: ModelRegistry,
   private val appSettings: AppSettingsRepository,
   private val errorLog: ErrorLog,
@@ -88,7 +90,7 @@ class WarmupCoordinator @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE
    * warmup Job. If a prior warmup is still in flight, it is cancelled and joined first (same
    * logic as [cancelAndRestart]).
    */
-  fun warmupDefault() {
+  open fun warmupDefault() {
     scope.launch {
       val modelId = resolveModelId() ?: return@launch
       launchWarmup(modelId)

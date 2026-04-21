@@ -12,6 +12,7 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 
 private const val LOG_COMPONENT = "attachment-save"
+private const val SWEEP_LOG_COMPONENT = "history-write"
 private const val QUICK_DIR_NAME = "quick"
 private const val ATTACHMENTS_DIR_NAME = "attachments"
 private const val STAGING_PREFIX = ".staging-"
@@ -57,7 +58,10 @@ open class StartupHousekeeper @Inject constructor(
         } catch (ce: CancellationException) {
             throw ce
         } catch (cause: Throwable) {
-            errorLog.e(LOG_COMPONENT, "sweepZombieChats failed", cause)
+            // `history-write` matches the component used by `ChatRepository.sweepZombieChats`'s
+            // per-row delete logging (ChatRepository.kt:77) — keep the one-to-one component ↔
+            // failure-mode mapping that `patterns.md § Error logging conventions` relies on.
+            errorLog.e(SWEEP_LOG_COMPONENT, "sweepZombieChats failed", cause)
         }
     }
 

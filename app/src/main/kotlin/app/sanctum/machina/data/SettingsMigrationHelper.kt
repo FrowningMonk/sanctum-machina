@@ -26,14 +26,17 @@ private const val ERROR_COMPONENT = "settings-io"
  * they could migrate to.
  */
 @Singleton
-class SettingsMigrationHelper @Inject constructor(
+// `open` so `SanctumApplicationTest` can substitute a recording fake to prove
+// `migrateIfNeeded()` is launched inside the `packageName` guard (AC / tech-spec Cold start
+// sequence step 3).
+open class SettingsMigrationHelper @Inject constructor(
   private val appSettings: AppSettingsRepository,
   private val registry: ModelRegistry,
   private val dataStore: DataStore<AppSettings>,
   private val errorLog: ErrorLog,
 ) {
 
-  suspend fun migrateIfNeeded() {
+  open suspend fun migrateIfNeeded() {
     if (appSettings.isSettingsMigrated()) return
 
     // Snapshot the allowlist once. Using `name` as the lookup key matches the

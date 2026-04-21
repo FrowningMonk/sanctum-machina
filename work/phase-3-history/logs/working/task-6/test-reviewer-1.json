@@ -1,0 +1,77 @@
+{
+  "status": "needs_improvement",
+  "summary": "Test suite for Task 6 covers most ACs with real behaviour assertions (rename + fresh DB + flag + log, staging/quick purge failure + log + 'other peers still processed', sweep invocation, crash-process skip). Extracting housekeeping into StartupHousekeeper is a reasonable testability move and produces genuinely observable tests via the real ErrorLog file. However two positive-path behaviours are entirely unverified — warmupCoordinator.warmupDefault() and settingsMigrationHelper.migrateIfNeeded() have no test proving they are launched in the main-process branch — and the SQLite sidecar cleanup in AppModule is an undocumented litmus-test failure. The AppCorruptionStateTest is trivial but harmless. Recommend two new SanctumApplicationTest scenarios and one sidecar assertion in AppModuleCorruptionTest before calling this feature done.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "app/src/test/kotlin/app/sanctum/machina/SanctumApplicationTest.kt",
+      "issue": "No test proves warmupCoordinator.warmupDefault() or settingsMigrationHelper.migrateIfNeeded() are invoked in the main-process branch. The TDD anchor for testHousekeepingSkippedInCrashProcess explicitly required checking that warmup is NOT called in :crash, and by symmetry the main-process path should assert they ARE called. Today, if someone deletes the two `appScope.launch { warmupCoordinator.warmupDefault() }` and `appScope.launch { settingsMigrationHelper.migrateIfNeeded() }` lines, only SanctumApplicationTest.installsCrashHandlerInMainProcess would run — and it checks only the CrashHandler instance, not these launches. ACs 'warmupCoordinator.warmupDefault() is called inside the packageName guard' and 'settingsMigrationHelper.migrateIfNeeded() is called inside the packageName guard' are currently unverified.",
+      "recommendation": "Introduce a RecordingWarmupCoordinator (fake with `warmupCalls: Int`) and RecordingSettingsMigrationHelper (fake with `migrateCalls: Int`). Because SanctumApplication is @HiltAndroidApp and lateinit fields are injected by Hilt, swap them the same way testHousekeepingSkippedInCrashProcess swaps startupHousekeeper (assign to app.warmupCoordinator / app.settingsMigrationHelper after retrieving the application). Add three tests: (a) testHousekeepingRunsInMainProcess — writeBoundProcessName(packageName), onCreate(), assert recording.runCount == 1 AND recordingWarmup.warmupCalls == 1 AND recordingMigration.migrateCalls == 1; (b) testWarmupSkippedInCrashProcess — mirror existing crash-process test, assert recordingWarmup.warmupCalls == 0; (c) testMigrationSkippedInCrashProcess — same shape for migration helper. Because the three launches are fire-and-forget on CoroutineScope(SupervisorJob() + Dispatchers.Default), replace Dispatchers.setMain or await via a short deadline loop (same pattern as awaitAttachmentSaveEntry) on the recording counters."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "app/src/androidTest/kotlin/app/sanctum/machina/di/AppModuleCorruptionTest.kt:57-83",
+      "issue": "Production code in AppModule.provideSanctumDatabase deliberately deletes the three SQLite sidecars (`sanctum.db-journal`, `-wal`, `-shm`) in the corruption branch (AppModule.kt:76-78) with an explicit comment 'Drop SQLite sidecar files so the fresh build cannot resurrect the corrupt state'. testCorruptDbRenamedAndFreshDbCreated does not write any sidecars and does not assert they are gone after recovery — so removing all three `.delete()` calls would not fail any test. This is a litmus-test failure for a documented safety mechanism.",
+      "recommendation": "In testCorruptDbRenamedAndFreshDbCreated, before invoking provideSanctumDatabase: after writing garbage to dbFile, also write File(dbDir, \"${SanctumDatabase.DATABASE_NAME}-journal\").writeBytes(ByteArray(8) { 0x11 }) and the same for `-wal` and `-shm`. After the provider returns, assert all three sidecar files do NOT exist in dbDir. Optionally assert the renamed corrupt file (the main .db) still exists so the log trail is preserved while only the sidecars are nuked."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/androidTest/kotlin/app/sanctum/machina/di/AppModuleCorruptionTest.kt:66-72",
+      "issue": "The corrupt-file name is only asserted by prefix (`startsWith(\"sanctum.db.corrupt_\")`). The tech-spec and AC require a deterministic `yyyyMMdd-HHmmss` suffix using Locale.ROOT. A regression that uses Locale.getDefault() in a non-numeric-digit locale, or shortens the format, would go unnoticed.",
+      "recommendation": "After locating renamedFile, assert its name matches Regex(\"^sanctum\\\\.db\\\\.corrupt_\\\\d{8}-\\\\d{6}$\"). Keep it lenient on the time value (it is wall-clock); strict on format shape. Document in a comment that Locale.ROOT is what makes \\d{8}-\\d{6} safe across device locales."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/test/kotlin/app/sanctum/machina/engine/StartupHousekeeperTest.kt:116-126",
+      "issue": "sweepZombieChatsInvokedWithFilesDir covers the happy path but there is no test for the sweep-failure branch. StartupHousekeeper.run() wraps sweepZombieChats in try/catch and logs to ErrorLog('attachment-save', ...) on Throwable — removing that try/catch would make the whole housekeeping chain fail instead of logging.",
+      "recommendation": "Add sweepZombieChatsFailureLogsAttachmentSave: use a FakeChatRepository whose sweepZombieChats throws IOException(\"synthetic sweep failure\"). Invoke housekeeper.run(). Assert errorLogFile contains 'ERROR [attachment-save]' and 'sweepZombieChats failed'. Also assert run() itself returned normally (no exception propagated) — the assert-no-throw is implicit in the test completing, but an explicit comment helps future readers."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/SanctumApplicationTest.kt:115-139",
+      "issue": "NullChatRepository is duplicated from the StartupHousekeeperTest.FakeChatRepository — same 7-method stub in two files. Creating an interface-based test stub in a shared testFixtures source would remove ~25 lines of duplication and avoid drift if ChatRepository adds a method.",
+      "recommendation": "Extract a `FakeChatRepository` (all no-op defaults, override-on-demand in subclass) into app/src/testFixtures/kotlin/app/sanctum/machina/data/FakeChatRepository.kt (or similar shared location) and re-use in both tests. Not blocking — the duplication is localised and easy to fix in a single follow-up."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/SanctumApplicationTest.kt:87-113",
+      "issue": "testHousekeepingSkippedInCrashProcess subclasses StartupHousekeeper (now `open`) purely to count invocations. The class was made open for tests — mild production-surface leak. An interface seam (StartupHousekeepers) injected by Hilt would let both production and tests use a final class. Not a correctness issue; the current double is small and behaviourally equivalent to a mock.",
+      "recommendation": "Accept as-is for this task. If the class grows more test-observable surface later, introduce `interface StartupHousekeepers { suspend fun run() }` with @Binds in AppModule and convert the recording double into a plain class implementation of the interface. Adding a finding to track, not to block merge."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/test/kotlin/app/sanctum/machina/engine/AppCorruptionStateTest.kt",
+      "issue": "Two tests verify a bare var Boolean getter/setter. Per the test-master 'skip for simple getters/setters' rule, these add near-zero regression value — the only behaviour that could break is the initial-false default, and that is also implicitly exercised by AppModuleCorruptionTest.testNormalDbOpenNoCorruptionFlag. Low priority, but keeping these tests pays a small maintenance cost.",
+      "recommendation": "Optional: drop AppCorruptionStateTest entirely since testNormalDbOpenNoCorruptionFlag already asserts `corruptionState.corruptionOccurred` starts false on a fresh instance. If retained (the TDD anchor explicitly lists them), leave a note that they exist for TDD-anchor traceability, not for regression coverage."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/main/kotlin/app/sanctum/machina/SanctumApplication.kt:42",
+      "issue": "AC 'DefaultDownloadRepository.mainActivityFqn assignment is preserved (no regression)' has no test. The line is placed outside the packageName guard intentionally so the download worker process can read it; a refactor could easily move it inside the guard and silently break downloads in the background process.",
+      "recommendation": "Add testMainActivityFqnAssignedEvenInCrashProcess to SanctumApplicationTest: writeBoundProcessName(\"${packageName}:crash\"), call onCreate(), assert DefaultDownloadRepository.mainActivityFqn == \"app.sanctum.machina.MainActivity\". The test is cheap and locks in the guard-boundary contract."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 8,
+    "litmusTest": {
+      "checked": 11,
+      "passed": 9,
+      "failed": 2
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 8,
+      "integration": 2,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}
