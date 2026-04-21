@@ -261,3 +261,44 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL (полный `:app` unit-test, без регрессий)
 - `./gradlew build` → BUILD SUCCESSFUL (full project, включая lint)
 - User: установить APK на устройство и проверить: (1) приложение открывается на HomeScreen (не Model Manager); (2) hamburger открывает drawer слева; (3) с хотя бы одной скачанной моделью виден `FilledTonalButton` "Новый быстрый чат" (таппается → лендит на placeholder `chat/quick`); (4) без скачанных моделей виден placeholder "Для начала работы скачайте модель." + "Открыть Model Manager" (таппается → Model Manager).
+
+## Task 8: ChatViewModel rework
+
+**Status:** Done
+**Commit:** a0f804c (impl), 05c9732 (review round 1), 6c267c9 (review round 2)
+**Agent:** main agent
+**Summary:** `ChatViewModel` переписан вокруг `ChatIdentity` sealed (`Quick` / `Draft` / `Persistent(id: Long)`), которая читается из `SavedStateHandle` в конструкторе. Императивный `init { registry.initialize(modelName) }` заменён на реактивный `combine(registry.models, _chatModelId)` observer, который маппит `ModelInitStatus` → `ChatUiState` и сохраняет `isGenerating` между Ready-эмиссиями. Для Persistent добавлена связка `messageDao.observeByChat(chatId)` × `_streamingMessage` через `combine` — инвариант двойного-пузыря реализован в единственной точке (combine лямбда подавляет streaming-overlay, как только Room-лист оканчивается на ASSISTANT). Draft-send вызывает `chatRepository.commitDraftChat` и эмитит `ChatNavigationEvent.NavigateToPersistent(chatId)` для host-composable (подключение — Task 10). `onCleared` больше не вызывает `registry.cleanup` (D5 / AC-E6). Quick/Draft пинятся на первый non-null `activeModelName` — после этого наблюдают тот же modelId, даже если engine уходит в Initializing/Failed. `SanctumApp.kt` получил `kind` nav-arg с `defaultValue`, чтобы различать Quick и Draft routes без chatId.
+**Deviations:**
+- **M2 (code-reviewer round 1) не закрыт:** `applyHeavySetting` продолжает вызывать `registry.cleanup` + `registry.initialize` напрямую вместо `warmupCoordinator.cancelAndRestart(modelId)`. Причины: (1) `WarmupCoordinator.cancelAndRestart` вызывает `registry.initialize` без явного предварительного `cleanup` и передаёт `modelId` туда, где реестр ждёт `model.name` — контракт модуля требует выравнивания (Task 5 follow-up); (2) существующий тест `applyHeavySetting_sequencing_stopCleanupInitialize` проверяет `stopResponse → cleanup → initialize` на реестре. Риск 50–60 s stall при гонке с warmup остаётся (см. tech-spec Risks). Тракнут в Phase-3 debt.
+- **Draft-attachment persistence отложен.** `chatRepository.writeAttachmentsStaging` не существует; Task 8 передаёт `stagingDir = null` в `commitDraftChat`. Staging добавится отдельной задачей; в UI attachments всё ещё принимаются и видны в `_attachments`, но не коммитятся вместе с первым сообщением.
+- **`chat/{modelName}` tombstone оставлен** из Task 7 (redirect to home) — удалять не стали, потому что deep-link из предыдущих сессий может всё ещё приходить.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: changes_requested (2 major / 4 minor) → [logs/working/task-8/code-reviewer-1.json](logs/working/task-8/code-reviewer-1.json)
+- security-auditor: approved (3 minor) → [logs/working/task-8/security-auditor-1.json](logs/working/task-8/security-auditor-1.json)
+- test-reviewer: changes_requested (3 major / 7 minor) → [logs/working/task-8/test-reviewer-1.json](logs/working/task-8/test-reviewer-1.json)
+
+*Fixes applied after round 1:*
+- M1: `commitDraft` синхронно переводит uiState в `Ready(isGenerating = true)`; на failure возвращает `Ready(false)` — double-tap больше не проскакивает Send gate
+- m2: убран `observePersistedForHandover` — combine в `buildMessagesFlow` остался единственным инвариантом
+- m3/m4: удалены дублирующие `_reinitInProgress = false` внутри try; `first { it != null }!!` заменён на `mapNotNull { it }.first()`
+- s2: `updateChatLastMessage` гейтится на успех `savePersistentMessage` (и для USER, и для ASSISTANT)
+- T1: инвариант double-bubble теста усилен до "ASSISTANT count ≤ 1 в каждом emission" — независимо от streaming-флага
+- T2: добавлены три Persistent-теста AC-R1 / AC-R2 / AC-R3 (USER до runInference через cross-fake event log, ASSISTANT только на done=true, stop() mid-stream не синтезирует ASSISTANT)
+- T3: `engineStateTransition_readyDrivesReady` seed-ит Ready сначала, чтобы пинить `_chatModelId`, затем проходит Ready → Initializing → Ready
+
+*Round 2:*
+- code-reviewer: approved (1 cosmetic kdoc) → [logs/working/task-8/code-reviewer-2.json](logs/working/task-8/code-reviewer-2.json)
+- security-auditor: approved (1 new minor s4) → [logs/working/task-8/security-auditor-2.json](logs/working/task-8/security-auditor-2.json)
+- test-reviewer: passed → [logs/working/task-8/test-reviewer-2.json](logs/working/task-8/test-reviewer-2.json)
+
+*Fixes applied after round 2:*
+- s4: добавлен hard-gate в `runInferencePersistent` — если `savePersistentMessage(USER)` бросает, запускать inference нельзя (иначе на done=true в Room окажется ASSISTANT без предшествующего USER, что инвертирует AC-R3). Гейт восстанавливает Send-gate (Ready(isGenerating=false)) + эмитит `chat_load_failed_title` snackbar. ErrorLog.e вынесен в детачный `launch`, чтобы не блокировать uiState на `Dispatchers.IO`. Добавлен тест `persistentMode_userSaveFailure_abortsInference`.
+- n1: устаревшие kdoc-ссылки на `observePersistedForHandover` заменены описанием combine как единственного механизма.
+
+**Verification:**
+- `./gradlew :app:testDebugUnitTest --tests "app.sanctum.machina.ui.chat.ChatViewModelTest"` → BUILD SUCCESSFUL (35 тестов, 0 failures: 9 TDD-anchor + 4 AC-R1/R2/R3/s4 + 22 унаследованных/адаптированных Phase-2 поведений)
+- `./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL (полный `:app` unit-тест, без регрессий)
+- `./gradlew :core-runtime:testDebugUnitTest :core-settings:testDebugUnitTest` → BUILD SUCCESSFUL

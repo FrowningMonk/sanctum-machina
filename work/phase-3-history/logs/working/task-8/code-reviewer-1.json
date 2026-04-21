@@ -1,0 +1,61 @@
+{
+  "round": 1,
+  "verdict": "changes_requested",
+  "summary": "Task 8 delivers a clean ChatIdentity pivot, correct reactive engine observer mapping, honest Decision 5 onCleared behavior, and a sound double-bubble combine. Two functional issues need attention: Draft mode lacks a Send re-entrancy guard and can double-commit on rapid taps, and the heavy-setting reinit still calls registry.cleanup/initialize directly instead of routing through WarmupCoordinator.cancelAndRestart, reviving the 50-60 s lifecycleMutex risk documented in tech-spec. Other findings are minor.",
+  "findings": [
+    {
+      "id": "M1",
+      "severity": "major",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 550,
+      "title": "Draft send is not re-entrancy-guarded — double-tap can commit two chats",
+      "detail": "`send()` gates on `state.isGenerating`, but `commitDraft` does NOT flip `_uiState` to `Ready(isGenerating = true)` before launching the suspending `chatRepository.commitDraftChat(...)` coroutine. Unlike the Quick and Persistent send paths (which set `isGenerating = true` synchronously at lines 623 and 746 before dispatch), Draft remains at `Ready(isGenerating = false)` for the entire commit window. A second `vm.send()` invocation during that window passes the gate and launches a second `commitDraftChat` → two distinct chat rows, each with a USER message. Nav event eventually fires for whichever completes last (or both, spamming `_navigation`). The pre-Task-8 VM had no draft path, so this is a Task 8 regression relative to the Quick/Persistent invariant.",
+      "recommendation": "Set `_uiState.value = ChatUiState.Ready(isGenerating = true)` at the top of `commitDraft` (after the early-return guards, before `viewModelScope.launch`). On `onSuccess`, leave it to be overwritten by the Persistent VM after navigation; on `onFailure`, reset to `Ready(isGenerating = false)` alongside the snackbar/error log so the user can retry."
+    },
+    {
+      "id": "M2",
+      "severity": "major",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 334,
+      "title": "applyHeavySetting bypasses WarmupCoordinator.cancelAndRestart — tech-spec lifecycleMutex risk mitigation lost",
+      "detail": "`applyHeavySetting` calls `registry.cleanup(rawModel.name)` and `registry.initialize(rawModel.name)` directly on the registry. Both operations serialize on `lifecycleMutex`. If an Application-scope warmup is in flight (e.g., user opened Settings within seconds of cold start), the cleanup call queues behind the warmup and — per tech-spec Risk table (line 306 of tech-spec.md) — can block for 50-60 s. The explicit mitigation listed in that same risks row and in Decision 3 is `WarmupCoordinator.cancelAndRestart()`, which cancels the in-flight warmup Job before reinit. Task 8's \"Files to read\" explicitly lists `WarmupCoordinator.cancelAndRestart(modelId) API` as a dependency surface. The VM does not inject WarmupCoordinator, so the coordinator is wholly bypassed.",
+      "recommendation": "Inject `WarmupCoordinator` into `ChatViewModel` and replace the `registry.cleanup(...) + registry.initialize(...)` pair in `applyHeavySetting` with `warmupCoordinator.cancelAndRestart(rawModel.modelId)`. Map its Result back to `_uiState` (Failed on failure) as today. This also keeps the `last_used_model_id` update path consistent and avoids duplicating the cleanup→initialize choreography that the coordinator owns."
+    },
+    {
+      "id": "m1",
+      "severity": "minor",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 550,
+      "title": "Draft commit silently drops staged attachments without user feedback",
+      "detail": "`commitDraft` passes `stagingDir = null` to `chatRepository.commitDraftChat(...)` and the unused `pending` list is marked `@Suppress(\"UNUSED_PARAMETER\")`. On commit success, `_attachments.value = emptyList()` clears them (line 585). The deferral is acknowledged in the inline comment and decisions.md, but from the user's perspective the attachments vanish without a snackbar or error — they believe the image/audio was sent. Per AC-A6 the atomic handover is exactly what staging dirs solve; until it's wired in a follow-up task, the honest UX is to refuse to send while attachments are present (or warn via snackbar).",
+      "recommendation": "Either (a) add an early guard in `commitDraft` that emits a snackbar `R.string.chat_load_failed_title` (or a dedicated \"вложения в draft ещё не поддержаны\" string) and returns when `pending.isNotEmpty()`, or (b) wire the staging-dir path through `chatRepository.writeAttachmentsStaging` now. Option (a) is a one-liner and preserves the deferral cleanly."
+    },
+    {
+      "id": "m2",
+      "severity": "minor",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 521,
+      "title": "observePersistedForHandover duplicates a Room Flow subscription that buildMessagesFlow already drives",
+      "detail": "`observePersistedForHandover` subscribes to `messageDao.observeByChat(chatId)` as its own collector, in addition to the combine in `buildMessagesFlow` (line 490). Room returns a new Flow instance per call and each collector costs an InvalidationTracker callback slot plus a SQL execution on every change. The side-effect clear is also redundant: `buildMessagesFlow`'s combine already hides `_streamingMessage` when `persisted.lastOrNull()?.role == ROLE_ASSISTANT`, so the display-visibility invariant D4 is satisfied without the second collector. Keeping an out-of-band writer to `_streamingMessage` also enlarges the surface for future regressions (any non-`messages` consumer that reads `_streamingMessage` sees a transiently-cleared value even though the combine never published the mixed state).",
+      "recommendation": "Drop `observePersistedForHandover` entirely and rely on the combine. If a second path to null `_streamingMessage` on `done=true` is desired for defense in depth, do it inside the existing `dispatchInferencePersistent` after `chatRepository.savePersistentMessage(assistantMsg)` succeeds — a single owner per emission cycle."
+    },
+    {
+      "id": "m3",
+      "severity": "minor",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 303,
+      "title": "applyHeavySetting has redundant `_reinitInProgress = false` assignments inside the try block",
+      "detail": "Lines 308 and 327 set `_reinitInProgress.value = false` before `return@launch` in error paths, but the outer `try/finally` at lines 304-354 already guarantees the same assignment in the `finally` block. Duplicate writes don't cause bugs (StateFlow dedupes), but they make it easy to miss one if a future edit re-orders returns.",
+      "recommendation": "Remove the two explicit `_reinitInProgress.value = false` assignments inside the try block; rely on the `finally`."
+    },
+    {
+      "id": "m4",
+      "severity": "minor",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 463,
+      "title": "bootstrapChatModelId Quick/Draft path uses `!!` after `first { it != null }` — safe but harsh",
+      "detail": "`registry.activeModelName.first { it != null }!!` is correct (the predicate already excludes null) but the `!!` implies a possible NPE to readers and violates the project's preference for explicit null handling. This is a readability/defensive-style nit — `.first { it != null }` returns `String?` because `StateFlow<String?>.first` is `String?`, and the compiler forces the bang.",
+      "recommendation": "Extract the pinned value into a helper: `val pinned = explicitModelId ?: registry.activeModelName.value ?: registry.activeModelName.mapNotNull { it }.first()`. The `mapNotNull` → `first()` combination returns a non-null `String` without a bang."
+    }
+  ]
+}

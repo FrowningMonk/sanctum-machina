@@ -1,0 +1,56 @@
+{
+  "round": 2,
+  "status": "passed",
+  "summary": "All three round-1 majors (T1 double-bubble litmus, T2 AC-R1/R2/R3 coverage, T3 engineStateTransition_readyDrivesReady) are genuinely closed in commit 05c9732. T1's new invariant — ASSISTANT count per emission must be <=1 — is now flag-independent and fails under the litmus mutation (remove the `if (persistedEndsWithAssistant) null else streaming` guard). T2 adds three targeted tests using a cross-fake event log for ordering, counting insertedMessages for intermediate writes, and asserting no ASSISTANT row after stop(). T3 restructured the test to seed Ready first (so bootstrapChatModelId pins _chatModelId), then drives Ready→Initializing→Ready and asserts at each step — the assertion now lands on the real Initializing→Loading mapping branch of updateUiStateFromEntry rather than on the null-modelId fallthrough. Round-1 minors T4-T10 were explicitly out of scope and remain untouched in this commit (still open but not blocking round-2).",
+  "findings": [
+    {
+      "id": "T1",
+      "round1_id": "T1",
+      "status": "resolved",
+      "severity": "none",
+      "category": "resolved",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:290-310",
+      "issue": "Round-1 T1: doubleBubble invariant relied on streaming=true flag, which production flips to false on done=true before Room re-emits, so the assertion passed regardless of the combine suppression.",
+      "resolution": "New invariant counts ASSISTANT bubbles per emission: `emissions.withIndex().forEach { (i, snap) -> assertTrue(snap.count{it.role==ASSISTANT} <= 1) }`. Litmus verified: if ChatViewModel.kt:490 (`val visibleStreaming = if (persistedEndsWithAssistant) null else streaming`) is mutated to `val visibleStreaming = streaming`, then once fakeMessageDao.emit(listOf(userRow, assistantRow)) fires, the combine emits [persistedAssistant, _streamingMessage] (still non-null because observePersistedForHandover was removed in this same commit — the combine suppression is now the SOLE defence). assistantCount == 2, test fails. Additional assertions on the final emission (exactly one ASSISTANT, streaming=false, text=\"partial\") pin the handover result. Code-reviewer m2 (delete observePersistedForHandover) actually strengthens this test — the in-memory bubble lingers throughout, so the combine's suppression is what is being measured."
+    },
+    {
+      "id": "T2",
+      "round1_id": "T2",
+      "status": "resolved",
+      "severity": "none",
+      "category": "resolved",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:313-401",
+      "issue": "Round-1 T2: AC-R1 (USER persisted before runInference), AC-R2 (ASSISTANT persisted only on done=true), AC-R3 (stop mid-stream does not synthesise ASSISTANT) had no direct tests despite being named in user-spec as process-death risks.",
+      "resolution": "Three tests added, all with strong assertions: (1) persistentMode_userRowWrittenBeforeRunInference_AC_R1 wires FakeChatRepository.eventLog = sharedCalls (shared with FakeLlmHelper which appends \"runInference\" at line 1027 when runInference is called), then asserts sharedCalls.indexOf(\"savePersistentMessage\") < sharedCalls.indexOf(\"runInference\") plus firstSaved.role==\"user\" and text==\"hello\". Litmus: swapping the order of savePersistentMessage and runInference in ChatViewModel.kt:629-705 would flip savePos > inferPos and fail. (2) persistentMode_assistantWrittenOnlyOnDone_AC_R2 streams two partial tokens with done=false, asserts count of assistant rows == 0, then done=true and asserts count == 1 with text==\"hello\" (accumulated). Litmus: persisting on every token would make the middle assertion fail with count=2. (3) persistentMode_stopBeforeDone_doesNotPersistAssistant_AC_R3 sends, streams partial, calls vm.stop(), asserts assistant count == 0 AND user count == 1. Litmus: any code that persisted ASSISTANT on interrupted streams (e.g. synthesising on stop) would produce count > 0 and fail. All three are behavioural, not mock-wiring."
+    },
+    {
+      "id": "T3",
+      "round1_id": "T3",
+      "status": "resolved",
+      "severity": "none",
+      "category": "resolved",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:201-232",
+      "issue": "Round-1 T3: engineStateTransition_readyDrivesReady asserted Loading as initial state, but Loading was reached via the null-modelId fallthrough (because FakeModelRegistry.publishEntry set activeModelName=null on Initializing, so bootstrapChatModelId's mapNotNull.first() hung). The asserted Initializing→Loading path was never exercised.",
+      "resolution": "Test now seeds Ready first (line 208), so bootstrapChatModelId pins _chatModelId.value=\"id-m\" before any transition. The second publishEntry(Initializing) sets _activeModelName=null, but _chatModelId is already non-null, so the observeEngineState combine at ChatViewModel.kt:501 feeds the Initializing entry to updateUiStateFromEntry, which maps to Loading. The assertion at line 219 now genuinely tests the Initializing→Loading mapping branch. Third publishEntry(Ready) drives Ready→Ready via the same real path. Litmus: mutating updateUiStateFromEntry to map Initializing→Ready would fail the middle assertion. Note: the FakeModelRegistry.publishEntry contract itself (line 961) still flips activeModelName to null on non-Ready statuses — the round-1 recommendation to fix that was NOT taken, but the test restructure achieves the same goal (real branch is exercised). Consider decoupling activeModelName from init-status in a future cleanup; for round-2 the test behaviour is correct. The symmetric engineStateTransition_initializingDrivesLoading at line 185 also seeds Ready first, so it is fine."
+    }
+  ],
+  "out_of_scope_minors": {
+    "note": "Round-1 T4-T10 (commit-failure path, SavedStateHandle rotation, race-forcing on UnconfinedTestDispatcher, ViewModelReflection brittleness, Draft messageDao isolation, onCleared IO-dispatch regression check, isGenerating preservation on Ready re-emit) are explicitly out of round-2 scope per orchestrator instruction. None of them was touched by commit 05c9732. They remain open as minors and should be considered for a follow-up test-hardening pass if Task 8 risk budget permits.",
+    "still_open_ids": ["T4", "T5", "T6", "T7", "T8", "T9", "T10"]
+  },
+  "metrics": {
+    "filesReviewed": 2,
+    "litmusTest": {
+      "checked": 3,
+      "passed": 3,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": "all new tests at VM unit level, consistent with existing suite",
+      "integration": "n/a for this round",
+      "e2e": "n/a for this round",
+      "assessment": "healthy"
+    }
+  }
+}

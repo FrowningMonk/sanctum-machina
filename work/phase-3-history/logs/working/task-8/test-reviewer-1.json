@@ -1,0 +1,97 @@
+{
+  "round": 1,
+  "verdict": "changes_requested",
+  "summary": "All 8 TDD anchors are present and most are meaningfully asserted; Phase-2 behaviour (attachments, audio, snackbars, settings dispatch) is adapted to Quick without regressions. However, three issues block approval: (1) the double-bubble invariant is too weak to catch real regressions of the combine defence — `hasInMemoryStreaming` is keyed on `streaming=true`, but on `done=true` production flips `streaming=false` before Room re-emits, so both the `persistedEndsWithAssistant` and the in-memory bubble end up with `streaming=false` and `bothPresent` is never true; (2) AC-R1/R2/R3 (persistent-mode USER saved BEFORE runInference, ASSISTANT saved ONLY on done=true, interrupted stream does NOT persist ASSISTANT) have no direct tests even though they are explicit ACs for this task; (3) `FakeModelRegistry.publishEntry` invents a contract — it sets `activeModelName=null` when status is not Ready, which makes `engineStateTransition_readyDrivesReady` trivially pass its initial Loading assertion (Loading is observed because `_chatModelId` is still null, not because Initializing → Loading mapping works). Plus several minor findings around rotation/process-death coverage and test-only reflection strength.",
+  "findings": [
+    {
+      "id": "T1",
+      "severity": "major",
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "line": 291,
+      "title": "doubleBubble invariant does not catch the combine defence being removed",
+      "detail": "The invariant is `bothPresent = persistedEndsWithAssistant && hasInMemoryStreaming && assistantCount > 1` where `hasInMemoryStreaming` is `m.role == ASSISTANT && m.streaming == true`. In production, the `done=true` branch updates `_streamingMessage` with `copy(streaming = false, footer = ...)` BEFORE Room re-emits with the persisted ASSISTANT row. So by the time the combine produces an emission that contains both the persisted row and the (still-non-null) `_streamingMessage`, the streaming bubble has `streaming=false`. `hasInMemoryStreaming` is therefore false and the assertion passes regardless of whether the combine's defence (`if (persistedEndsWithAssistant) null else streaming`) is present or absent. Litmus: delete line 496 of ChatViewModel.kt (the `persistedEndsWithAssistant ?: null` defence) — the test still passes. That defence is a primary AC of D4; it must be regression-protected.",
+      "recommendation": "Rewrite the invariant to count ASSISTANT bubbles in emitted snapshots once the persisted ASSISTANT row first appears. Minimal replacement: after `fakeMessageDao.emit(listOf(userRow, assistantRow))` and `advanceUntilIdle()`, assert that no emission in `emissions` after the one containing `assistantRow` contains more than one ASSISTANT message — `emissions.none { it.count { m -> m.role == MessageRole.ASSISTANT } > 1 }`. To make it truly race-catching, introduce an ordering test: (a) never clear `_streamingMessage` via the handover collector (use a test-only toggle or `_streamingMessage.value != null` pre-assertion), (b) emit the persisted list first, then assert the very next `messages` emission contains exactly one ASSISTANT. Equivalently: verify that for every emission, `snapshot.count { it.role == ASSISTANT } <= 1` while a single USER↔ASSISTANT pair is in flight. Add a second subcase that removes the side-effect clearing half (`observePersistedForHandover`) by emitting Room with the assistant row before `_streamingMessage` is cleared (force it manually) and assert the combine lambda still suppresses — that is what this task calls `atomic handover`."
+    },
+    {
+      "id": "T2",
+      "severity": "major",
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "line": null,
+      "title": "AC-R1 / AC-R2 / AC-R3 have no direct test coverage",
+      "detail": "Task 8 explicitly lists AC-R1 (USER written to Room synchronously BEFORE helper.runInference is called in Persistent mode), AC-R2 (ASSISTANT written to Room ONLY on done=true), and AC-R3 (interrupted stream: USER persisted, ASSISTANT NOT persisted). `FakeChatRepository` exposes `insertedMessages` and `commitCalls`, but no test ever asserts against `insertedMessages` for a Persistent send. The Persistent send path (ChatViewModel.kt:629-705) is the most sensitive area of the rework — process-death mid-stream is a named risk in user-spec — and none of these invariants is guarded. A regression like swapping the order of `savePersistentMessage(userMsg)` and `dispatchInferencePersistent(...)`, or persisting ASSISTANT on every token, would not fail any test.",
+      "recommendation": "Add three tests against `ChatIdentityArg.Persistent(7L)`: (1) `persistent_send_persistsUserBeforeRunInference` — spy on call order via a shared `sharedCalls` list; make `FakeChatRepository.savePersistentMessage` append \"savePersistentMessage:USER\" and `FakeLlmHelper.runInference` append \"runInference\"; assert `sharedCalls.indexOf(\"savePersistentMessage:USER\") < sharedCalls.indexOf(\"runInference\")`. (2) `persistent_assistantPersistedOnlyOnDone` — call send, stream `partial` with `done=false` twice, assert `fakeChatRepository.insertedMessages.none { it.role == \"assistant\" }`; then call with `done=true`, assert exactly one ASSISTANT row inserted with accumulated text. (3) `persistent_interruptedStream_assistantNotPersisted` — call send, stream `partial` with `done=false`, call `vm.stop()`, then emit `done=true` (production guards this via `interrupted` flag in the bubble); assert no ASSISTANT row is persisted. These directly map to AC-R1/R2/R3 and the entire new persistence path in ChatViewModel.kt:606-726."
+    },
+    {
+      "id": "T3",
+      "severity": "major",
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "line": 844,
+      "title": "FakeModelRegistry.publishEntry invents a non-faithful contract for activeModelName",
+      "detail": "`publishEntry` sets `_activeModelName.value = if (status === ModelInitStatus.Ready) model.modelId else null` (line 859). This does not match `DefaultModelRegistry`'s real contract, where `activeModelName` reflects the last successfully initialized model and does not flip back to null on subsequent Initializing/Failed transitions (Task 3 contract). Practical consequence: in `engineStateTransition_readyDrivesReady` (line 202-217), the first `publishEntry(Initializing)` leaves `activeModelName=null`, so `bootstrapChatModelId` suspends at `registry.activeModelName.first { it != null }` and `_chatModelId` stays null. The asserted `Loading` initial state is therefore reached via the `modelId==null → entry==null → Loading` branch in `updateUiStateFromEntry`, not via `ModelInitStatus.Initializing → Loading`. The test passes even if the `Initializing → Loading` mapping is deleted — litmus failure for the behaviour the test is named for. A symmetric concern affects `engineStateTransition_initializingDrivesLoading` (line 185): after publishing Ready then Initializing, `activeModelName` momentarily drops to null — `_chatModelId` happens to have been already seeded so the assertion still fires correctly, but only by accident of ordering.",
+      "recommendation": "Stop coupling `activeModelName` to the published init status inside `publishEntry`. Expose a separate `setActiveModel(modelId: String?)` on FakeModelRegistry and call it once in `@Before` (or from the `setModel` helper) BEFORE `buildViewModel` so `bootstrapChatModelId` completes synchronously with a stable `_chatModelId`. Then `engineStateTransition_*` tests exercise only the init-status branch of `updateUiStateFromEntry` as intended. Concretely: change line 859 to `_activeModelName.value = modelId ?: _activeModelName.value`, and in the engine-state tests seed activeModelName ahead of the first publishEntry. Re-verify each engineStateTransition_* test by mutating `updateUiStateFromEntry` (e.g. map Initializing → Ready incorrectly) and confirming the test now fails."
+    },
+    {
+      "id": "T4",
+      "severity": "minor",
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "line": 149,
+      "title": "draftMode_afterCommit_navigatesToPersistentRoute does not cover failure path",
+      "detail": "The happy-path navigation emission is verified. But `commitDraft` also has a failure branch (ChatViewModel.kt:588-591) that logs + emits `R.string.chat_load_failed_title` to snackbar and must NOT navigate. Without a test, a regression that emits NavigateToPersistent on failure would ship silently.",
+      "recommendation": "Add `draftMode_commitFailure_emitsSnackbarAndDoesNotNavigate`: make `FakeChatRepository.commitDraftChat` throw `IOException(\"disk full\")` on next call, collect both `navigation` and `snackbar` via backgroundScope, call `vm.send(\"first\")`, assert navEvents is empty AND snackbar contains `R.string.chat_load_failed_title`."
+    },
+    {
+      "id": "T5",
+      "severity": "minor",
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "line": null,
+      "title": "No rotation / SavedStateHandle-round-trip coverage for Persistent mode",
+      "detail": "Task 8 explicitly enumerates rotation as an edge case (Tasks edge-cases §3: 'Rotation во время Draft send'). Current tests always build a VM with a fresh SavedStateHandle. There is no test that (a) a Persistent VM rebuilt with `NAV_ARG_CHAT_ID=7L` against a FakeMessageDao already holding rows surfaces those rows, or (b) a rebuilt Persistent VM does not re-run `commitDraftChat`. Given the rework explicitly changed the nav-arg scheme (NAV_ARG_KIND added with defaultValue), a simple construction test guards the wiring.",
+      "recommendation": "Add `persistent_rebuiltWithExistingChat_surfacesRoomHistory`: seed `fakeChatDao.put(ChatEntity(id=7L, modelId=\"id-m\", ...))` and `fakeMessageDao.emit(listOf(userRow, assistantRow))` BEFORE `buildViewModel(ChatIdentityArg.Persistent(7L))`; advanceUntilIdle; assert `vm.messages.value.size == 2` and that `fakeChatRepository.commitCalls` is empty. Also `draft_rebuiltAfterCommit_doesNotReCommit` is implicitly guaranteed by identity resolution but a single assertion protects the nav-arg contract."
+    },
+    {
+      "id": "T6",
+      "severity": "minor",
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "line": 235,
+      "title": "doubleBubble test does not force the race window",
+      "detail": "The test emits `listener.invoke(\"\", true, null)` and THEN `fakeMessageDao.emit(listOf(userRow, assistantRow))`, with `advanceUntilIdle()` between them. On `UnconfinedTestDispatcher` this is effectively deterministic: by the time Room emits, `_streamingMessage` has already been updated to `streaming=false` AND `observePersistedForHandover` will null it out on the very same emit. So the in-memory bubble is mostly absent from emissions that contain the persisted row. The race the comment in ChatViewModel.kt:494 (`even if the side-effect collector has not yet fired`) is meant to guard is never reproduced.",
+      "recommendation": "Separate the two halves of the handover into independent tests. (a) `combineDefence_whenPersistedAssistantArrivesBeforeHandoverCollector`: directly set `_streamingMessage.value` to a non-null bubble via a test-only hook (or emit done=true then BEFORE advancing pending coroutines for `observePersistedForHandover`, emit the Room list), assert that `messages.value` contains exactly one ASSISTANT. (b) `handoverCollector_clearsStreamingOnPersistedAssistantEmit`: after Room emits a list ending with ASSISTANT, assert `_streamingMessage.value` (expose via internal test accessor or reflect on the private field) is null. This gives two orthogonal assertions, each able to fail independently."
+    },
+    {
+      "id": "t7",
+      "severity": "minor",
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "line": 1020,
+      "title": "ViewModelReflection.onCleared resolves to a superclass method; `method.invoke(vm)` works but stays silent on subclass override failures",
+      "detail": "`ViewModelReflection.onCleared` looks up `androidx.lifecycle.ViewModel::class.java.getDeclaredMethod(\"onCleared\")`. This invokes the superclass method via normal virtual dispatch (reflective invoke IS virtual), so the override in `ChatViewModel` does run. But if someone later marks `onCleared` as `internal` with a synthetic-suffix in Kotlin, or renames it, the reflection still resolves the superclass method and silently succeeds. The current test would not notice. This is a brittleness concern rather than a correctness bug today.",
+      "recommendation": "Prefer `ChatViewModel::class.java.getDeclaredMethod(\"onCleared\")` with a fallback to the superclass — binds the assertion to the subclass override. Or, expose a `@VisibleForTesting fun triggerOnCleared() = onCleared()` on ChatViewModel. The second option removes reflection entirely and documents the intent."
+    },
+    {
+      "id": "t8",
+      "severity": "minor",
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "line": 105,
+      "title": "quickMode_neverCallsMessageDao does not cover Draft",
+      "detail": "AC on line 90 of 8.md says: 'Для Quick и Draft режимов: MessageDao не вызывается ни разу'. The test covers Quick but not Draft. In Draft, the VM commits through `chatRepository.commitDraftChat` which in production calls `messageDao.insert` via Room transaction — from the VM's unit-test perspective the VM itself must not invoke messageDao directly in Draft mode. A single-line assertion would nail this.",
+      "recommendation": "Extend the test (or add `draftMode_beforeCommit_neverCallsMessageDao`): build VM in Draft, advanceUntilIdle, send one message, advanceUntilIdle, assert `fakeMessageDao.observeCalls == 0` and `fakeMessageDao.inserted.isEmpty()`. The VM should be delegating all Room work to `chatRepository` — this test documents that boundary."
+    },
+    {
+      "id": "t9",
+      "severity": "minor",
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "line": 168,
+      "title": "onCleared_doesNotCallRegistryCleanup asserts only cleanup count, not the absence of a background teardown coroutine",
+      "detail": "The old implementation wrapped `registry.cleanup(modelName)` inside `CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { ... }`. Since `Dispatchers.IO` is NOT replaced by `Dispatchers.setMain` in the test setup, an accidental re-introduction of that exact block would spawn a real IO coroutine that races past the assertion; `cleanupCalls` might still be 0 at the moment of `assertEquals` even though the bug is back. The check is a snapshot.",
+      "recommendation": "Either (a) add an `advanceTimeBy(5_000)` before the final assertion (harmless for the UnconfinedTestDispatcher), or (b) also assert the `sharedCalls` list: `assertFalse(sharedCalls.contains(\"cleanup\"))` over the full VM lifetime. Better: hold the assertion over 100 ms of yielded time by calling `advanceUntilIdle()` multiple times and asserting after each. This protects against async reintroduction."
+    },
+    {
+      "id": "t10",
+      "severity": "minor",
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "line": 201,
+      "title": "engineStateTransition_readyDrivesReady does not exercise isGenerating preservation",
+      "detail": "Production (ChatViewModel.kt:534-536) preserves `isGenerating` across Ready re-emissions: `Ready(isGenerating = (prev as? Ready)?.isGenerating == true)`. This is a named behaviour — a model re-Ready during streaming must not reset the generating flag. No test covers it. A regression that forces `isGenerating=false` on every Ready emit would not fail.",
+      "recommendation": "Add `ready_reemissionPreservesIsGenerating`: set Ready, send with a runInference that does not yet complete (listener installed but not invoked), assert `uiState == Ready(isGenerating=true)`, publish Ready again (same entry), assert `uiState == Ready(isGenerating=true)` still. Without this, D-level dedup logic (ChatViewModel.kt:542) is unguarded."
+    }
+  ]
+}
