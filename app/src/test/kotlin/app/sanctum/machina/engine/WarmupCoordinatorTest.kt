@@ -22,8 +22,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -41,10 +41,11 @@ import org.robolectric.annotation.Config
 /**
  * TDD harness for [WarmupCoordinator] (Phase-3 Task 5).
  *
- * Timing is driven by `runTest` + an [UnconfinedTestDispatcher]-backed coordinator scope so
- * child coroutines unwind inline — no `advanceUntilIdle` bookkeeping needed between a
- * production call and the assertion. `ErrorLog` is real and writes under Robolectric's
- * `filesDir/logs/`;
+ * Timing is driven by `runTest` + a [StandardTestDispatcher]-backed coordinator scope (the
+ * task's Implementation Hint): the scheduler is advanced explicitly via `advanceUntilIdle`,
+ * so ordering bugs that only surface under real-dispatcher scheduling (e.g. intermediate
+ * StateFlow emissions during cancel-and-restart) are observable. `ErrorLog` is real and
+ * writes under Robolectric's `filesDir/logs/`;
  * the file is consulted as the observable capture surface for "engine-warmup" entries
  * (no mocking library per `patterns.md`).
  */
@@ -77,10 +78,7 @@ class WarmupCoordinatorTest {
   }
 
   private fun TestScope.newCoordinator(): WarmupCoordinator {
-    // UnconfinedTestDispatcher runs child coroutines inline so `scope.launch { ... }` from
-    // inside the coordinator unwinds before returning — no `advanceUntilIdle` bookkeeping
-    // needed between production call and assertion.
-    coordinatorScope = CoroutineScope(UnconfinedTestDispatcher(testScheduler) + SupervisorJob())
+    coordinatorScope = CoroutineScope(StandardTestDispatcher(testScheduler) + SupervisorJob())
     return WarmupCoordinator(registry, appSettings, errorLog, coordinatorScope)
   }
 
@@ -121,6 +119,10 @@ class WarmupCoordinatorTest {
 
     assertTrue(registry.initializeCalls.isEmpty())
     assertEquals("", appSettings.lastUsedModelId)
+    assertFalse(
+      "no-op warmup must leave isWarmupInProgress at false",
+      coordinator.isWarmupInProgress.value,
+    )
   }
 
   // ---- warmupDefault: last_used_model_id update on success (AC-F6) ----
@@ -162,8 +164,16 @@ class WarmupCoordinatorTest {
   }
 
   private fun awaitLogFile() {
+    // Poll on `length > 0` and the expected component string — not just existence — so a slow
+    // CI runner cannot read a half-flushed file and produce a misleading assertion failure.
     val deadlineMs = System.currentTimeMillis() + 2_000
-    while (!errorLogFile.exists() && System.currentTimeMillis() < deadlineMs) {
+    while (System.currentTimeMillis() < deadlineMs) {
+      if (errorLogFile.exists() &&
+        errorLogFile.length() > 0 &&
+        errorLogFile.readText().contains("ERROR [engine-warmup]")
+      ) {
+        return
+      }
       Thread.sleep(20)
     }
   }
@@ -239,7 +249,10 @@ class WarmupCoordinatorTest {
       appSettings.setDefaultModelIdCalls,
     )
 
-    // One-shot: a second SUCCEEDED emission must NOT call setDefaultModelId again.
+    // One-shot: a second SUCCEEDED emission must NOT call setDefaultModelId again. Verify
+    // both that (a) no additional write happens AND (b) the collector itself terminated via
+    // `ownJob.cancel()` — otherwise a future refactor could drop the self-cancel and rely on
+    // the `isEmpty()` guard alone without this test noticing.
     val other = fakeModel(name = "other-local", modelId = "org/other-model")
     registry._models.value = registry._models.value + ModelEntry(
       model = other,
@@ -249,6 +262,92 @@ class WarmupCoordinatorTest {
     advanceUntilIdle()
 
     assertEquals(1, appSettings.setDefaultModelIdCalls.size)
+    assertEquals(
+      "observer must have cancelled its collector after the one-shot write",
+      0,
+      registry._models.subscriptionCount.value,
+    )
+  }
+
+  @Test
+  fun ac_f3Observer_doesNotSetDefault_onEmptyModelList() = runTest {
+    // Edge case from tasks/5.md: empty list on startup MUST NOT trigger setDefaultModelId.
+    appSettings.defaultModelId = ""
+    newCoordinator()
+    advanceUntilIdle()
+
+    assertTrue(appSettings.setDefaultModelIdCalls.isEmpty())
+  }
+
+  @Test
+  fun ac_f3Observer_picksFirstEntry_whenMultipleDownloadedInSameEmission() = runTest {
+    // Edge case: "if multiple models have SUCCEEDED in the same emission, pick the first one
+    // (iteration order of the list). Do not call setDefaultModelId more than once."
+    appSettings.defaultModelId = ""
+    val first = fakeModel(name = "first-local", modelId = "org/first")
+    val second = fakeModel(name = "second-local", modelId = "org/second")
+    registry._models.value = listOf(
+      ModelEntry(
+        first,
+        ModelDownloadStatus(ModelDownloadStatusType.SUCCEEDED),
+        ModelInitStatus.Idle,
+      ),
+      ModelEntry(
+        second,
+        ModelDownloadStatus(ModelDownloadStatusType.SUCCEEDED),
+        ModelInitStatus.Idle,
+      ),
+    )
+
+    newCoordinator()
+    advanceUntilIdle()
+
+    assertEquals(listOf("org/first"), appSettings.setDefaultModelIdCalls)
+  }
+
+  @Test
+  fun warmupDefault_calledTwice_cancelsFirstBeforeSecondStarts() = runTest {
+    // Edge case from tasks/5.md: "warmupDefault() called multiple times before first warmup
+    // completes: each call should cancel the previous Job and start a new one." The default
+    // is resolved each call — we change it between invocations to distinguish the two Jobs.
+    appSettings.defaultModelId = "model-a"
+    val firstStarted = CompletableDeferred<Unit>()
+    val firstCancelled = CompletableDeferred<Unit>()
+    val secondStarted = CompletableDeferred<Unit>()
+
+    registry.initializeHandler = { modelName ->
+      when (modelName) {
+        "model-a" -> {
+          firstStarted.complete(Unit)
+          try {
+            awaitCancellation()
+          } finally {
+            firstCancelled.complete(Unit)
+          }
+        }
+        "model-b" -> {
+          if (!firstCancelled.isCompleted) {
+            fail("second warmupDefault started before first was cancelled")
+          }
+          secondStarted.complete(Unit)
+          Result.success(Unit)
+        }
+        else -> Result.success(Unit)
+      }
+    }
+
+    val coordinator = newCoordinator()
+    coordinator.warmupDefault()
+    advanceUntilIdle()
+    assertTrue(firstStarted.isCompleted)
+
+    appSettings.defaultModelId = "model-b"
+    coordinator.warmupDefault()
+    advanceUntilIdle()
+
+    assertTrue(firstCancelled.isCompleted)
+    assertTrue(secondStarted.isCompleted)
+    assertEquals(listOf("model-a", "model-b"), registry.initializeCalls)
   }
 
   // ---- isWarmupInProgress StateFlow ----
@@ -268,32 +367,84 @@ class WarmupCoordinatorTest {
   @Test
   fun isWarmupInProgress_emitsFalse_afterCompletion() = runTest {
     appSettings.defaultModelId = "model-a"
-    registry.initializeHandler = { Result.success(Unit) }
+    // Gate inside the handler so the test can OBSERVE the true emission before completion —
+    // otherwise `assertFalse(value)` would hold even for an implementation that never flipped
+    // the flag to true (the initial StateFlow value is false).
+    val release = CompletableDeferred<Unit>()
+    registry.initializeHandler = { release.await(); Result.success(Unit) }
 
     val coordinator = newCoordinator()
     coordinator.warmupDefault()
+    advanceUntilIdle()
+    assertTrue(
+      "flag must be true while warmup is in flight",
+      coordinator.isWarmupInProgress.value,
+    )
+
+    release.complete(Unit)
     advanceUntilIdle()
 
     assertFalse(coordinator.isWarmupInProgress.value)
   }
 
   @Test
-  fun isWarmupInProgress_emitsFalse_afterCancellation() = runTest {
+  fun isWarmupInProgress_staysTrue_acrossCancelAndRestart_andClearsOnCompletion() = runTest {
+    // Guarantees two things the coordinator contract promises: (1) no transient `false` gap
+    // during cancel-and-restart handover (Task-10 spinner must not flicker); (2) cancellation
+    // of the first Job alone does not reset the flag — the new Job's completion does. Both
+    // would regress if the `finally` block unconditionally wrote false.
     appSettings.defaultModelId = "model-a"
+    val secondRelease = CompletableDeferred<Unit>()
     registry.initializeHandler = { modelName ->
-      if (modelName == "model-a") awaitCancellation()
-      else Result.success(Unit)
+      when (modelName) {
+        "model-a" -> awaitCancellation()
+        "model-b" -> {
+          secondRelease.await()
+          Result.success(Unit)
+        }
+        else -> Result.success(Unit)
+      }
     }
+
+    val coordinator = newCoordinator()
+    coordinator.warmupDefault()
+    advanceUntilIdle()
+    assertTrue(
+      "flag must be true while first warmup is in flight",
+      coordinator.isWarmupInProgress.value,
+    )
+
+    coordinator.cancelAndRestart("model-b")
+    advanceUntilIdle()
+    assertTrue(
+      "flag must REMAIN true across cancel-and-restart — no `false` gap observable",
+      coordinator.isWarmupInProgress.value,
+    )
+
+    secondRelease.complete(Unit)
+    advanceUntilIdle()
+    assertFalse(
+      "flag must clear after the new warmup completes",
+      coordinator.isWarmupInProgress.value,
+    )
+  }
+
+  @Test
+  fun isWarmupInProgress_emitsFalse_afterBareCancellation() = runTest {
+    // Complements the "stays true across cancel-and-restart" case: when the coordinator scope
+    // is cancelled outright (no restart), the flag must settle on `false` via the finally
+    // block so no stuck spinner survives.
+    appSettings.defaultModelId = "model-a"
+    registry.initializeHandler = { awaitCancellation() }
 
     val coordinator = newCoordinator()
     coordinator.warmupDefault()
     advanceUntilIdle()
     assertTrue(coordinator.isWarmupInProgress.value)
 
-    coordinator.cancelAndRestart("model-b")
+    coordinatorScope.cancel()
     advanceUntilIdle()
 
-    // After the successful model-b warmup completes, the flag is false.
     assertFalse(coordinator.isWarmupInProgress.value)
   }
 
@@ -315,31 +466,23 @@ private class FakeModelRegistry : ModelRegistry {
   val initializeCalls: MutableList<String> = mutableListOf()
   var initializeHandler: suspend (String) -> Result<Unit> = { Result.success(Unit) }
 
+  // Non-destructive defaults for methods the coordinator does not exercise: returning
+  // success/no-op keeps the fake forward-compatible if a future refactor widens
+  // WarmupCoordinator's surface. `download` is the one Flow-returning method; using the
+  // empty flow is safer than throwing.
   override suspend fun refreshAllowlist(): Result<Unit> = Result.success(Unit)
   override fun download(model: Model): Flow<ModelDownloadStatus> =
-    throw NotImplementedError("unused in WarmupCoordinator tests")
-
-  override fun cancelDownload(modelName: String) {
-    throw NotImplementedError("unused in WarmupCoordinator tests")
-  }
-
-  override suspend fun delete(modelName: String) {
-    throw NotImplementedError("unused in WarmupCoordinator tests")
-  }
+    MutableStateFlow(ModelDownloadStatus(status = ModelDownloadStatusType.NOT_DOWNLOADED)).asStateFlow()
+  override fun cancelDownload(modelName: String) = Unit
+  override suspend fun delete(modelName: String) = Unit
 
   override suspend fun initialize(modelName: String): Result<Unit> {
     initializeCalls += modelName
     return initializeHandler(modelName)
   }
 
-  override suspend fun cleanup(modelName: String) {
-    throw NotImplementedError("unused in WarmupCoordinator tests")
-  }
-
-  override suspend fun resetConversation(modelName: String, systemPrompt: String?) {
-    throw NotImplementedError("unused in WarmupCoordinator tests")
-  }
-
+  override suspend fun cleanup(modelName: String) = Unit
+  override suspend fun resetConversation(modelName: String, systemPrompt: String?) = Unit
   override fun getModel(modelName: String): Model? = null
 }
 
@@ -351,15 +494,9 @@ private class FakeAppSettingsRepository : AppSettingsRepository {
   val setDefaultModelIdCalls: MutableList<String> = mutableListOf()
 
   override fun observePerModelSettings(modelId: String): Flow<PerModelSettings?> =
-    throw NotImplementedError("unused in WarmupCoordinator tests")
-
-  override suspend fun savePerModelSettings(modelId: String, settings: PerModelSettings) {
-    throw NotImplementedError("unused in WarmupCoordinator tests")
-  }
-
-  override suspend fun resetPerModelSettings(modelId: String) {
-    throw NotImplementedError("unused in WarmupCoordinator tests")
-  }
+    MutableStateFlow<PerModelSettings?>(null).asStateFlow()
+  override suspend fun savePerModelSettings(modelId: String, settings: PerModelSettings) = Unit
+  override suspend fun resetPerModelSettings(modelId: String) = Unit
 
   override suspend fun getDefaultModelId(): String = defaultModelId
 
@@ -369,7 +506,7 @@ private class FakeAppSettingsRepository : AppSettingsRepository {
   }
 
   override fun observeDefaultModelId(): Flow<String> =
-    throw NotImplementedError("unused in WarmupCoordinator tests")
+    MutableStateFlow(defaultModelId).asStateFlow()
 
   override suspend fun getLastUsedModelId(): String = lastUsedModelId
 
@@ -378,7 +515,7 @@ private class FakeAppSettingsRepository : AppSettingsRepository {
   }
 
   override fun observeLastUsedModelId(): Flow<String> =
-    throw NotImplementedError("unused in WarmupCoordinator tests")
+    MutableStateFlow(lastUsedModelId).asStateFlow()
 
   override suspend fun isSettingsMigrated(): Boolean = migrated
 

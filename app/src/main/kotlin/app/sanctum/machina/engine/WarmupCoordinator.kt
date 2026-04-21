@@ -7,6 +7,7 @@ import app.sanctum.machina.core.registry.ModelRegistry
 import app.sanctum.machina.core.settings.AppSettingsRepository
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -19,7 +20,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-private const val LOG_COMPONENT = "engine-warmup"
+private const val LOG_WARMUP = "engine-warmup"
+private const val LOG_SETTINGS = "settings-io"
 
 /**
  * App-level owner of the background inference-engine warmup lifecycle (Phase-3 Decision 3).
@@ -111,22 +113,45 @@ class WarmupCoordinator @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE
 
   private suspend fun launchWarmup(modelId: String) {
     restartMutex.withLock {
-      warmupJob?.cancelAndJoin()
-      // Flip the flag BEFORE the new Job is launched so observers never see a `false` gap
-      // between cancellation of the old Job and start of the new one.
+      // Disown the previous Job BEFORE cancelling, so its `finally` skips the flag-reset
+      // (see check below). Together with writing `true` here, this guarantees the StateFlow
+      // stays at `true` across the cancel-and-restart handover — no transient `false` gap for
+      // Task-10's TopAppBar spinner to flicker on.
+      val previous = warmupJob
+      warmupJob = null
       _isWarmupInProgress.value = true
+      previous?.cancelAndJoin()
+
       warmupJob = scope.launch {
         try {
           val result = registry.initialize(modelId)
           result
-            .onSuccess { appSettings.setLastUsedModelId(modelId) }
+            .onSuccess { persistLastUsedModelId(modelId) }
             .onFailure { cause ->
-              errorLog.e(LOG_COMPONENT, "initialize failed for $modelId", cause)
+              errorLog.e(LOG_WARMUP, "initialize failed for $modelId", cause)
             }
         } finally {
-          _isWarmupInProgress.value = false
+          // Only clear the flag if we are still the current warmup. A successor
+          // `launchWarmup` will have nulled / re-assigned `warmupJob` and takes ownership of
+          // the next `true → false` transition — avoiding the flicker described above.
+          if (warmupJob === coroutineContext[Job]) {
+            _isWarmupInProgress.value = false
+          }
         }
       }
+    }
+  }
+
+  private suspend fun persistLastUsedModelId(modelId: String) {
+    try {
+      appSettings.setLastUsedModelId(modelId)
+    } catch (ce: CancellationException) {
+      throw ce
+    } catch (cause: Throwable) {
+      // DataStore write failure is logged (project-wide convention: every failure path runs
+      // through ErrorLog). The warmup itself already succeeded — a lost `last_used_model_id`
+      // write only degrades the Phase-3 fallback hint on the next cold start.
+      errorLog.e(LOG_SETTINGS, "last_used_model_id write failed for $modelId", cause)
     }
   }
 
@@ -138,14 +163,22 @@ class WarmupCoordinator @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE
       val ownJob = requireNotNull(coroutineContext[Job]) {
         "observer must run in a cancellable Job context"
       }
-      registry.models.collect { list ->
-        val downloaded = list.firstOrNull {
-          it.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED
-        } ?: return@collect
-        if (appSettings.getDefaultModelId().isEmpty()) {
-          appSettings.setDefaultModelId(downloaded.model.modelId)
-          ownJob.cancel()
+      try {
+        registry.models.collect { list ->
+          val downloaded = list.firstOrNull {
+            it.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED
+          } ?: return@collect
+          if (appSettings.getDefaultModelId().isEmpty()) {
+            appSettings.setDefaultModelId(downloaded.model.modelId)
+            ownJob.cancel()
+          }
         }
+      } catch (ce: CancellationException) {
+        throw ce
+      } catch (cause: Throwable) {
+        // DataStore read/write failure inside the observer: log once and let the coroutine
+        // terminate. Re-attaching is not worth the complexity for a best-effort auto-default.
+        errorLog.e(LOG_SETTINGS, "AC-F3 auto-default observer failed", cause)
       }
     }
   }
