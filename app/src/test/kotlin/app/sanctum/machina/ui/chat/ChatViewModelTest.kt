@@ -371,6 +371,30 @@ class ChatViewModelTest {
     }
 
     @Test
+    fun persistentMode_userSaveFailure_abortsInference() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        fakeChatRepository.savePersistentMessageError = java.io.IOException("sqlite full")
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        vm.send("hi")
+        advanceUntilIdle()
+
+        assertEquals(
+            "AC-R1 hard-gate: USER persist failure must NOT trigger runInference",
+            0,
+            fakeHelper.runInferenceCalls,
+        )
+        assertTrue(
+            "Send gate must re-open (Ready(isGenerating=false)) on USER persist failure",
+            vm.uiState.value is ChatUiState.Ready &&
+                !(vm.uiState.value as ChatUiState.Ready).isGenerating,
+        )
+    }
+
+    @Test
     fun persistentMode_stopBeforeDone_doesNotPersistAssistant_AC_R3() = runTest(dispatcher) {
         val model = Model(name = "m", modelId = "id-m")
         fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
@@ -1110,8 +1134,16 @@ private class FakeChatRepository : ChatRepository {
         return nextChatId
     }
 
+    /**
+     * If non-null, the next `savePersistentMessage` call throws this — used to
+     * exercise the AC-R1 hard-gate path where USER persistence fails and
+     * inference must NOT run.
+     */
+    var savePersistentMessageError: Throwable? = null
+
     override suspend fun savePersistentMessage(message: MessageEntity) {
         eventLog?.add("savePersistentMessage")
+        savePersistentMessageError?.let { throw it }
         insertedMessages += message
     }
 

@@ -121,9 +121,11 @@ constructor(
      * in-memory [_messages] list.
      *
      * Atomic handover at `done=true`: when the Room flow first emits a list
-     * ending in an `ASSISTANT` row, [_streamingMessage] is both *suppressed*
-     * by the combine lambda (so no emission can carry both representations)
-     * and *cleared* by the side-effect collector in [observePersistedForHandover].
+     * ending in an `ASSISTANT` row the combine lambda in [buildMessagesFlow]
+     * suppresses [_streamingMessage] — no emission carries both
+     * representations, so the UI never flickers a duplicate bubble. The
+     * in-memory value may linger, but it cannot become visible until the
+     * next user turn clears it via [send].
      */
     val messages: StateFlow<List<Message>> = buildMessagesFlow()
 
@@ -482,10 +484,11 @@ constructor(
     private fun buildMessagesFlow(): StateFlow<List<Message>> = when (val id = identity) {
         is ChatIdentity.Persistent ->
             combine(messageDao.observeByChat(id.id), _streamingMessage) { persisted, streaming ->
-                // Defence-in-depth against the double-bubble race (user-spec
-                // Risks): once the Room list contains a trailing ASSISTANT row
-                // the streaming overlay is hidden even if the side-effect
-                // collector in [observePersistedForHandover] has not yet fired.
+                // Sole mechanism for the double-bubble invariant (user-spec
+                // Risks, D4): the moment the Room list ends in an ASSISTANT
+                // row the in-memory streaming bubble is hidden. No second
+                // clear path — the `_streamingMessage` value may linger
+                // internally but cannot become visible until [send] resets it.
                 val persistedEndsWithAssistant = persisted.lastOrNull()?.role == ROLE_ASSISTANT
                 val visibleStreaming = if (persistedEndsWithAssistant) null else streaming
                 persisted.map(::toDomainMessage) + listOfNotNull(visibleStreaming)
@@ -625,12 +628,28 @@ constructor(
             // failed INSERT with an updated timestamp would weaken AC-R3's
             // invariant: the chat would appear "active" in the drawer while
             // carrying no new row (security-auditor-1 s2).
-            val savedOk = runCatching { chatRepository.savePersistentMessage(userMsg) }
-                .onFailure { errorLog.e("history-write", "savePersistentMessage USER failed", it) }
-                .isSuccess
-            if (savedOk) {
-                chatRepository.updateChatLastMessage(identity.id, userTs)
+            val saveResult = runCatching { chatRepository.savePersistentMessage(userMsg) }
+            if (saveResult.isFailure) {
+                // AC-R1 hard-gate (security-auditor-2 s4): if USER cannot be
+                // persisted we must NOT run inference — otherwise the next
+                // done=true would write an ASSISTANT row with no preceding
+                // USER row, inverting the process-kill invariant. Surface
+                // the failure to the user and restore the Send gate. Log
+                // in a detached launch so the UI unblocks immediately —
+                // errorLog.e suspends on Dispatchers.IO.
+                viewModelScope.launch {
+                    errorLog.e(
+                        "history-write",
+                        "savePersistentMessage USER failed",
+                        saveResult.exceptionOrNull(),
+                    )
+                }
+                _streamingMessage.value = null
+                _uiState.value = ChatUiState.Ready(isGenerating = false)
+                _snackbar.tryEmit(R.string.chat_load_failed_title)
+                return@launch
             }
+            chatRepository.updateChatLastMessage(identity.id, userTs)
 
             dispatchInferencePersistent(identity, text, pending, model, accumulateThinking)
         }
