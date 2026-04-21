@@ -1,0 +1,50 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "Task 3 implementation is correct, small, and aligned with Decision 7: the interface gains the right property, DefaultModelRegistry wires a map+stateIn derivation that projects model.modelId (HF id) of the single Ready entry with SharingStarted.Eagerly and null initial, and referential equality (===) is used per project convention. Tests cover the spec's lifecycle (Idle/Initializing/Ready/Failed/back-to-Idle) through the extracted helper. Two minor issues: the new KDoc block orphans an older KDoc on a sibling helper, and the self-labelled 'real-class wiring test' provides no additional coverage over the other five tests.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt",
+      "line": 55,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The new KDoc for deriveActiveModelName (lines 55-62) was inserted between the pre-existing 'D24: translate the SYSTEM_PROMPT_DEFAULT...' KDoc (lines 45-54) and the buildSystemInstruction function it was written to document (now at line 71). Kotlin/Dokka/IntelliJ only attach the KDoc block IMMEDIATELY preceding a declaration; the D24 block is therefore now orphaned and buildSystemInstruction loses its documentation. Either (a) move the entire deriveActiveModelName function plus its KDoc to sit above the D24 KDoc, or (b) move the D24 KDoc down so it is again immediately adjacent to buildSystemInstruction.",
+      "benefit": "Preserves the existing D24 documentation on buildSystemInstruction for Dokka, IntelliJ quick-docs, and future readers; avoids a silent doc regression introduced by the insertion point.",
+      "optional": false
+    },
+    {
+      "file": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/ModelRegistryActiveModelTest.kt",
+      "line": 140,
+      "severity": "minor",
+      "category": "testing",
+      "suggestion": "defaultModelRegistry_activeModelName_derivesFromModelsStateFlow is labelled a 'wiring test' and its KDoc claims to verify wiring 'by reflection', but the body calls deriveActiveModelName(...) directly — exactly what the other five tests do — and uses no reflection. The three new null/Ready/Idle assertions duplicate activeModelName_returnsNullWhenModelGoesIdle, and the final assertEquals(true, hfId != storageName && hfId != displayName) is a self-check on fixture constants, not production code. The test therefore adds no coverage beyond the helper-level tests. Two options: (a) make it a real wiring check via Kotlin reflection, e.g. verify DefaultModelRegistry::class.memberProperties contains an activeModelName: StateFlow<String?> override whose value defaults to null — this catches accidental removal of the override without needing Robolectric; or (b) delete the test and call out in decisions.md that the TDD-anchor wiring test was intentionally omitted because the helper is the sole call site. Leaving it as-is is misleading because the KDoc overstates what the test verifies.",
+      "benefit": "Aligns the test's behaviour with its documented intent. If kept as reflection, it catches a regression where `override val activeModelName` is dropped or retyped. If removed, eliminates dead weight from the suite and keeps the deviation from the TDD anchor explicit.",
+      "optional": false
+    },
+    {
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt",
+      "line": 110,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The 3-line inline comment above `override val activeModelName` largely restates what the interface KDoc on ModelRegistry.activeModelName already says. Since override declarations inherit the interface KDoc in IntelliJ/Dokka, this is duplication. Consider a single-line reference such as `// D7: see ModelRegistry.activeModelName KDoc; derivation extracted to deriveActiveModelName for direct testing.`",
+      "benefit": "Reduces KDoc drift risk: if the interface KDoc is edited later, the override no longer carries a subtly different copy.",
+      "optional": true
+    },
+    {
+      "file": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/ModelRegistryActiveModelTest.kt",
+      "line": 161,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "`assertEquals(message, true, hfId != storageName && hfId != displayName)` is idiomatically `assertTrue(message, hfId != storageName && hfId != displayName)`. JUnit's assertTrue overload (message, condition) reads more naturally and produces a cleaner failure diagnostic ('expected true but was false' vs. a boolean comparison).",
+      "benefit": "Idiomatic JUnit; clearer failure messages.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 3,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 4,
+    "testCoverageAssessment": "adequate"
+  }
+}
