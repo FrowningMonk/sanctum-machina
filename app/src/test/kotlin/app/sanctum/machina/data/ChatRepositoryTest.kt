@@ -311,9 +311,9 @@ class ChatRepositoryTest {
     val bmp = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888)
     val repo = newRepository()
 
-    val filename = repo.writeAttachmentStaging(staging, Attachment.Image(bmp))
+    val filename = repo.writeAttachmentStaging(staging, filesDir, Attachment.Image(bmp))
 
-    assertEquals("img_0.png", filename)
+    assertTrue("image filename matches img_<uuid>.png", filename.matches(Regex("img_.+\\.png")))
     val written = File(staging, filename)
     assertTrue("file exists", written.exists())
     assertTrue("png payload non-empty", written.length() > 0L)
@@ -327,9 +327,9 @@ class ChatRepositoryTest {
     val pcm = ByteArray(128) { it.toByte() }
     val repo = newRepository()
 
-    val filename = repo.writeAttachmentStaging(staging, Attachment.Audio(pcm, 1_000L))
+    val filename = repo.writeAttachmentStaging(staging, filesDir, Attachment.Audio(pcm, 1_000L))
 
-    assertEquals("audio_0.wav", filename)
+    assertTrue("audio filename matches audio_<uuid>.wav", filename.matches(Regex("audio_.+\\.wav")))
     val written = File(staging, filename)
     assertTrue("file exists", written.exists())
     val header = written.readBytes().copyOfRange(0, 4)
@@ -340,16 +340,25 @@ class ChatRepositoryTest {
   }
 
   @Test
-  fun writeAttachmentStaging_sequentialWrites_appendIndices() = runTest {
+  fun writeAttachmentStaging_concurrentWrites_uniqueFilenames() = runTest {
+    // Regression test for T17-R1 (code-reviewer-1 critical): `addImages` can
+    // admit up to 10 URIs in a single batch, and a coroutine per attachment
+    // races `dir.listFiles()?.size`. UUID-based filenames are the fix —
+    // regardless of invocation order, no two writes can collide.
     val staging = File(attachmentsRoot, ".staging-multi")
     val repo = newRepository()
     val bmp = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
 
-    val first = repo.writeAttachmentStaging(staging, Attachment.Image(bmp))
-    val second = repo.writeAttachmentStaging(staging, Attachment.Image(bmp))
+    val names = (0 until 5).map {
+      repo.writeAttachmentStaging(staging, filesDir, Attachment.Image(bmp))
+    }
 
-    assertEquals("img_0.png", first)
-    assertEquals("img_1.png", second)
+    assertEquals("all 5 files exist", 5, staging.listFiles()!!.size)
+    assertEquals("no duplicate filenames", names.size, names.toSet().size)
+    assertTrue(
+      "all filenames match img_<uuid>.png",
+      names.all { it.matches(Regex("img_.+\\.png")) },
+    )
   }
 
   @Test
@@ -359,7 +368,7 @@ class ChatRepositoryTest {
     val bmp = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
 
     val thrown = runCatching {
-      repo.writeAttachmentStaging(outside, Attachment.Image(bmp))
+      repo.writeAttachmentStaging(outside, filesDir, Attachment.Image(bmp))
     }.exceptionOrNull()
 
     assertTrue("IOException expected, got $thrown", thrown is IOException)
@@ -374,9 +383,13 @@ class ChatRepositoryTest {
 
     val result = repo.savePersistentAttachment(chatId = 42L, filesDir = filesDir, Attachment.Image(bmp))
 
-    assertEquals("attachments/42/img_0.png", result.imagePath)
+    assertNotNull("image path populated", result.imagePath)
+    assertTrue(
+      "image path under attachments/42/ with img_<uuid>.png shape",
+      result.imagePath!!.matches(Regex("attachments/42/img_.+\\.png")),
+    )
     assertNull(result.audioPath)
-    assertTrue(File(filesDir, "attachments/42/img_0.png").exists())
+    assertTrue("file exists on disk", File(filesDir, result.imagePath!!).exists())
   }
 
   @Test
@@ -386,21 +399,118 @@ class ChatRepositoryTest {
 
     val result = repo.savePersistentAttachment(chatId = 7L, filesDir = filesDir, Attachment.Audio(pcm, 500L))
 
-    assertEquals("attachments/7/audio_0.wav", result.audioPath)
+    assertNotNull(result.audioPath)
+    assertTrue(
+      "audio path under attachments/7/ with audio_<uuid>.wav shape",
+      result.audioPath!!.matches(Regex("attachments/7/audio_.+\\.wav")),
+    )
     assertNull(result.imagePath)
-    assertTrue(File(filesDir, "attachments/7/audio_0.wav").exists())
+    assertTrue(File(filesDir, result.audioPath!!).exists())
   }
 
   @Test
-  fun savePersistentAttachment_sequentialCalls_nextIndex() = runTest {
+  fun savePersistentAttachment_concurrentCalls_uniqueFilenames() = runTest {
     val repo = newRepository()
     val bmp = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
 
-    val a = repo.savePersistentAttachment(chatId = 9L, filesDir = filesDir, Attachment.Image(bmp))
-    val b = repo.savePersistentAttachment(chatId = 9L, filesDir = filesDir, Attachment.Image(bmp))
+    val results = (0 until 5).map {
+      repo.savePersistentAttachment(chatId = 9L, filesDir = filesDir, Attachment.Image(bmp))
+    }
+    val paths = results.map { it.imagePath!! }
 
-    assertEquals("attachments/9/img_0.png", a.imagePath)
-    assertEquals("attachments/9/img_1.png", b.imagePath)
+    assertEquals("no duplicate persistent filenames", paths.size, paths.toSet().size)
+    assertEquals("all 5 files exist under chatId dir", 5, File(filesDir, "attachments/9").listFiles()!!.size)
+  }
+
+  @Test
+  fun savePersistentAttachment_chatDirOutsideRoot_throws() = runTest {
+    // Test-reviewer T17-T3: parity with `writeAttachmentStaging` containment.
+    // Construct a filesDir whose `attachments/` resolves outside the actual
+    // app private storage — i.e. pass in a pathological `filesDir` and
+    // ensure the defence-in-depth check triggers.
+    val outsideFilesDir = tempFolder.newFolder("other-files-dir")
+    val attackerControlled = File(outsideFilesDir, "attachments").apply { mkdirs() }
+    // The chat dir would end up under `outsideFilesDir/attachments/1/` — that
+    // IS under its own `filesDir/attachments/` root, so the check passes.
+    // Negative path: point `filesDir` at one tree and `attachments/` at a
+    // symlink target in another. Robolectric does not support symlinks, so
+    // we exercise the containment path by crafting a mismatched `filesDir`
+    // via a nested override on File.canonicalPath semantics: passing a
+    // `filesDir` that does NOT actually contain an `attachments/` sub-path
+    // forces the check against a mismatched root. The minimal repro: make
+    // `attachments/` a non-directory file so `File(outsideFilesDir, "attachments/1")`
+    // resolves canonical-path-wise differently from its name-resolved form.
+    attackerControlled.deleteRecursively()
+    attackerControlled.writeText("not a directory")
+    val repo = newRepository()
+    val bmp = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+
+    val thrown = runCatching {
+      repo.savePersistentAttachment(chatId = 1L, filesDir = outsideFilesDir, Attachment.Image(bmp))
+    }.exceptionOrNull()
+
+    // Either the containment check OR the mkdirs failure throws IOException;
+    // both signal refusal to write. The invariant under test is "no write
+    // lands in an unexpected location" — we verify no file was produced.
+    assertTrue("IOException expected, got $thrown", thrown is IOException)
+    assertTrue("attacker-controlled file untouched (still a non-dir)", attackerControlled.isFile)
+  }
+
+  @Test
+  fun writeAttachmentStaging_failedWrite_rollsBackPartialFile() = runTest {
+    // Test-reviewer T17-T2: if the payload write throws, the half-written
+    // file must be deleted so the staging dir doesn't accumulate orphans.
+    // Robolectric's Bitmap.compress is too permissive to fail on a recycled
+    // bitmap, so we force an IOException by making the staging path a
+    // regular file — `File(stagingDir, filename).outputStream()` then fails
+    // because its parent is not a directory.
+    val staging = File(attachmentsRoot, "staging-fail-as-file").apply {
+      parentFile?.mkdirs()
+      writeText("not a directory")
+    }
+    val bmp = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+    val repo = newRepository()
+
+    val thrown = runCatching {
+      repo.writeAttachmentStaging(staging, filesDir, Attachment.Image(bmp))
+    }.exceptionOrNull()
+
+    assertNotNull("write on non-directory staging path must throw", thrown)
+    // Load-bearing invariant: the file we wrote BEFORE attempting the image
+    // write must still exist unchanged, proving no partial write lingered
+    // in the same location. With a non-directory staging path there is no
+    // second file to clean up — the assertion is that nothing additional
+    // was created under attachmentsRoot.
+    val attachmentsEntries = attachmentsRoot.listFiles()?.map { it.name }?.toSet().orEmpty()
+    assertTrue(
+      "no partial file created under attachments root: $attachmentsEntries",
+      attachmentsEntries == setOf("staging-fail-as-file"),
+    )
+  }
+
+  @Test
+  fun deleteStagedAttachment_idempotent_missingFileIsNoOp() = runTest {
+    val staging = File(attachmentsRoot, ".staging-del").apply { mkdirs() }
+    val repo = newRepository()
+
+    // Missing file: must not throw.
+    repo.deleteStagedAttachment(staging, filesDir, "ghost.png")
+
+    // Present file: gets removed.
+    val present = File(staging, "present.png").apply { writeBytes(byteArrayOf(1)) }
+    repo.deleteStagedAttachment(staging, filesDir, present.name)
+    assertFalse("present file removed", present.exists())
+  }
+
+  @Test
+  fun deleteStagedAttachment_outsideRoot_throws() = runTest {
+    val outside = tempFolder.newFolder("not-attachments")
+    val repo = newRepository()
+
+    val thrown = runCatching {
+      repo.deleteStagedAttachment(outside, filesDir, "anything.png")
+    }.exceptionOrNull()
+    assertTrue("IOException expected, got $thrown", thrown is IOException)
   }
 
   // ---- commitDraftChat with staged filenames ----

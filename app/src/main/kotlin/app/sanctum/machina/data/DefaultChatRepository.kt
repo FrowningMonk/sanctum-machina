@@ -13,6 +13,7 @@ import app.sanctum.machina.data.model.MessageEntity
 import app.sanctum.machina.ui.chat.Attachment
 import java.io.File
 import java.io.IOException
+import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -143,24 +144,56 @@ internal constructor(
 
   override suspend fun writeAttachmentStaging(
     stagingDir: File,
+    filesDir: File,
     attachment: Attachment,
   ): String = withContext(ioDispatcher) {
-    // Share the containment guarantee with `commitDraftChat` — any caller with
-    // a reference to this method could otherwise write payload bytes outside
-    // the app's attachments root. `filesDir` is the parent of the
-    // `attachments/` directory that must contain `stagingDir`; we derive it
-    // from `stagingDir.parentFile?.parentFile` after resolving canonical paths.
-    val filesDir = attachmentsRootFor(stagingDir).parentFile
-      ?: throw IOException("cannot derive filesDir from stagingDir: ${stagingDir.absolutePath}")
+    // Accept `filesDir` explicitly (code-reviewer-1 T17-R3 / security T17-S1):
+    // deriving it from `stagingDir.parentFile?.parentFile` gave a tautological
+    // containment check — the check compared stagingDir against a root built
+    // from its own ancestry, so a path outside the real app storage could
+    // never be rejected.
     requireInsideAttachmentsRoot(stagingDir, filesDir)
 
     if (!stagingDir.exists() && !stagingDir.mkdirs()) {
       throw IOException("failed to create staging dir: ${stagingDir.absolutePath}")
     }
-    val filename = nextAttachmentFilename(stagingDir, attachment)
+    val filename = collisionFreeFilename(attachment)
     val target = File(stagingDir, filename)
     writeAttachmentPayload(attachment, target)
     filename
+  }
+
+  override suspend fun deleteStagedAttachment(
+    stagingDir: File,
+    filesDir: File,
+    filename: String,
+  ) = withContext(ioDispatcher) {
+    requireInsideAttachmentsRoot(stagingDir, filesDir)
+    val target = File(stagingDir, filename)
+    if (target.exists() && !target.delete()) {
+      errorLog.e(
+        "attachment-save",
+        "deleteStagedAttachment: delete failed for ${target.absolutePath}",
+      )
+    }
+  }
+
+  override suspend fun pruneStagingDir(
+    stagingDir: File,
+    filesDir: File,
+    retain: Set<String>,
+  ) = withContext(ioDispatcher) {
+    requireInsideAttachmentsRoot(stagingDir, filesDir)
+    stagingDir.listFiles()?.forEach { file ->
+      if (file.name in retain) return@forEach
+      if (!file.delete()) {
+        errorLog.e(
+          "attachment-save",
+          "pruneStagingDir: failed to delete ${file.absolutePath}",
+        )
+      }
+    }
+    Unit
   }
 
   override suspend fun savePersistentAttachment(
@@ -169,10 +202,15 @@ internal constructor(
     attachment: Attachment,
   ): PersistedAttachment = withContext(ioDispatcher) {
     val chatDir = File(filesDir, "$ATTACHMENTS_DIR/$chatId")
+    // Defence in depth (test-reviewer T3 / security T17-S1 parity): the chat
+    // dir is constructed from our own `ATTACHMENTS_DIR` constant, but a
+    // misconfigured `filesDir` (e.g. a symlink an attacker has arranged to
+    // point outside the app's private storage) would otherwise slip past.
+    requireInsideAttachmentsRoot(chatDir, filesDir)
     if (!chatDir.exists() && !chatDir.mkdirs()) {
       throw IOException("failed to create attachments dir: ${chatDir.absolutePath}")
     }
-    val filename = nextAttachmentFilename(chatDir, attachment)
+    val filename = collisionFreeFilename(attachment)
     val target = File(chatDir, filename)
     writeAttachmentPayload(attachment, target)
     val relative = "$ATTACHMENTS_DIR/$chatId/$filename"
@@ -187,8 +225,12 @@ internal constructor(
    * size; cf. user-spec Risk #5), RIFF/WAVE for Audio (via [pcmToWav] so the
    * file is self-contained and playable). Partial files are deleted on write
    * failure — the caller sees a clean `IOException` without an orphan stub.
+   *
+   * A delete-fail in the catch is logged under `attachment-save` (security
+   * T17-S3) — the write path's original exception is preserved as the thrown
+   * cause so the caller's retry/error logic still runs.
    */
-  private fun writeAttachmentPayload(attachment: Attachment, target: File) {
+  private suspend fun writeAttachmentPayload(attachment: Attachment, target: File) {
     try {
       when (attachment) {
         is Attachment.Image -> target.outputStream().use { out ->
@@ -199,35 +241,33 @@ internal constructor(
         is Attachment.Audio -> target.writeBytes(pcmToWav(attachment.pcm, SAMPLE_RATE))
       }
     } catch (t: Throwable) {
-      // Clean up the partial file so the next nextAttachmentFilename() call
-      // does not pick up a half-written payload as "N=0".
-      target.delete()
+      // Clean up the partial file so the next write does not see a half
+      // payload. UUID-based filenames make collisions a non-issue, but a
+      // zero-byte stub on disk would still waste space and confuse log
+      // readers.
+      if (target.exists() && !target.delete()) {
+        errorLog.e(
+          "attachment-save",
+          "writeAttachmentPayload: delete of partial file failed: ${target.absolutePath}",
+        )
+      }
       throw t
     }
   }
 
-  private fun nextAttachmentFilename(dir: File, attachment: Attachment): String {
-    val count = dir.listFiles()?.size ?: 0
-    val prefix = when (attachment) {
-      is Attachment.Image -> "img"
-      is Attachment.Audio -> "audio"
+  /**
+   * Collision-free per-attachment filename. UUID suffix removes the
+   * `listFiles().size` TOCTOU race that the previous index-based scheme had
+   * (code-reviewer-1 T17-R1 / security T17-S2 / T17-S5). Stable prefix
+   * (`img` / `audio`) and extension keep filenames searchable in logs and
+   * diagnostic exports.
+   */
+  private fun collisionFreeFilename(attachment: Attachment): String {
+    val uuid = UUID.randomUUID().toString()
+    return when (attachment) {
+      is Attachment.Image -> "img_$uuid.png"
+      is Attachment.Audio -> "audio_$uuid.wav"
     }
-    val ext = when (attachment) {
-      is Attachment.Image -> "png"
-      is Attachment.Audio -> "wav"
-    }
-    return "${prefix}_${count}.${ext}"
-  }
-
-  private fun attachmentsRootFor(stagingDir: File): File {
-    val parent = stagingDir.parentFile
-      ?: throw IOException("staging dir has no parent: ${stagingDir.absolutePath}")
-    if (parent.name != ATTACHMENTS_DIR) {
-      throw IOException(
-        "staging dir must live directly under attachments/: ${stagingDir.absolutePath}",
-      )
-    }
-    return parent
   }
 
   private fun requireInsideAttachmentsRoot(candidate: File, filesDir: File) {

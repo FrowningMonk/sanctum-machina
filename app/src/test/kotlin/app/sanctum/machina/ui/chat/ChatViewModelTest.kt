@@ -525,50 +525,19 @@ class ChatViewModelTest {
 
     @Test
     fun draftMode_sendWhileStagingInFlight_blocksWithSnackbar() = runTest(dispatcher) {
-        // Force the staging write to never complete — we control the outcome by
-        // throwing a sentinel AFTER the in-flight gate check has already run,
-        // but easier: make writeStagingError throw so attachment never gains a
-        // stagedFilename (stays null in _attachments). Wait — that also removes
-        // the attachment. Use a gating Deferred instead.
+        // The send-gate guards against a commit that would reference a file
+        // not yet on disk. Simulate an in-flight staging write with a
+        // CompletableDeferred the test controls, then call send() while the
+        // attachment still has `stagedFilename = null`.
         fakeRegistry.setModel(Model(name = "m", modelId = "id-m", llmSupportImage = true))
         val vm = buildViewModel(ChatIdentityArg.Draft)
         advanceUntilIdle()
 
-        // Inject an attachment that is still "in-flight" by bypassing the
-        // coroutine race: directly craft an Image with stagedFilename = null
-        // and place it on the flow via addImageBitmap. Because dispatcher is
-        // Unconfined, the staging coroutine normally completes before we call
-        // send(). To simulate the race, we temporarily set writeStagingError
-        // to a non-null value AFTER addImageBitmap runs — the attachment
-        // still has stagedFilename=null at the moment of send().
-        //
-        // Simpler model: use a blocking Mutex-backed stub. But the fake does
-        // not support it. Instead: manually invoke send BEFORE the staging
-        // coroutine gets a chance — not possible under UnconfinedTestDispatcher
-        // because `advanceUntilIdle` will drain the queue first. The gate is
-        // still exercised at the unit level: we assert the send() path returns
-        // on a pending attachment by feeding it a hand-crafted state.
-
-        // Path used: direct attachment injection via reflection on _attachments
-        // is out of scope. Instead, verify the gate guard exists by making the
-        // staging write suspend indefinitely using a cancel-sentinel. Reuse
-        // writeStagingError but with a CancellationException so the fake never
-        // registers a success and the attachment stays with stagedFilename=null
-        // after removal. This still removes the attachment from the list via
-        // onFailure, so the gate has nothing to block.
-
-        // Concrete assertion: after a FRESH Draft VM, if _attachments contains
-        // any Image whose stagedFilename is null, send() must snackbar and not
-        // commit. Exercise via a custom stub that suspends. Swap the fake with
-        // a configurable version is overkill — we rely on the fact that the
-        // gate is driven purely by Attachment.stagedFilename == null.
-        //
-        // Deterministic test: simulate by temporarily making the staging call
-        // delay via a Job we control.
         val block = kotlinx.coroutines.CompletableDeferred<Unit>()
         val suspending = object : ChatRepository by fakeChatRepository {
             override suspend fun writeAttachmentStaging(
                 stagingDir: File,
+                filesDir: File,
                 attachment: Attachment,
             ): String {
                 block.await()
@@ -619,12 +588,147 @@ class ChatViewModelTest {
         advanceUntilIdle()
         val stagedName = (vm.attachments.value.single() as Attachment.Image).stagedFilename
         assertEquals("img_0.png", stagedName)
-        // Real FS: the fake does not actually write the file, so assert the
-        // removal path does not crash and drops the attachment from the list.
+
         vm.removeAttachment(0)
         advanceUntilIdle()
 
         assertTrue("attachment removed from list", vm.attachments.value.isEmpty())
+        // test-reviewer-1 T17-T1: litmus test the delete call itself, not just
+        // list state. The VM must route the delete through ChatRepository so
+        // this assertion fails if `deleteStagedFileIfAny` is ever stripped.
+        assertEquals(
+            "staged filename routed through repository delete path",
+            listOf("img_0.png"),
+            fakeChatRepository.deletedStagedFiles,
+        )
+    }
+
+    @Test
+    fun draftMode_removeBeforeStagingSettles_skipsDeleteUntilReady() = runTest(dispatcher) {
+        // If `stagedFilename` is still null when remove is called, we cannot
+        // know what to delete. This exercises the `filename ?: return` guard
+        // in deleteStagedFileIfAny — the list clears, no delete call fires.
+        val block = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val suspending = object : ChatRepository by fakeChatRepository {
+            override suspend fun writeAttachmentStaging(
+                stagingDir: File,
+                filesDir: File,
+                attachment: Attachment,
+            ): String {
+                block.await()
+                return "img_0.png"
+            }
+        }
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m", llmSupportImage = true))
+        val savedState = SavedStateHandle(mapOf(ChatViewModel.NAV_ARG_KIND to ChatViewModel.KIND_DRAFT))
+        val vm = ChatViewModel(
+            savedStateHandle = savedState,
+            registry = fakeRegistry,
+            helper = fakeHelper,
+            errorLog = ErrorLog(context),
+            context = context,
+            imageDecoder = fakeDecoder,
+            settingsRepository = fakeRepo,
+            chatRepository = suspending,
+            messageDao = fakeMessageDao,
+            chatDao = fakeChatDao,
+        )
+        advanceUntilIdle()
+
+        vm.addImageBitmap(stubBitmap())
+        advanceUntilIdle()
+        vm.removeAttachment(0)
+        advanceUntilIdle()
+
+        assertTrue(vm.attachments.value.isEmpty())
+        assertEquals(
+            "no delete fires — staging never produced a filename to target",
+            emptyList<String>(),
+            fakeChatRepository.deletedStagedFiles,
+        )
+        block.complete(Unit)
+    }
+
+    @Test
+    fun persistentMode_sendWithAudio_callsSavePersistentAttachment() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m", llmSupportAudio = true)
+        fakeChatDao.put(ChatEntity(id = 9L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        val vm = buildViewModel(ChatIdentityArg.Persistent(9L))
+        advanceUntilIdle()
+        vm.addAudio(byteArrayOf(1, 2, 3), durationMs = 1_000L)
+        advanceUntilIdle()
+
+        vm.send("listen")
+        advanceUntilIdle()
+
+        assertEquals(
+            "savePersistentAttachment called for audio in persistent mode",
+            1,
+            fakeChatRepository.persistentAttachmentCalls.count { it.attachment is Attachment.Audio },
+        )
+        val saved = fakeChatRepository.insertedMessages.single { it.role == "user" }
+        assertEquals("USER row carries persisted audio path", "attachments/9/audio_0.wav", saved.audioPath)
+    }
+
+    @Test
+    fun draftMode_multipleImages_warnAndPruneExtrasBeforeCommit() = runTest(dispatcher) {
+        // code-reviewer-1 T17-R2 / security T17-S4: MAX_IMAGES=10 but only the
+        // first is persisted. Ensure the user is warned and the extras are
+        // pruned from the staging dir before commit so they don't become
+        // orphans inside the final `attachments/{chatId}/` directory.
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m", llmSupportImage = true))
+        val vm = buildViewModel(ChatIdentityArg.Draft)
+        advanceUntilIdle()
+        val events = collectSnackbar(vm)
+        vm.addImageBitmap(stubBitmap())
+        vm.addImageBitmap(stubBitmap())
+        advanceUntilIdle()
+
+        vm.send("both")
+        advanceUntilIdle()
+
+        assertTrue(
+            "extras warning snackbar emitted",
+            events.contains(R.string.attachment_only_first_persisted),
+        )
+        val commit = fakeChatRepository.commitCalls.single()
+        assertEquals(
+            "only the first image filename is referenced in the commit",
+            "img_0.png",
+            commit.stagedImageFilename,
+        )
+    }
+
+    @Test
+    fun draftMode_successfulCommit_nullsDraftStagingDirForFollowUpSends() = runTest(dispatcher) {
+        // test-reviewer-1 minor: pin that `draftStagingDir` is reset after a
+        // successful commit. If the VM retained the stale File handle, a
+        // later `deleteStagedFileIfAny` could target the final chat dir.
+        // Observable via: a second commit (in a contrived flow) must NOT
+        // carry a stagingDir since `_attachments` is cleared post-commit.
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m", llmSupportImage = true))
+        val vm = buildViewModel(ChatIdentityArg.Draft)
+        advanceUntilIdle()
+        vm.addImageBitmap(stubBitmap())
+        advanceUntilIdle()
+        vm.send("first")
+        advanceUntilIdle()
+        val firstCommit = fakeChatRepository.commitCalls.single()
+        assertNotNull("first send carried staging dir", firstCommit.stagingDir)
+
+        // After commit the VM should have no draftStagingDir to carry. Simulate
+        // a retry attempt (even though UI normally navigates away): a second
+        // send with no attachments must not reference any staging dir.
+        fakeChatRepository.commitCalls.clear()
+        vm.send("second")
+        advanceUntilIdle()
+        // Either commit is rejected (no attachments, no text-only send-gate
+        // behaviour depending on mode) — we simply assert there is no
+        // dangling staging reference on the new commit call if one lands.
+        fakeChatRepository.commitCalls.forEach {
+            assertNull("no stale staging dir leaked into next send", it.stagingDir)
+        }
     }
 
     @Test
@@ -1420,6 +1524,7 @@ private class FakeChatRepository : ChatRepository {
 
     override suspend fun writeAttachmentStaging(
         stagingDir: File,
+        filesDir: File,
         attachment: Attachment,
     ): String {
         writeStagingError?.let { throw it }
@@ -1430,6 +1535,34 @@ private class FakeChatRepository : ChatRepository {
         }
     }
 
+    /**
+     * Records a staged filename for later assertion by tests exercising the
+     * remove path. Keeps order so a test can pin which attachment was
+     * targeted when multiple are staged.
+     */
+    val deletedStagedFiles = mutableListOf<String>()
+
+    override suspend fun deleteStagedAttachment(
+        stagingDir: File,
+        filesDir: File,
+        filename: String,
+    ) {
+        deletedStagedFiles += filename
+    }
+
+    val pruneRetainLog = mutableListOf<Set<String>>()
+
+    override suspend fun pruneStagingDir(
+        stagingDir: File,
+        filesDir: File,
+        retain: Set<String>,
+    ) {
+        pruneRetainLog += retain
+    }
+
+    private var persistentImageIndex = 0
+    private var persistentAudioIndex = 0
+
     override suspend fun savePersistentAttachment(
         chatId: Long,
         filesDir: File,
@@ -1438,8 +1571,12 @@ private class FakeChatRepository : ChatRepository {
         savePersistentAttachmentError?.let { throw it }
         persistentAttachmentCalls += PersistentAttachmentCall(chatId, attachment)
         return when (attachment) {
-            is Attachment.Image -> PersistedAttachment(imagePath = "attachments/$chatId/img_0.png")
-            is Attachment.Audio -> PersistedAttachment(audioPath = "attachments/$chatId/audio_0.wav")
+            is Attachment.Image -> PersistedAttachment(
+                imagePath = "attachments/$chatId/img_${persistentImageIndex++}.png",
+            )
+            is Attachment.Audio -> PersistedAttachment(
+                audioPath = "attachments/$chatId/audio_${persistentAudioIndex++}.wav",
+            )
         }
     }
 

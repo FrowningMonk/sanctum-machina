@@ -67,13 +67,45 @@ interface ChatRepository {
    * Partial writes on failure are rolled back (the half-written file is
    * deleted) before the `IOException` is rethrown.
    *
-   * Filenames are `img_{N}.png` / `audio_{N}.wav` where N is the next index
-   * in the directory — predictable for log/diagnostic reading.
+   * Filenames carry a UUID suffix (`img_{uuid}.png` / `audio_{uuid}.wav`) so
+   * concurrent writers on the same [stagingDir] cannot collide — `addImages`
+   * admits up to 10 URIs in a single batch and launches a coroutine per
+   * attachment (code-reviewer-1 T17-R1).
    */
   suspend fun writeAttachmentStaging(
     stagingDir: File,
+    filesDir: File,
     attachment: Attachment,
   ): String
+
+  /**
+   * Remove a previously staged file. Idempotent: a missing file is not an
+   * error. Runs on `Dispatchers.IO`. Provided on the interface (rather than
+   * calling [File.delete] directly from the caller) so unit tests can
+   * assert the removal path without touching the Robolectric filesystem
+   * (test-reviewer-1 T17-T1).
+   */
+  suspend fun deleteStagedAttachment(
+    stagingDir: File,
+    filesDir: File,
+    filename: String,
+  )
+
+  /**
+   * Delete every file in [stagingDir] whose name is NOT in [retain]. Called
+   * right before [commitDraftChat] promotes the staging directory into the
+   * final chat dir so the rename does not carry unreferenced payloads
+   * (multi-image MVP limitation and the remove-during-inflight race —
+   * code-reviewer-1 T17-R2, security T17-S4). Runs on `Dispatchers.IO`;
+   * individual delete failures are logged via `attachment-save` and
+   * swallowed — a single orphan cannot abort the commit, and the startup
+   * sweep catches surviving `.staging-*` dirs on next launch.
+   */
+  suspend fun pruneStagingDir(
+    stagingDir: File,
+    filesDir: File,
+    retain: Set<String>,
+  )
 
   /**
    * Direct write for already-committed Persistent chats. Writes into
@@ -87,6 +119,10 @@ interface ChatRepository {
    * cleaned up by [deleteChat] when the row is removed. Callers still
    * surface write failure to the user (hard-gate the USER persist on
    * `IOException` — same pattern as [savePersistentMessage]).
+   *
+   * The computed chat dir (`filesDir/attachments/{chatId}/`) is verified to
+   * live under the attachments root before any write — the same containment
+   * guarantee [writeAttachmentStaging] / [commitDraftChat] enforce.
    */
   suspend fun savePersistentAttachment(
     chatId: Long,

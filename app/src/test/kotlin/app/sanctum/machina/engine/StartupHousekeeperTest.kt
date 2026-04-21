@@ -198,8 +198,21 @@ class StartupHousekeeperTest {
 
         override suspend fun writeAttachmentStaging(
             stagingDir: File,
+            filesDir: File,
             attachment: app.sanctum.machina.ui.chat.Attachment,
         ): String = ""
+
+        override suspend fun deleteStagedAttachment(
+            stagingDir: File,
+            filesDir: File,
+            filename: String,
+        ) = Unit
+
+        override suspend fun pruneStagingDir(
+            stagingDir: File,
+            filesDir: File,
+            retain: Set<String>,
+        ) = Unit
 
         override suspend fun savePersistentAttachment(
             chatId: Long,

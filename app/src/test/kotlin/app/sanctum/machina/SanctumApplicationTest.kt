@@ -258,8 +258,19 @@ class SanctumApplicationTest {
         ): Long = 0L
         override suspend fun writeAttachmentStaging(
             stagingDir: java.io.File,
+            filesDir: java.io.File,
             attachment: app.sanctum.machina.ui.chat.Attachment,
         ): String = ""
+        override suspend fun deleteStagedAttachment(
+            stagingDir: java.io.File,
+            filesDir: java.io.File,
+            filename: String,
+        ) = Unit
+        override suspend fun pruneStagingDir(
+            stagingDir: java.io.File,
+            filesDir: java.io.File,
+            retain: Set<String>,
+        ) = Unit
         override suspend fun savePersistentAttachment(
             chatId: Long,
             filesDir: java.io.File,

@@ -472,8 +472,11 @@ constructor(
     private fun stageDraftAttachmentIfNeeded(attachment: Attachment) {
         if (identity !is ChatIdentity.Draft) return
         val dir = ensureDraftStagingDir()
+        val filesDir = context.filesDir
         viewModelScope.launch {
-            val result = runCatching { chatRepository.writeAttachmentStaging(dir, attachment) }
+            val result = runCatching {
+                chatRepository.writeAttachmentStaging(dir, filesDir, attachment)
+            }
             result.fold(
                 onSuccess = { filename ->
                     _attachments.update { current ->
@@ -517,14 +520,16 @@ constructor(
             is Attachment.Image -> attachment.stagedFilename
             is Attachment.Audio -> attachment.stagedFilename
         } ?: return
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            val target = File(dir, filename)
-            if (target.exists() && !target.delete()) {
-                errorLog.e(
-                    "attachment-save",
-                    "removeAttachment delete failed: ${target.absolutePath}",
-                )
-            }
+        val filesDir = context.filesDir
+        viewModelScope.launch {
+            runCatching { chatRepository.deleteStagedAttachment(dir, filesDir, filename) }
+                .onFailure { cause ->
+                    errorLog.e(
+                        "attachment-save",
+                        "deleteStagedAttachment threw for filename=$filename",
+                        cause,
+                    )
+                }
         }
     }
 
@@ -688,6 +693,15 @@ constructor(
             (att as? Attachment.Audio)?.stagedFilename
         }
         val stagingDir = draftStagingDir?.takeIf { stagedImage != null || stagedAudio != null }
+        val imageCount = pending.count { it is Attachment.Image }
+        if (imageCount > 1) {
+            // code-reviewer-1 T17-R2: MAX_IMAGES=10 in the UI but only the
+            // first is persisted. Warn the user so they know the rest will
+            // only influence this single answer — this also matches the
+            // staging-prune step below, which deletes the extras before the
+            // commit rename so they do not become permanent orphans.
+            _snackbar.tryEmit(R.string.attachment_only_first_persisted)
+        }
         val firstMessage = MessageEntity(
             chatId = 0L,
             role = ROLE_USER,
@@ -696,6 +710,21 @@ constructor(
         )
         viewModelScope.launch {
             val filesDir = context.filesDir
+            // Prune everything the commit is about to rename that is NOT
+            // referenced by the first-message paths. Covers two races:
+            //   (a) N>1 images — only `stagedImage` is referenced; the rest
+            //       would otherwise become orphans inside attachments/{chatId}/
+            //       that no sweep catches (security T17-S4, code-reviewer T17-R2).
+            //   (b) removeAttachment fired while the staging write was in
+            //       flight — the staged file landed on disk but its
+            //       attachment reference was already gone from `_attachments`.
+            if (stagingDir != null) {
+                chatRepository.pruneStagingDir(
+                    stagingDir = stagingDir,
+                    filesDir = filesDir,
+                    retain = setOfNotNull(stagedImage, stagedAudio),
+                )
+            }
             val result = runCatching {
                 chatRepository.commitDraftChat(
                     modelId = modelId,
@@ -753,6 +782,12 @@ constructor(
             thinkingText = initialThinkingText,
             attachments = emptyList(),
         )
+        if (pending.count { it is Attachment.Image } > 1) {
+            // Same MVP limitation as Draft — the Room row carries a single
+            // image_path; extras flow to inference but are not persisted to
+            // disk and will not appear in the chat history after reload.
+            _snackbar.tryEmit(R.string.attachment_only_first_persisted)
+        }
         _attachments.value = emptyList()
         _uiState.value = ChatUiState.Ready(isGenerating = true)
 

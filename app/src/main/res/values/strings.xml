@@ -79,6 +79,7 @@
   <string name="attachment_image_decode_failed">Не удалось обработать фото.</string>
   <string name="attachment_save_failed">Не удалось сохранить вложение.</string>
   <string name="attachment_still_saving">Вложение ещё сохраняется…</string>
+  <string name="attachment_only_first_persisted">Сохранено только первое фото — остальные прикреплены к ответу модели, но не попадут в историю.</string>
 
   <!-- Camera bottom sheet -->
   <string name="camera_capture">Снять</string>
