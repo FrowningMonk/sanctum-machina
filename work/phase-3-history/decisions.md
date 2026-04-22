@@ -507,3 +507,17 @@ User device smoke на Honor 200 после Task 11 вскрыл четыре д
   - **#4+#5 cross-model switch freeze.** `loadModel(modelId)` не обновлял `_chatModelId` → `observeEngineState` продолжал смотреть entry старой модели (Idle после single-engine release) → `uiState` застревал на `Loading` навечно → старый Phase-1 full-screen `LoadingContent` overlay маскировал всё. Fix: `loadModel` re-pins `_chatModelId.value = modelId` перед `cancelAndRestart`; `LoadingContent` composable удалён, `ChatUiState.Loading` рендерит `ReadyContent` с `isGenerating=false` (sendGated уже блочил отправку через `topAppBarState is Loading`); TopAppBar chip «Загружаю {name}…» — единственный индикатор переинициализации. Settings/Reset tophar-кнопки задизейблены пока `topAppBarState !is Ready`.
   - **#6 first-send attachments dropped.** `resumePendingAssistantPersistent` передавал `pending = emptyList()` — MVP trade-off из round 1 оказался неприемлем для юзера (вложения уже в истории через B1, но модель их не видела). Fix: функция теперь принимает целиком `MessageEntity`, декодит `imagePath`/`audioPath` через B1-хелперы и форвардит `pending` в `dispatchInferencePersistent`.
 - User device smoke on `3fc1104` (`2026-04-22`): (e) cross-model switch A→B без залипшего overlay ✅, (f) первое сообщение с фото в drawer «Новый чат» → модель отвечает про картинку ✅, (g) Settings/Reset дизейблятся во время reinit, активны после Ready ✅.
+
+## Task 13: Code Audit
+
+**Status:** Done
+**Commit:** (to follow)
+**Agent:** main agent
+**Summary:** Holistic Phase-3 audit across all 7 focus areas from the tech-spec (single-engine invariant, `ChatIdentity` branches, staging cleanup, Main-thread hygiene, Hilt scopes, `modelId`/`name` discipline, `onCleared` hygiene). Six of seven areas PASS outright; focus area 4 (Main-thread hygiene) PASS WITH NOTES. Findings: 0 Critical / 1 Major / 5 Minor / 3 Suggestion. The Major (M1) is that `ChatViewModel.buildMessagesFlow` runs `BitmapFactory.decodeFile` and `wavToPcm` in the Room-flow `.map` operator without a `flowOn(Dispatchers.IO)`, so decode executes on the collector (Main) context — a frame-drop / AC-A1 hazard on first chat-open of long histories. Minors include the documented `runBlocking` in `AppModule.provideSanctumDatabase` corruption branch, read-modify-write in `updateChatLastMessage`/`updateChatTitle`, `observeAll().first()` inside `sweepZombieChats`, a stale KDoc referencing a missing `flowOn` stage, and `SimpleDateFormat` allocation hot-spots. No code changes were made — the report is the deliverable.
+**Deviations:** None.
+
+**Reviews:** No external reviewers — the auditor IS the review for this task (per tech-spec).
+
+**Verification:**
+- Report → [logs/working/task-13/code-audit-report.md](logs/working/task-13/code-audit-report.md)
+- All 9 acceptance criteria from tasks/13.md verified in the report: 7 focus-area verdicts present; Major finding M1 carries file+line range+fix; `ChatViewModel.onCleared()` confirmed free of `registry.cleanup`; `cancelAndRestart` cancel-before-reinit confirmed; all three `ChatIdentity` branches confirmed covered; staging cleanup confirmed on success + failure + `StartupHousekeeper`; Main-thread I/O audited (Major M1 raised); Hilt scopes verified; no `Model.name` used for Room/DataStore persistence.
