@@ -40,17 +40,27 @@
 | `core-runtime/` | Ядро LLM-инференса (модели, реестр, загрузка, LiteRT-runtime, multimodal). Забрано из Google AI Edge Gallery, ~4100 строк | да |
 | `core-settings/` | Настройки инференса на модель (temperature, top_k, top_p и т.п.) в DataStore+proto. Вынесено из Gallery в отдельный модуль, зависит от `core-runtime` | да |
 
+### Что внутри `core-runtime/`
+
+| Имя | Тип | Что это | В git |
+|---|---|---|---|
+| `build/` | папка | Артефакт сборки модуля. Кэш | нет (gitignore) |
+| `src/` | папка | Исходники модуля: Kotlin-код + тесты | да |
+| `build.gradle.kts` | файл | Конфиг сборки: 4 плагина (без protobuf), namespace `app.sanctum.machina.core`, ключевые зависимости — **`litertlm`** (LLM-движок), `work-runtime` (загрузчик моделей), `exifinterface` (метаданные изображений), `gson` | да |
+
+**Где живут значения по умолчанию для инференса:** `src/main/kotlin/.../core/data/Consts.kt` — `DEFAULT_TEMPERATURE = 1.0f`, `DEFAULT_TOPK = 64`, `DEFAULT_TOPP = 0.95f`, `DEFAULT_MAX_TOKEN = 1024`. Подставляются при инференсе, если у пользователя нет оверрайда в `core-settings`.
+
+**Где склеивается всё вместе:** `src/main/kotlin/.../core/inference/LlmChatModelHelper.kt` — берёт значения из настроек или подставляет константу из `Consts.kt`, передаёт в LiteRT.
+
 ### Что внутри `core-settings/`
 
 | Имя | Тип | Что это | В git |
 |---|---|---|---|
-| `build/` | папка | Артефакт сборки модуля. Кэш, рождается при первом билде, всё внутри 100% производное от `src/` + `build.gradle.kts`. Скип | нет (gitignore) |
-| `src/` | папка | Все исходники модуля: Kotlin-код, `.proto`-схема, тесты. Структура внутри (`main/`, `test/`) задана соглашением Gradle/Android, не нашим выбором | да |
-| `build.gradle.kts` | файл | Конфиг сборки модуля: 5 плагинов (включая **`protobuf`** — только здесь), namespace `app.sanctum.machina.core.settings`, зависимость на `:core-runtime`, тянет `androidx.datastore` + `protobuf-javalite`. Содержит блок `protobuf { ... }` для кодогенерации Java-классов из `.proto` | да |
+| `build/` | папка | Артефакт сборки модуля. Кэш | нет (gitignore) |
+| `src/` | папка | Исходники модуля: Kotlin-код, `.proto`-схема, тесты | да |
+| `build.gradle.kts` | файл | Конфиг сборки: 5 плагинов (включая **`protobuf`** — только здесь), namespace `app.sanctum.machina.core.settings`, зависимость на `:core-runtime`, тянет `androidx.datastore` + `protobuf-javalite`. Содержит блок `protobuf { ... }` для кодогенерации Java-классов из `.proto` | да |
 
 **Где живёт схема настроек:** `src/main/proto/app_settings.proto` — объявлен список параметров инференса (`max_tokens`, `top_k`, `top_p`, `temperature`, `enable_thinking`, `accelerator`, `system_prompt_default`) с именами, типами и тегами для бинарной сериализации. Proto описывает только форму записи.
-
-**Где живут значения по умолчанию:** `core-runtime/src/main/kotlin/.../core/data/Consts.kt` — `DEFAULT_TEMPERATURE = 1.0f`, `DEFAULT_TOPK = 64`, `DEFAULT_TOPP = 0.95f`, `DEFAULT_MAX_TOKEN = 1024`. `core-settings` хранит только пользовательские оверрайды (возвращает `null`, если ничего не задано); `core-runtime` подставляет дефолт при инференсе.
 
 ## 3. Конфиги сборки
 
