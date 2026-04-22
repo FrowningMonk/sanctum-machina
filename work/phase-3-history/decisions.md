@@ -511,7 +511,7 @@ User device smoke на Honor 200 после Task 11 вскрыл четыре д
 ## Task 13: Code Audit
 
 **Status:** Done
-**Commit:** (to follow)
+**Commit:** 1b772ad
 **Agent:** main agent
 **Summary:** Holistic Phase-3 audit across all 7 focus areas from the tech-spec (single-engine invariant, `ChatIdentity` branches, staging cleanup, Main-thread hygiene, Hilt scopes, `modelId`/`name` discipline, `onCleared` hygiene). Six of seven areas PASS outright; focus area 4 (Main-thread hygiene) PASS WITH NOTES. Findings: 0 Critical / 1 Major / 5 Minor / 3 Suggestion. The Major (M1) is that `ChatViewModel.buildMessagesFlow` runs `BitmapFactory.decodeFile` and `wavToPcm` in the Room-flow `.map` operator without a `flowOn(Dispatchers.IO)`, so decode executes on the collector (Main) context — a frame-drop / AC-A1 hazard on first chat-open of long histories. Minors include the documented `runBlocking` in `AppModule.provideSanctumDatabase` corruption branch, read-modify-write in `updateChatLastMessage`/`updateChatTitle`, `observeAll().first()` inside `sweepZombieChats`, a stale KDoc referencing a missing `flowOn` stage, and `SimpleDateFormat` allocation hot-spots. No code changes were made — the report is the deliverable.
 **Deviations:** None.
