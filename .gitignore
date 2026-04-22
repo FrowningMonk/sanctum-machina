@@ -56,6 +56,10 @@ signing.properties
 # Logs (runtime only — methodology logs under work/*/logs/ ARE tracked)
 # ============================================================================
 *.log
+# Root-level logs/ is a methodology anti-pattern: validator logs must live
+# under work/{feature}/logs/, never at repo root. If a run accidentally writes
+# to ./logs/ (bare path resolves to CWD), keep it out of VCS.
+logs/
 
 # ============================================================================
 # OS / Editor cruft
