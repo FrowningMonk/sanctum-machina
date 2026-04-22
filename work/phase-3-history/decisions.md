@@ -447,3 +447,32 @@ User device smoke на Honor 200 после Task 11 вскрыл четыре д
 - `./gradlew :app:testDebugUnitTest :core-runtime:testDebugUnitTest` → BUILD SUCCESSFUL (241 тест, 0 failures кроме одного Robolectric flaky `testHousekeepingSkippedInCrashProcess` — проходит в изоляции, pre-existing state-leak между тестами, не касается фиксов).
 - `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL.
 - User device smoke на Honor 200 (`2026-04-22`): (a) «Загрузить» A → работает, (b) «Загрузить» B → работает, (c) возврат на A после фикса 4 → корректно переинициализируется, (d) «Начать быстрый чат» после перезапуска → мгновенный (default модель прогрета `warmupDefault` на старте app'а), (e) star-индикатор + overflow «Сделать по умолчанию» — визуально корректны.
+
+## Task 18: Phase-3 device-smoke bug batch
+
+**Status:** Done
+**Commit:** b3074eb (impl), 69e88e0 (review round 1 fixes)
+**Agent:** main agent
+**Summary:** Пять дефектов, всплывших на Honor 200 после Task 11 follow-ups и Task 17 — все в швах между задачами. **B1** `ChatViewModel.toDomainMessageWithAttachments` теперь декодит `imagePath`/`audioPath` с контейнмент-чеком (`resolveInsideAttachmentsRoot` через `canonicalFile.startsWith`) и кэширует по `MessageEntity.id` в `attachmentCache`; добавлена симметричная `wavToPcm` в `core-runtime/.../MediaUtils.kt` (RIFF/WAVE header validation, data-size bound, div-zero guard). **B2** `DefaultModelRegistry.initialize` сбрасывает `Initializing → Idle` на `CancellationException` и расширяет single-engine release на `Ready || Initializing` (не только Ready — закрывает scenario 3 из post-mortem); `TopAppBarState.Loading` теперь несёт `modelName`, `LoadingTitle` рендерит «Загружаю %1$s…». **B3** `HomeViewModel.defaultModelName: StateFlow<String?>` через `combine(observeDefaultModelId, registry.models)`; `HomeScreen` рендерит clickable label «Модель по умолчанию: {name}» под product title. **B4** `MessageDao.lastByChat` + `ChatViewModel.bootstrapChatModelId` детектит unpaired USER row, `observeFirstReadyThenResume` дожидается первого Ready и зовёт `resumePendingAssistantPersistent`; `autoResumeAttempted` флипается ВНУТРИ диспатча (после `currentReadyModel()` проверки) — Ready→Idle flap не сжигает попытку. **B5** `DrawerContent` футер `NavigationDrawerItem` «Модели» + «О приложении» (закрывает decomposition gap Task 9 vs user-spec §37); `HomeScreen` settings gear удалён, `home_settings_open` orphan string выкошен.
+**Deviations:** B4 передаёт `pending = emptyList()` в авторезюме — attachments USER-строки декодятся для UI (B1) но не скармливаются движку. Явно разрешено в tasks/18.md Implementation hints и отмечено в коде; полное решение потребует симметричной декодировки Bitmap/PCM для runInference, вынесено в follow-up. B3 пошёл вариантом (a) discoverability (Home label) без device-verify гипотезы (b) — вариант 2a в tasks/18.md прямо предлагается автору без verify, это UX-улучшение независимо от того что рендерит overflow.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved_with_suggestions, 0 critical / 3 major (B4 attachments dropped, Failed-state invariant undocumented, autoResume flag ordering) / 9 minor → [logs/working/task-18/code-reviewer-1.json](logs/working/task-18/code-reviewer-1.json)
+- test-reviewer: needs_improvement, 0 critical / 3 major (traversal test trivial-pass, missing-file не проверял лог, cross-model не асертил Ready target) / 6 minor → [logs/working/task-18/test-reviewer-1.json](logs/working/task-18/test-reviewer-1.json)
+- security-auditor: approved, 0 critical / 0 major / 4 minor (WAV file-size cap, explicit isAbsolute reject — defensive hardening) → [logs/working/task-18/security-auditor-1.json](logs/working/task-18/security-auditor-1.json)
+
+*Fixes applied after round 1:*
+- code-reviewer R2: KDoc на `observeFirstReadyThenResume` фиксирует Failed-state invariant (арм до Ready through Failed).
+- code-reviewer R3: `autoResumeAttempted=true` и `autoResumeTarget=null` перенесены в `resumePendingAssistantPersistent` ПОСЛЕ `currentReadyModel()` проверки — Ready→Idle flap не потребляет попытку.
+- test-reviewer T18-TEST-1: traversal test теперь подкладывает decoy PNG в `filesDir/secret.png` — ассершн «attachments.size == 0» теперь гейтится контейнмент-чеком, а не отсутствием файла.
+- test-reviewer T18-TEST-2: переименован в `_andLogged`, читает real `filesDir/logs/errors.log` через bounded wait-poll, асертит вхождение `attachment-read` компонента.
+- test-reviewer T18-TEST-3: `initializeHandler` в cross-model тесте теперь публикует Ready для target и Idle для prior; тест асертит оба terminal state'а на `registry.models` snapshot.
+- code-reviewer/test-reviewer остальные minor — triage: attachmentCache eviction отложен (MVP budget OK при двух attachments на ряд), прочие стилистические / doc-nit без активного риска.
+- security-auditor minor — (file-size cap, isAbsolute reject) помечены как defensive hardening без активной угрозы; откладываем до явного incident-driven review.
+
+**Verification:**
+- `./gradlew :app:testDebugUnitTest :core-runtime:testDebugUnitTest :core-settings:testDebugUnitTest` → BUILD SUCCESSFUL (0 failures; 12 новых unit-тестов: 4 B1 + 3 B4 в `ChatViewModelTest`, 2 B2 в `WarmupCoordinatorTest`, 3 B3 в `HomeViewModelTest`).
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL.
+- User device smoke на Honor 200 — **deferred to phase-level QA** (memory: `Verify UI chain before device smoke`). Task 18 завершает Phase 3 bug-fix цикл; полноценный прогон (B1 картинка в истории, B2 cross-model switch spinner with label, B3 Home default label, B4 drawer→first send, B5 drawer footer + gear removal) будет в составе финальной приёмки Phase 3.
