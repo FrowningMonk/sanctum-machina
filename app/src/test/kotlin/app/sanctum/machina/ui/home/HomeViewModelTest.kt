@@ -8,6 +8,8 @@ import app.sanctum.machina.core.data.ModelDownloadStatusType
 import app.sanctum.machina.core.registry.ModelEntry
 import app.sanctum.machina.core.registry.ModelInitStatus
 import app.sanctum.machina.core.registry.ModelRegistry
+import app.sanctum.machina.core.settings.AppSettingsRepository
+import app.sanctum.machina.core.settings.proto.PerModelSettings
 import app.sanctum.machina.engine.AppCorruptionState
 import app.sanctum.machina.logexport.ExportSource
 import app.sanctum.machina.logexport.LogExportManager
@@ -54,6 +56,7 @@ class HomeViewModelTest {
 
   private val testDispatcher = StandardTestDispatcher()
   private lateinit var registry: FakeModelRegistry
+  private lateinit var appSettings: FakeAppSettingsRepository
   private lateinit var corruption: AppCorruptionState
   private lateinit var logExport: LogExportManager
 
@@ -61,6 +64,7 @@ class HomeViewModelTest {
   fun setUp() {
     Dispatchers.setMain(testDispatcher)
     registry = FakeModelRegistry()
+    appSettings = FakeAppSettingsRepository()
     corruption = AppCorruptionState()
     // Real LogExportManager via the Context-only constructor (same entry point used by the
     // :crash process). Tests in this file never call `buildAndWrite`, so logcat / filesystem
@@ -142,7 +146,7 @@ class HomeViewModelTest {
     // asserting the pre-collection seed pins this.
     registry.emit(listOf(entry("a", ModelDownloadStatusType.SUCCEEDED)))
 
-    val viewModel = HomeViewModel(registry, corruption, logExport)
+    val viewModel = HomeViewModel(registry, appSettings, corruption, logExport)
     // Deliberately no `subscribe` and no `advanceUntilIdle` — we want the pre-collection
     // seed value the UI sees before the first frame observes the flow.
     assertFalse(viewModel.hasDownloadedModels.value)
@@ -150,7 +154,7 @@ class HomeViewModelTest {
 
   @Test
   fun activeModelName_reflectsRegistry_reactively() = runTest {
-    val viewModel = HomeViewModel(registry, corruption, logExport)
+    val viewModel = HomeViewModel(registry, appSettings, corruption, logExport)
     assertEquals(null, viewModel.activeModelName.value)
 
     registry.setActiveModelName("model-a")
@@ -164,14 +168,14 @@ class HomeViewModelTest {
 
   @Test
   fun corruptionOccurred_reflectsFalse_byDefault() = runTest {
-    val vm = HomeViewModel(registry, AppCorruptionState(), logExport)
+    val vm = HomeViewModel(registry, appSettings, AppCorruptionState(), logExport)
     assertFalse(vm.corruptionOccurred)
   }
 
   @Test
   fun corruptionOccurred_reflectsTrue_whenFlagSet() = runTest {
     val corrupted = AppCorruptionState().apply { corruptionOccurred = true }
-    val vm = HomeViewModel(registry, corrupted, logExport)
+    val vm = HomeViewModel(registry, appSettings, corrupted, logExport)
     assertTrue(vm.corruptionOccurred)
   }
 
@@ -182,7 +186,7 @@ class HomeViewModelTest {
     val recorder = RecordingLogExport(
       ApplicationProvider.getApplicationContext<Application>(),
     )
-    val vm = HomeViewModel(registry, corruption, recorder)
+    val vm = HomeViewModel(registry, appSettings, corruption, recorder)
     val target = android.net.Uri.parse("content://unit-test/save")
 
     val result = vm.buildAndWrite(target)
@@ -202,7 +206,7 @@ class HomeViewModelTest {
     val recorder = RecordingLogExport(
       ApplicationProvider.getApplicationContext<Application>(),
     ).apply { writeThrows = IOException("disk full") }
-    val vm = HomeViewModel(registry, corruption, recorder)
+    val vm = HomeViewModel(registry, appSettings, corruption, recorder)
 
     val result = vm.buildAndWrite(android.net.Uri.parse("content://unit-test/fail"))
 
@@ -213,13 +217,59 @@ class HomeViewModelTest {
     )
   }
 
+  // ---- Task 18 B3 — default model discoverability -----------------------
+
+  @Test
+  fun defaultModelName_resolvesFromRegistryAndSettings() = runTest {
+    appSettings.seedDefaultModelId("hf/model-b")
+    registry.emit(
+      listOf(
+        entry("Model A", "hf/model-a", ModelDownloadStatusType.SUCCEEDED),
+        entry("Model B", "hf/model-b", ModelDownloadStatusType.SUCCEEDED),
+      ),
+    )
+
+    val vm = HomeViewModel(registry, appSettings, corruption, logExport)
+    backgroundScope.launch { vm.defaultModelName.collect {} }
+    advanceUntilIdle()
+
+    assertEquals("Model B", vm.defaultModelName.value)
+  }
+
+  @Test
+  fun defaultModelName_isNullWhenSettingEmpty() = runTest {
+    appSettings.seedDefaultModelId("")
+    registry.emit(listOf(entry("Model A", "hf/model-a", ModelDownloadStatusType.SUCCEEDED)))
+
+    val vm = HomeViewModel(registry, appSettings, corruption, logExport)
+    backgroundScope.launch { vm.defaultModelName.collect {} }
+    advanceUntilIdle()
+
+    assertEquals(null, vm.defaultModelName.value)
+  }
+
+  @Test
+  fun defaultModelName_isNullWhenModelNotInRegistry() = runTest {
+    // Setting survives an app update that dropped the model from the allowlist:
+    // label hides rather than showing a stale id — AC-F3 observer will re-set
+    // on the next SUCCEEDED download.
+    appSettings.seedDefaultModelId("hf/stale")
+    registry.emit(listOf(entry("Model A", "hf/model-a", ModelDownloadStatusType.SUCCEEDED)))
+
+    val vm = HomeViewModel(registry, appSettings, corruption, logExport)
+    backgroundScope.launch { vm.defaultModelName.collect {} }
+    advanceUntilIdle()
+
+    assertEquals(null, vm.defaultModelName.value)
+  }
+
   // ---- helpers ----
 
   // Single factory used by every `hasDownloadedModels` test so the `WhileSubscribed` collector
   // is never forgotten — `.value` on a `WhileSubscribed` StateFlow without an active subscriber
   // returns the initial seed, which would silently produce passing-but-meaningless `assertFalse`.
   private fun TestScope.createSubscribedViewModel(): HomeViewModel {
-    val viewModel = HomeViewModel(registry, corruption, logExport)
+    val viewModel = HomeViewModel(registry, appSettings, corruption, logExport)
     backgroundScope.launch { viewModel.hasDownloadedModels.collect {} }
     return viewModel
   }
@@ -227,6 +277,17 @@ class HomeViewModelTest {
   private fun entry(name: String, status: ModelDownloadStatusType): ModelEntry =
     ModelEntry(
       model = Model(name = name, modelId = name),
+      downloadStatus = ModelDownloadStatus(status = status),
+      initStatus = ModelInitStatus.Idle,
+    )
+
+  private fun entry(
+    name: String,
+    modelId: String,
+    status: ModelDownloadStatusType,
+  ): ModelEntry =
+    ModelEntry(
+      model = Model(name = name, modelId = modelId),
       downloadStatus = ModelDownloadStatus(status = status),
       initStatus = ModelInitStatus.Idle,
     )
@@ -283,4 +344,26 @@ private class FakeModelRegistry : ModelRegistry {
   override suspend fun cleanup(modelName: String) = Unit
   override suspend fun resetConversation(modelName: String, systemPrompt: String?) = Unit
   override fun getModel(modelName: String): Model? = null
+}
+
+private class FakeAppSettingsRepository : AppSettingsRepository {
+  private val defaultModelIdFlow = MutableStateFlow("")
+  private val lastUsedModelIdFlow = MutableStateFlow("")
+  private var migrated = false
+
+  /** Non-suspend test hook so setup code can seed the flow before launching the VM. */
+  fun seedDefaultModelId(id: String) { defaultModelIdFlow.value = id }
+
+  override fun observePerModelSettings(modelId: String): Flow<PerModelSettings?> =
+    MutableStateFlow<PerModelSettings?>(null).asStateFlow()
+  override suspend fun savePerModelSettings(modelId: String, settings: PerModelSettings) = Unit
+  override suspend fun resetPerModelSettings(modelId: String) = Unit
+  override suspend fun getDefaultModelId(): String = defaultModelIdFlow.value
+  override suspend fun setDefaultModelId(id: String) { defaultModelIdFlow.value = id }
+  override fun observeDefaultModelId(): Flow<String> = defaultModelIdFlow.asStateFlow()
+  override suspend fun getLastUsedModelId(): String = lastUsedModelIdFlow.value
+  override suspend fun setLastUsedModelId(id: String) { lastUsedModelIdFlow.value = id }
+  override fun observeLastUsedModelId(): Flow<String> = lastUsedModelIdFlow.asStateFlow()
+  override suspend fun isSettingsMigrated(): Boolean = migrated
+  override suspend fun markSettingsMigrated() { migrated = true }
 }

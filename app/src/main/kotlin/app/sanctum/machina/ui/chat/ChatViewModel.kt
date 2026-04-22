@@ -2,12 +2,14 @@ package app.sanctum.machina.ui.chat
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.sanctum.machina.R
 import app.sanctum.machina.core.common.pcmToWav
+import app.sanctum.machina.core.common.wavToPcm
 import app.sanctum.machina.core.data.ConfigKeys
 import app.sanctum.machina.core.data.Model
 import app.sanctum.machina.core.data.ModelDownloadStatusType
@@ -39,6 +41,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -63,8 +66,15 @@ sealed class TopAppBarState {
      *  marks which one to check in the dropdown. */
     data class Draft(val models: List<ModelEntry>, val currentModelId: String) : TopAppBarState()
 
-    /** Warmup / reinit in flight — show spinner, Send disabled. */
-    data class Loading(val modelId: String) : TopAppBarState()
+    /**
+     * Warmup / reinit in flight — show spinner, Send disabled. [modelName] is
+     * the human-readable `Model.name` of the target being warmed (or `null`
+     * when the name cannot be resolved yet — e.g. during the very first cold
+     * start before the allowlist loads); Task 18 B2-UX uses it to render
+     * «Загружаю {modelName}…» so the user sees which model is being loaded
+     * rather than a contextless spinner.
+     */
+    data class Loading(val modelId: String, val modelName: String? = null) : TopAppBarState()
 
     /** `ModelInitStatus.Idle` or `Failed` in a non-Draft chat — show «Загрузить» button. */
     data class Failed(val modelId: String) : TopAppBarState()
@@ -127,6 +137,30 @@ constructor(
      * is the pass-through of [ModelRegistry.activeModelName].
      */
     private val _chatModelId: MutableStateFlow<String?> = MutableStateFlow(null)
+
+    /**
+     * Persistent-mode auto-resume target (Task 18 B4). Set during bootstrap
+     * when the last persisted message for this chat is an unpaired USER row,
+     * meaning Draft→Persistent handover committed the USER but the inference
+     * dispatch died with the Draft VM. [observeFirstReadyThenResume] fires
+     * once when the pinned model reaches Ready and clears [autoResumeAttempted]
+     * so a subsequent Ready→Initializing→Ready flutter cannot double-dispatch.
+     */
+    private var autoResumeTarget: MessageEntity? = null
+    private var autoResumeAttempted: Boolean = false
+
+    /**
+     * Decoded-attachment cache keyed by [MessageEntity.id] (Task 18 B1). A Room
+     * flow re-emits the full message list on every mutation; without the cache
+     * each emit would re-read the same `img_<uuid>.png` / `audio_<uuid>.wav`
+     * payload from disk and re-decode it to a Bitmap/ByteArray. Declared BEFORE
+     * [messages] so the `buildMessagesFlow` collector never observes a null
+     * cache during eager subscription.
+     *
+     * Access is serialised by the single-threaded Room flow collector; cache
+     * hits skip BitmapFactory entirely.
+     */
+    private val attachmentCache: MutableMap<Long, List<Attachment>> = HashMap()
 
     private val _uiState = MutableStateFlow<ChatUiState>(ChatUiState.Loading)
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
@@ -226,7 +260,7 @@ constructor(
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.Eagerly,
-        initialValue = TopAppBarState.Loading(modelId = ""),
+        initialValue = TopAppBarState.Loading(modelId = "", modelName = null),
     )
 
     init {
@@ -324,7 +358,8 @@ constructor(
         activeModelId: String?,
     ): TopAppBarState {
         val effectiveModelId = pinnedModelId ?: activeModelId ?: ""
-        if (warmupInFlight) return TopAppBarState.Loading(effectiveModelId)
+        val effectiveModelName = models.firstOrNull { it.model.modelId == effectiveModelId }?.model?.name
+        if (warmupInFlight) return TopAppBarState.Loading(effectiveModelId, effectiveModelName)
         return when (identity) {
             ChatIdentity.Draft -> TopAppBarState.Draft(
                 models = models.filter {
@@ -338,7 +373,8 @@ constructor(
                 }
                 when (entry?.initStatus) {
                     ModelInitStatus.Ready -> TopAppBarState.Ready(entry.model.name)
-                    ModelInitStatus.Initializing -> TopAppBarState.Loading(effectiveModelId)
+                    ModelInitStatus.Initializing ->
+                        TopAppBarState.Loading(effectiveModelId, entry.model.name)
                     is ModelInitStatus.Failed -> TopAppBarState.Failed(effectiveModelId)
                     ModelInitStatus.Idle, null -> TopAppBarState.Failed(effectiveModelId)
                 }
@@ -689,6 +725,20 @@ constructor(
                     .getOrNull()
                 _chatModelId.value = entity?.modelId
                 applyEffectiveConfigToModel()
+                // B4: Detect Draft→Persistent handover gap. Draft commits a USER
+                // row and navigates; the new Persistent VM never received
+                // `send(...)` for that first turn. When the last persisted
+                // message is an unpaired USER row we stage an auto-resume and
+                // let [observeFirstReadyThenResume] dispatch inference once the
+                // pinned engine reaches Ready. Same path recovers from AC-R3
+                // kill-mid-stream (USER persisted, process died before ASSISTANT).
+                val lastMsg = runCatching { messageDao.lastByChat(id.id) }
+                    .onFailure { errorLog.e("history-read", "lastByChat failed for id=${id.id}", it) }
+                    .getOrNull()
+                if (lastMsg?.role == ROLE_USER) {
+                    autoResumeTarget = lastMsg
+                    viewModelScope.launch { observeFirstReadyThenResume(id) }
+                }
             }
             ChatIdentity.Quick, ChatIdentity.Draft -> {
                 val pinned = explicitModelId
@@ -724,22 +774,86 @@ constructor(
     }
 
     private fun buildMessagesFlow(): StateFlow<List<Message>> = when (val id = identity) {
-        is ChatIdentity.Persistent ->
-            combine(messageDao.observeByChat(id.id), _streamingMessage) { persisted, streaming ->
+        is ChatIdentity.Persistent -> {
+            // Decode the Room row list into domain Messages (Task 18 B1) before
+            // it enters the `combine` with `_streamingMessage`. Room dispatches
+            // `observeByChat` on its own background executor (not Main), so the
+            // BitmapFactory / wavToPcm work inherits that context — no explicit
+            // `flowOn(Dispatchers.IO)` is needed, and avoiding it keeps
+            // `UnconfinedTestDispatcher`-based unit tests deterministic (a
+            // real-thread IO hop would require real-time waits).
+            // [attachmentCache] memoises by row id so a Room re-emission that
+            // only bumped an existing row does not re-read the same file.
+            val decoded = messageDao.observeByChat(id.id)
+                .map { list -> list.map { toDomainMessageWithAttachments(it) } }
+            combine(decoded, _streamingMessage) { persisted, streaming ->
                 // Sole mechanism for the double-bubble invariant (user-spec
                 // Risks, D4): the moment the Room list ends in an ASSISTANT
                 // row the in-memory streaming bubble is hidden. No second
                 // clear path — the `_streamingMessage` value may linger
                 // internally but cannot become visible until [send] resets it.
-                val persistedEndsWithAssistant = persisted.lastOrNull()?.role == ROLE_ASSISTANT
+                val persistedEndsWithAssistant = persisted.lastOrNull()?.role == MessageRole.ASSISTANT
                 val visibleStreaming = if (persistedEndsWithAssistant) null else streaming
-                persisted.map(::toDomainMessage) + listOfNotNull(visibleStreaming)
+                persisted + listOfNotNull(visibleStreaming)
             }.stateIn(
                 scope = viewModelScope,
                 started = SharingStarted.Eagerly,
                 initialValue = emptyList(),
             )
+        }
         ChatIdentity.Quick, ChatIdentity.Draft -> _messages.asStateFlow()
+    }
+
+    /**
+     * Waits for the pinned Persistent-mode engine to reach [ChatUiState.Ready]
+     * once, then dispatches a one-shot inference for the unpaired USER row
+     * captured in [autoResumeTarget] (Task 18 B4). `autoResumeAttempted` is
+     * flipped BEFORE the dispatch so a Ready→Initializing→Ready flutter (e.g.
+     * heavy-setting reinit) cannot schedule a second inference for the same row.
+     */
+    private suspend fun observeFirstReadyThenResume(identity: ChatIdentity.Persistent) {
+        _uiState.first { it is ChatUiState.Ready }
+        val target = autoResumeTarget ?: return
+        if (autoResumeAttempted) return
+        autoResumeAttempted = true
+        autoResumeTarget = null
+        resumePendingAssistantPersistent(identity, target.text)
+    }
+
+    /**
+     * Runs inference for a pre-persisted USER row without re-inserting it
+     * (avoids the duplicate-USER-in-Room regression in B4-AC3). Mirrors the
+     * streaming-bubble + dispatchInferencePersistent tail of [runInferencePersistent]
+     * without its `chatRepository.savePersistentMessage(userMsg)` step.
+     *
+     * Images/audio attached to the USER row are NOT re-decoded from disk here —
+     * the model only sees the text. This is acceptable for the current scope
+     * (MVP handover): the history still renders the image via B1 decode, and
+     * a follow-up USER turn can re-send the attachment if inference on the
+     * image is needed.
+     */
+    private fun resumePendingAssistantPersistent(
+        identity: ChatIdentity.Persistent,
+        userText: String,
+    ) {
+        val model = currentReadyModel() ?: return
+        val accumulateThinking = shouldAccumulateThinking(model)
+        val initialThinkingText: String? = if (accumulateThinking) "" else null
+        _streamingMessage.value = Message(
+            role = MessageRole.ASSISTANT,
+            text = "",
+            streaming = true,
+            thinkingText = initialThinkingText,
+            attachments = emptyList(),
+        )
+        _uiState.value = ChatUiState.Ready(isGenerating = true)
+        dispatchInferencePersistent(
+            identity = identity,
+            text = userText,
+            pending = emptyList(),
+            model = model,
+            accumulateThinking = accumulateThinking,
+        )
     }
 
     private suspend fun observeEngineState() {
@@ -1238,8 +1352,30 @@ constructor(
         return Bitmap.createScaledBitmap(bitmap, w, h, /* filter = */ true)
     }
 
-    private fun toDomainMessage(entity: MessageEntity): Message {
+    /**
+     * Persistent-mode decode (Task 18 B1). Reads `imagePath`/`audioPath` off
+     * the [MessageEntity] and materialises [Attachment.Image] / [Attachment.Audio]
+     * — without this, `MessageBubble.MessageAttachmentsRow` renders nothing for
+     * historical rows because `message.attachments` is empty.
+     *
+     * Called from the `.map { }.flowOn(Dispatchers.IO)` stage of
+     * [buildMessagesFlow] so the decode does not run on Main. Results are
+     * memoised by [attachmentCache] keyed on row id — a subsequent Room emit
+     * (e.g. `updateChatLastMessage` bump) reuses the cached bitmap and pcm
+     * instead of re-reading the file.
+     *
+     * Failure modes (see B1-AC2 / B1-AC3):
+     *  - Path escapes `filesDir/attachments/` (containment check) → SecurityException logged, attachment omitted.
+     *  - File missing / corrupt / decode returns null → attachment omitted, `attachment-read` log emitted once.
+     *  - Text part of the message still renders — graceful degradation.
+     */
+    private fun toDomainMessageWithAttachments(entity: MessageEntity): Message {
         val role = if (entity.role == ROLE_USER) MessageRole.USER else MessageRole.ASSISTANT
+        val attachments = attachmentCache[entity.id] ?: run {
+            val decoded = decodeAttachmentsForEntity(entity)
+            attachmentCache[entity.id] = decoded
+            decoded
+        }
         return Message(
             role = role,
             text = entity.text,
@@ -1247,8 +1383,80 @@ constructor(
             interrupted = false,
             footer = null,
             thinkingText = entity.thinkingText,
-            attachments = emptyList(),
+            attachments = attachments,
         )
+    }
+
+    private fun decodeAttachmentsForEntity(entity: MessageEntity): List<Attachment> {
+        val result = mutableListOf<Attachment>()
+        val filesDir = context.filesDir
+        entity.imagePath?.let { path ->
+            val image = runCatching { decodeImageFromRelativePath(path, filesDir) }
+                .onFailure { cause ->
+                    viewModelScope.launch {
+                        errorLog.e("attachment-read", "image decode failed: $path", cause)
+                    }
+                }
+                .getOrNull()
+            if (image != null) result += image
+        }
+        entity.audioPath?.let { path ->
+            val audio = runCatching { decodeAudioFromRelativePath(path, filesDir) }
+                .onFailure { cause ->
+                    viewModelScope.launch {
+                        errorLog.e("attachment-read", "audio decode failed: $path", cause)
+                    }
+                }
+                .getOrNull()
+            if (audio != null) result += audio
+        }
+        return result
+    }
+
+    private fun decodeImageFromRelativePath(relativePath: String, filesDir: File): Attachment.Image? {
+        val file = resolveInsideAttachmentsRoot(relativePath, filesDir)
+        if (!file.exists()) {
+            viewModelScope.launch {
+                errorLog.e("attachment-read", "file missing: ${file.absolutePath}")
+            }
+            return null
+        }
+        val bitmap = BitmapFactory.decodeFile(file.absolutePath) ?: run {
+            viewModelScope.launch {
+                errorLog.e("attachment-read", "BitmapFactory returned null: ${file.absolutePath}")
+            }
+            return null
+        }
+        return Attachment.Image(bitmap)
+    }
+
+    private fun decodeAudioFromRelativePath(relativePath: String, filesDir: File): Attachment.Audio? {
+        val file = resolveInsideAttachmentsRoot(relativePath, filesDir)
+        if (!file.exists()) {
+            viewModelScope.launch {
+                errorLog.e("attachment-read", "file missing: ${file.absolutePath}")
+            }
+            return null
+        }
+        val decoded = wavToPcm(file)
+        return Attachment.Audio(pcm = decoded.pcm, durationMs = decoded.durationMs)
+    }
+
+    /**
+     * Containment check (parity with `DefaultChatRepository.requireInsideAttachmentsRoot`):
+     * a Room-stored path that canonicalises outside `filesDir/attachments/` must
+     * be rejected with [SecurityException] — otherwise a poisoned row could read
+     * arbitrary files under the app's private storage.
+     */
+    private fun resolveInsideAttachmentsRoot(relativePath: String, filesDir: File): File {
+        val attachmentsRoot = File(filesDir, "attachments").canonicalFile
+        val candidate = File(filesDir, relativePath).canonicalFile
+        if (!candidate.path.startsWith(attachmentsRoot.path + File.separator)) {
+            throw SecurityException(
+                "attachment path escapes attachments root: $relativePath",
+            )
+        }
+        return candidate
     }
 
     companion object {

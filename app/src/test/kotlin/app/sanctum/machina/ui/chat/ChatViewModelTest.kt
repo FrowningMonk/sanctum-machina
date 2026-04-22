@@ -1336,7 +1336,7 @@ class ChatViewModelTest {
         advanceUntilIdle()
 
         assertEquals(
-            TopAppBarState.Loading(modelId = "id-m"),
+            TopAppBarState.Loading(modelId = "id-m", modelName = "m"),
             vm.topAppBarState.value,
         )
     }
@@ -1412,6 +1412,227 @@ class ChatViewModelTest {
         // Each call must record one entry with the caller-supplied id — idempotence collapsing
         // (which a coalescing bug could introduce) would leave only "id-b" or "id-c".
         assertEquals(listOf("id-b", "id-c"), fakeWarmupCoordinator.cancelAndRestartCalls)
+    }
+
+    // ---- Task 18 B1 — attachment decode on Room read -----------------------
+
+    @Test
+    fun persistentMode_messageWithImagePath_decodesToAttachmentImage() = runTest(dispatcher) {
+        // Paired USER+ASSISTANT seed so the B4 auto-resume path (unpaired-last-USER)
+        // does not fire — the bubble it emits would otherwise change the
+        // messages count and muddle the assertion target (we want to exercise
+        // attachment decode only).
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        val relativePath = "attachments/7/img_test.png"
+        val imageFile = File(context.filesDir, relativePath).apply {
+            parentFile?.mkdirs()
+            val bmp = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888)
+            outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        }
+        fakeMessageDao.emit(
+            listOf(
+                MessageEntity(
+                    id = 1L, chatId = 7L, role = "user", text = "hi",
+                    imagePath = relativePath, createdAt = 10L,
+                ),
+                MessageEntity(
+                    id = 2L, chatId = 7L, role = "assistant", text = "ok",
+                    createdAt = 20L,
+                ),
+            ),
+        )
+
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        val userMsg = vm.messages.value.first { it.role == MessageRole.USER }
+        assertEquals("decode must produce one Attachment.Image", 1, userMsg.attachments.size)
+        assertTrue(userMsg.attachments.single() is Attachment.Image)
+        imageFile.delete()
+    }
+
+    @Test
+    fun persistentMode_messageWithAudioPath_decodesToAttachmentAudio() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        val relativePath = "attachments/7/audio_test.wav"
+        val audioFile = File(context.filesDir, relativePath).apply {
+            parentFile?.mkdirs()
+            // 16 kHz × 1 s × 2 bytes = 32 000 PCM bytes → durationMs = 1000.
+            val pcm = ByteArray(32_000)
+            writeBytes(
+                app.sanctum.machina.core.common.pcmToWav(pcm, 16_000),
+            )
+        }
+        fakeMessageDao.emit(
+            listOf(
+                MessageEntity(
+                    id = 1L, chatId = 7L, role = "user", text = "hi",
+                    audioPath = relativePath, createdAt = 10L,
+                ),
+                MessageEntity(
+                    id = 2L, chatId = 7L, role = "assistant", text = "ok",
+                    createdAt = 20L,
+                ),
+            ),
+        )
+
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        val userMsg = vm.messages.value.first { it.role == MessageRole.USER }
+        assertEquals(1, userMsg.attachments.size)
+        val audio = userMsg.attachments.single() as Attachment.Audio
+        assertEquals("1 s of 16-bit mono @ 16 kHz must report durationMs=1000", 1000L, audio.durationMs)
+        assertEquals(32_000, audio.pcm.size)
+        audioFile.delete()
+    }
+
+    @Test
+    fun persistentMode_messageWithMissingFile_attachmentOmitted() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        fakeMessageDao.emit(
+            listOf(
+                MessageEntity(
+                    id = 1L, chatId = 7L, role = "user", text = "ghost",
+                    imagePath = "attachments/7/img_ghost.png", createdAt = 10L,
+                ),
+                MessageEntity(
+                    id = 2L, chatId = 7L, role = "assistant", text = "ok",
+                    createdAt = 20L,
+                ),
+            ),
+        )
+
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        val userMsg = vm.messages.value.first { it.role == MessageRole.USER }
+        assertEquals("ghost", userMsg.text)
+        assertEquals(
+            "missing attachment file → attachment omitted, not crashed",
+            0,
+            userMsg.attachments.size,
+        )
+    }
+
+    @Test
+    fun persistentMode_imagePathOutsideAttachmentsRoot_throwsAndOmits() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        // Traversal escape — the resolved path canonicalises outside filesDir/attachments/.
+        fakeMessageDao.emit(
+            listOf(
+                MessageEntity(
+                    id = 1L, chatId = 7L, role = "user", text = "traversal",
+                    imagePath = "../secret.png", createdAt = 10L,
+                ),
+                MessageEntity(
+                    id = 2L, chatId = 7L, role = "assistant", text = "ok",
+                    createdAt = 20L,
+                ),
+            ),
+        )
+
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        val userMsg = vm.messages.value.first { it.role == MessageRole.USER }
+        assertEquals(
+            "path outside attachments root must not yield an attachment",
+            0,
+            userMsg.attachments.size,
+        )
+        assertEquals("traversal", userMsg.text)
+    }
+
+    // ---- Task 18 B4 — persistent auto-resume --------------------------------
+
+    @Test
+    fun persistentMode_lastMessageIsUnpairedUser_autoResumesInference_onFirstReady() =
+        runTest(dispatcher) {
+            val model = Model(name = "m", modelId = "id-m")
+            fakeChatDao.put(
+                ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L),
+            )
+            val userRow = MessageEntity(
+                id = 1L, chatId = 7L, role = "user", text = "привет",
+                createdAt = 10L,
+            )
+            fakeMessageDao.emit(listOf(userRow))
+            fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+
+            val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+            advanceUntilIdle()
+
+            assertEquals(
+                "B4: unpaired USER row must auto-dispatch runInference once engine is Ready",
+                1,
+                fakeHelper.runInferenceCalls,
+            )
+            // USER row must NOT be re-persisted — it already exists in Room.
+            val userInserts = fakeChatRepository.insertedMessages.count { it.role == "user" }
+            assertEquals(
+                "B4-AC3: USER must not be duplicated on auto-resume",
+                0,
+                userInserts,
+            )
+        }
+
+    @Test
+    fun persistentMode_lastMessageIsAssistant_doesNotAutoResume() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeMessageDao.emit(
+            listOf(
+                MessageEntity(id = 1L, chatId = 7L, role = "user", text = "q", createdAt = 10L),
+                MessageEntity(id = 2L, chatId = 7L, role = "assistant", text = "a", createdAt = 20L),
+            ),
+        )
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        assertEquals(
+            "Paired USER+ASSISTANT must not trigger auto-resume",
+            0,
+            fakeHelper.runInferenceCalls,
+        )
+    }
+
+    @Test
+    fun persistentMode_autoResumeTwiceOnRepeatedReady_onlyOneDispatch() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeMessageDao.emit(
+            listOf(
+                MessageEntity(id = 1L, chatId = 7L, role = "user", text = "q", createdAt = 10L),
+            ),
+        )
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+        assertEquals(1, fakeHelper.runInferenceCalls)
+
+        // Flutter Ready → Initializing → Ready again (heavy-setting reinit pattern).
+        fakeRegistry.publishEntry(model, ModelInitStatus.Initializing)
+        advanceUntilIdle()
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        advanceUntilIdle()
+
+        assertEquals(
+            "autoResumeAttempted must gate against double-dispatch across Ready flutters",
+            1,
+            fakeHelper.runInferenceCalls,
+        )
     }
 
     // ---- helpers -------------------------------------------------------
@@ -1649,6 +1870,10 @@ private class FakeMessageDao : MessageDao {
 
     override suspend fun firstByChatIdAndRole(chatId: Long, role: String): MessageEntity? =
         observed.value.firstOrNull { it.chatId == chatId && it.role == role }
+
+    override suspend fun lastByChat(chatId: Long): MessageEntity? =
+        observed.value.filter { it.chatId == chatId }
+            .maxWithOrNull(compareBy({ it.createdAt }, { it.id }))
 }
 
 private class FakeChatDao : ChatDao {

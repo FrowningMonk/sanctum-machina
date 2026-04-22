@@ -124,10 +124,11 @@
   <string name="home_action_open_model_manager">Открыть Model Manager</string>
   <string name="home_status_model_cold">Модель не прогрета</string>
   <string name="home_menu_open">Открыть меню</string>
-  <string name="home_settings_open">Настройки</string>
+  <string name="home_default_model_label">Модель по умолчанию: %1$s</string>
 
   <!-- Chat TopAppBar state machine (Phase 3 Task 10) -->
   <string name="chat_topappbar_reloading">Модель перезагружается…</string>
+  <string name="chat_topappbar_loading_model">Загружаю %1$s…</string>
   <string name="chat_topappbar_load_action">Загрузить</string>
   <string name="chat_topappbar_quick_subtitle">Быстрый чат</string>
   <string name="chat_topappbar_cross_model_title">Переключить модель?</string>
@@ -166,4 +167,8 @@
   <string name="drawer_model_unavailable_title">Модель недоступна</string>
   <string name="drawer_model_unavailable_body">Файл модели «%1$s» отсутствует на устройстве. Скачайте её заново, чтобы открыть чат.</string>
   <string name="drawer_model_unavailable_download">Скачать</string>
+
+  <!-- Drawer footer (Phase 3 Task 18) -->
+  <string name="drawer_nav_models">Модели</string>
+  <string name="drawer_nav_about">О приложении</string>
 </resources>

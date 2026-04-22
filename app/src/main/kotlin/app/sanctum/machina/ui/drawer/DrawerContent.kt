@@ -21,6 +21,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -28,6 +30,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.SwipeToDismissBox
@@ -78,6 +82,8 @@ fun DrawerContent(
     onChatClick: (chatId: Long) -> Unit,
     onNewChat: () -> Unit,
     onNavigateToModelManager: (modelId: String) -> Unit,
+    onOpenModelManager: () -> Unit,
+    onNavigateToAbout: () -> Unit,
     onPopCurrentChat: () -> Unit,
     viewModel: DrawerViewModel = hiltViewModel(),
     modifier: Modifier = Modifier,
@@ -100,35 +106,47 @@ fun DrawerContent(
         Column(modifier = Modifier.fillMaxSize()) {
             DrawerHeader(onNewChat = onNewChat)
             HorizontalDivider()
-            if (state.sections.isEmpty() && !state.isLoading) {
-                DrawerEmptyState(onNewChat = onNewChat)
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(vertical = 8.dp),
-                ) {
-                    state.sections.forEach { section ->
-                        item(key = "header-${section.kind.name}") {
-                            SectionHeader(kind = section.kind)
-                        }
-                        items(section.chats, key = { it.id }) { row ->
-                            SwipeableChatRow(
-                                row = row,
-                                isActive = row.id == currentChatId,
-                                onTap = {
-                                    if (row.isModelAvailable) {
-                                        onChatClick(row.id)
-                                    } else {
-                                        pendingUnavailable = row
-                                    }
-                                },
-                                onLongPress = { pendingRename = row },
-                                onSwipeDelete = { pendingDelete = row },
-                            )
+            // Task 18 B5 / user-spec §37: chat list occupies the middle; footer
+            // pins «Модели» and «О приложении» to the bottom. Wrapping the list
+            // in `Box(weight=1f)` makes the footer hug the bottom edge
+            // regardless of list length (empty, overflowing, or somewhere in
+            // between) — a plain Column would push the footer down when the
+            // list is short and scroll it off-screen when long.
+            Box(modifier = Modifier.weight(1f)) {
+                if (state.sections.isEmpty() && !state.isLoading) {
+                    DrawerEmptyState(onNewChat = onNewChat)
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(vertical = 8.dp),
+                    ) {
+                        state.sections.forEach { section ->
+                            item(key = "header-${section.kind.name}") {
+                                SectionHeader(kind = section.kind)
+                            }
+                            items(section.chats, key = { it.id }) { row ->
+                                SwipeableChatRow(
+                                    row = row,
+                                    isActive = row.id == currentChatId,
+                                    onTap = {
+                                        if (row.isModelAvailable) {
+                                            onChatClick(row.id)
+                                        } else {
+                                            pendingUnavailable = row
+                                        }
+                                    },
+                                    onLongPress = { pendingRename = row },
+                                    onSwipeDelete = { pendingDelete = row },
+                                )
+                            }
                         }
                     }
                 }
             }
+            DrawerFooter(
+                onOpenModelManager = onOpenModelManager,
+                onNavigateToAbout = onNavigateToAbout,
+            )
         }
     }
 
@@ -167,6 +185,42 @@ fun DrawerContent(
         )
     }
 
+}
+
+@Composable
+private fun DrawerFooter(
+    onOpenModelManager: () -> Unit,
+    onNavigateToAbout: () -> Unit,
+) {
+    HorizontalDivider()
+    Column(modifier = Modifier.padding(vertical = 8.dp)) {
+        NavigationDrawerItem(
+            label = { Text(stringResource(R.string.drawer_nav_models)) },
+            icon = {
+                Icon(
+                    imageVector = Icons.Outlined.Storage,
+                    contentDescription = null,
+                )
+            },
+            selected = false,
+            onClick = onOpenModelManager,
+            modifier = Modifier.padding(horizontal = 12.dp),
+            colors = NavigationDrawerItemDefaults.colors(),
+        )
+        NavigationDrawerItem(
+            label = { Text(stringResource(R.string.drawer_nav_about)) },
+            icon = {
+                Icon(
+                    imageVector = Icons.Outlined.Info,
+                    contentDescription = null,
+                )
+            },
+            selected = false,
+            onClick = onNavigateToAbout,
+            modifier = Modifier.padding(horizontal = 12.dp),
+            colors = NavigationDrawerItemDefaults.colors(),
+        )
+    }
 }
 
 @Composable

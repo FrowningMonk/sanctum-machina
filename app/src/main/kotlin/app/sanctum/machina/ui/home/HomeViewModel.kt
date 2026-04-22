@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.sanctum.machina.core.data.ModelDownloadStatusType
 import app.sanctum.machina.core.registry.ModelRegistry
+import app.sanctum.machina.core.settings.AppSettingsRepository
 import app.sanctum.machina.engine.AppCorruptionState
 import app.sanctum.machina.logexport.ExportSource
 import app.sanctum.machina.logexport.LogExportManager
@@ -13,6 +14,7 @@ import java.io.IOException
 import javax.inject.Inject
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
@@ -41,6 +43,7 @@ class HomeViewModel
 @Inject
 constructor(
     registry: ModelRegistry,
+    appSettingsRepository: AppSettingsRepository,
     appCorruptionState: AppCorruptionState,
     private val logExportManager: LogExportManager,
 ) : ViewModel() {
@@ -56,6 +59,23 @@ constructor(
         )
 
     val activeModelName: StateFlow<String?> = registry.activeModelName
+
+    /**
+     * Human-readable name of the default model (Task 18 B3 — default discoverability).
+     * Resolves `default_model_id` against `registry.models` to produce a `Model.name`
+     * the HomeScreen can render under the product title as «Модель по умолчанию: {name}».
+     * Emits `null` when the setting is blank or the referenced model is missing from
+     * the current registry snapshot — the label is simply hidden in that case.
+     */
+    val defaultModelName: StateFlow<String?> =
+        combine(appSettingsRepository.observeDefaultModelId(), registry.models) { id, models ->
+            if (id.isBlank()) null
+            else models.firstOrNull { it.model.modelId == id }?.model?.name
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000L),
+            initialValue = null,
+        )
 
     /** Seeded from the process-scoped flag — `true` iff `AppModule.provideSanctumDatabase`
      *  had to rename a corrupt db on this process launch (AC-R6). */

@@ -55,6 +55,14 @@ fun SanctumApp() {
                         coroutineScope.launch { drawerState.close() }
                         navController.navigate("model_manager")
                     },
+                    onOpenModelManager = {
+                        coroutineScope.launch { drawerState.close() }
+                        navController.navigate("model_manager")
+                    },
+                    onNavigateToAbout = {
+                        coroutineScope.launch { drawerState.close() }
+                        navController.navigate("about")
+                    },
                     onPopCurrentChat = {
                         // Current chat was deleted by the drawer while open — pop
                         // the ChatScreen off the back stack (AC-U3) so the user

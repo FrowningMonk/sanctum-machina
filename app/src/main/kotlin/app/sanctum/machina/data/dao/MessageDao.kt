@@ -34,4 +34,20 @@ interface MessageDao {
 
     @Query("SELECT COUNT(*) FROM messages WHERE chat_id = :chatId")
     suspend fun countByChatId(chatId: Long): Int
+
+    /**
+     * Latest message in [chatId] by `created_at DESC, id DESC`. Used by
+     * Persistent-mode VM bootstrap (Task 18 B4) to detect an unpaired USER
+     * row left behind when Draft→Persistent handover committed the first send
+     * but the inference dispatch never reached the new VM instance.
+     *
+     * Secondary sort by `id DESC` is the tie-breaker for two messages
+     * committed inside the same millisecond (drafts typically ship a USER
+     * row and the ASSISTANT response close together on fast engines).
+     */
+    @Query(
+        "SELECT * FROM messages WHERE chat_id = :chatId " +
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+    )
+    suspend fun lastByChat(chatId: Long): MessageEntity?
 }

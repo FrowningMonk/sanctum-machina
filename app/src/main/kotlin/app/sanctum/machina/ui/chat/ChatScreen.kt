@@ -428,7 +428,7 @@ private fun ChatTopAppBarTitle(
             currentModelId = state.currentModelId,
             onModelPicked = onModelPicked,
         )
-        is TopAppBarState.Loading -> LoadingTitle()
+        is TopAppBarState.Loading -> LoadingTitle(modelName = state.modelName)
         is TopAppBarState.Failed -> FailedLoadButton(modelId = state.modelId, onLoadClicked = onLoadClicked)
         is TopAppBarState.Ready -> ReadyTitle(modelName = state.modelName)
     }
@@ -476,7 +476,7 @@ private fun ReadyTitle(modelName: String) {
 }
 
 @Composable
-private fun LoadingTitle() {
+private fun LoadingTitle(modelName: String?) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -485,8 +485,18 @@ private fun LoadingTitle() {
             modifier = Modifier.size(14.dp),
             strokeWidth = 2.dp,
         )
+        // Task 18 B2-UX: when the target model is resolvable, render
+        // «Загружаю {name}…» so the user can tell A-warming from B-warming
+        // during cross-model switches. Falls back to the Phase-3 generic
+        // "reloading" copy only when the allowlist has not populated yet
+        // (cold start, empty `registry.models`).
+        val text = if (modelName != null) {
+            stringResource(R.string.chat_topappbar_loading_model, modelName)
+        } else {
+            stringResource(R.string.chat_topappbar_reloading)
+        }
         Text(
-            text = stringResource(R.string.chat_topappbar_reloading),
+            text = text,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

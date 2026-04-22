@@ -14,9 +14,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Menu
-import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -75,6 +75,7 @@ fun HomeScreen(
 ) {
     val hasDownloadedModels by viewModel.hasDownloadedModels.collectAsStateWithLifecycle()
     val activeModelName by viewModel.activeModelName.collectAsStateWithLifecycle()
+    val defaultModelName by viewModel.defaultModelName.collectAsStateWithLifecycle()
 
     // Seeded once from the process-scoped flag; dismissing flips the local state only, so the
     // banner returns on the next process launch if corruption strikes again.
@@ -114,16 +115,8 @@ fun HomeScreen(
                     }
                 },
                 title = { Text(stringResource(R.string.home_title)) },
-                actions = {
-                    // TODO(Phase 5): wire to SettingsScreen; keep disabled until it exists so
-                    // the icon is not a silent no-op tap target.
-                    IconButton(onClick = {}, enabled = false) {
-                        Icon(
-                            imageVector = Icons.Outlined.Settings,
-                            contentDescription = stringResource(R.string.home_settings_open),
-                        )
-                    }
-                },
+                // Task 18 B5: settings gear removed — there is no SettingsScreen to route to
+                // until Phase 5, and an always-disabled IconButton was a dead tap target.
             )
         },
         bottomBar = {
@@ -151,6 +144,8 @@ fun HomeScreen(
                     HomeReadyBody(
                         onNewQuickChat = onNewQuickChat,
                         onOpenDrawer = onOpenDrawer,
+                        defaultModelName = defaultModelName,
+                        onOpenModelManager = onOpenModelManager,
                     )
                 } else {
                     HomeNoModelsBody(onOpenModelManager = onOpenModelManager)
@@ -220,6 +215,8 @@ private fun HomeIdentity() {
 private fun HomeReadyBody(
     onNewQuickChat: () -> Unit,
     onOpenDrawer: () -> Unit,
+    defaultModelName: String?,
+    onOpenModelManager: () -> Unit,
 ) {
     Column(
         modifier = Modifier.padding(horizontal = 24.dp),
@@ -227,6 +224,19 @@ private fun HomeReadyBody(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         HomeIdentity()
+        // Task 18 B3: a single-model user previously had no visible path to
+        // «сменить модель по умолчанию» — the ModelManager overflow menu
+        // hides «Сделать по умолчанию» on the current default, and the user
+        // couldn't guess that Model Manager was the right screen to visit.
+        // Clickable label routes into Model Manager so the next step is obvious.
+        if (defaultModelName != null) {
+            Text(
+                text = stringResource(R.string.home_default_model_label, defaultModelName),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.clickable { onOpenModelManager() },
+            )
+        }
         Spacer(Modifier.height(8.dp))
         FilledTonalButton(onClick = onNewQuickChat) {
             Text(stringResource(R.string.home_action_new_quick_chat))

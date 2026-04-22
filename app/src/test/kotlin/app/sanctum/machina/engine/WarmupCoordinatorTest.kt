@@ -465,6 +465,60 @@ class WarmupCoordinatorTest {
     )
   }
 
+  // ---- Task 18 B2 — cross-model reinit timeout / failure contract ------
+
+  @Test
+  fun crossModelSwitch_whenPriorReady_eventuallyReachesReady_forNewTarget() = runTest {
+    // A→Ready, then cross-model switch to B. The coordinator must fully release A's
+    // warmup lifecycle and drive B through initialize() to a successful completion —
+    // no deadlock / stale Initializing that would leave the UI on a forever spinner.
+    appSettings.defaultModelId = "model-a"
+    seedAllowlist("model-a", "model-b")
+    registry.initializeHandler = { Result.success(Unit) }
+
+    val coordinator = newCoordinator()
+    coordinator.warmupDefault()
+    advanceUntilIdle()
+    assertEquals(listOf("model-a"), registry.initializeCalls)
+    assertFalse(coordinator.isWarmupInProgress.value)
+
+    coordinator.cancelAndRestart("model-b")
+    advanceUntilIdle()
+
+    assertEquals(listOf("model-a", "model-b"), registry.initializeCalls)
+    assertFalse(
+      "B initialize returned success → flag must settle at false",
+      coordinator.isWarmupInProgress.value,
+    )
+  }
+
+  @Test
+  fun crossModelSwitch_isWarmupInProgress_finalizesFalse_evenOnFailure() = runTest {
+    // Sanity: a failing initialize must not leave the flag stuck at true.
+    // `errorLog.e` in the coordinator's `.onFailure` hops to real `Dispatchers.IO`,
+    // which the test scheduler cannot advance — poll in real time for the flag to
+    // settle, the same bounded-wait pattern used by `awaitLogFile`.
+    appSettings.defaultModelId = "model-a"
+    seedAllowlist("model-a")
+    registry.initializeHandler = { Result.failure(RuntimeException("GPU+CPU init failed")) }
+
+    val coordinator = newCoordinator()
+    coordinator.warmupDefault()
+    advanceUntilIdle()
+
+    val deadlineMs = System.currentTimeMillis() + 2_000
+    while (coordinator.isWarmupInProgress.value && System.currentTimeMillis() < deadlineMs) {
+      Thread.sleep(20)
+      advanceUntilIdle()
+    }
+    assertFalse(
+      "failed warmup must still reset isWarmupInProgress to false",
+      coordinator.isWarmupInProgress.value,
+    )
+    // AC-B2-AC2: the finally block in launchWarmup is the sole writer of the false
+    // transition — without it, callers could assume the engine is still initialising.
+  }
+
   @Test
   fun isWarmupInProgress_emitsFalse_afterBareCancellation() = runTest {
     // Complements the "stays true across cancel-and-restart" case: when the coordinator scope

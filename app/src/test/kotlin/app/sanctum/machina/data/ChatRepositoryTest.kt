@@ -653,4 +653,7 @@ private class FakeMessageDao : MessageDao {
 
   override suspend fun firstByChatIdAndRole(chatId: Long, role: String): MessageEntity? =
     byChat[chatId]?.firstOrNull { it.role == role }
+
+  override suspend fun lastByChat(chatId: Long): MessageEntity? =
+    byChat[chatId]?.maxWithOrNull(compareBy({ it.createdAt }, { it.id }))
 }

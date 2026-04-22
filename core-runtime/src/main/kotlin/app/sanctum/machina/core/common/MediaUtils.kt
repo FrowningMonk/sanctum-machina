@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
 import androidx.exifinterface.media.ExifInterface
+import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
 import java.io.InputStream
@@ -155,6 +156,87 @@ fun pcmToWav(pcm: ByteArray, sampleRate: Int): ByteArray {
 
   return header + pcm
 }
+
+/**
+ * Decoded audio payload: raw little-endian 16-bit PCM mono samples plus the
+ * duration derived from the WAV header's data-chunk size.
+ */
+data class DecodedWav(val pcm: ByteArray, val durationMs: Long) {
+  override fun equals(other: Any?): Boolean {
+    if (this === other) return true
+    if (other !is DecodedWav) return false
+    return durationMs == other.durationMs && pcm.contentEquals(other.pcm)
+  }
+
+  override fun hashCode(): Int = 31 * pcm.contentHashCode() + durationMs.hashCode()
+}
+
+/**
+ * Inverse of [pcmToWav]: strip the 44-byte RIFF/WAVE header and return the
+ * little-endian 16-bit PCM mono payload together with its duration in
+ * milliseconds. Validates the RIFF/WAVE magic and "fmt "/"data" sub-chunk
+ * sizes so a truncated or non-canonical file is rejected before the native
+ * decoder sees it.
+ *
+ * Throws [IOException] for: a file shorter than the 44-byte canonical header,
+ * missing RIFF/WAVE magic, or a declared `data` chunk larger than the file
+ * body. `bytesPerSample` is derived from the header so audio not written by
+ * [pcmToWav] (e.g. 8-bit payloads) still reports a truthful [DecodedWav.durationMs].
+ */
+@Throws(IOException::class)
+fun wavToPcm(file: File): DecodedWav {
+  val bytes = file.readBytes()
+  return wavBytesToPcm(bytes, file.absolutePath)
+}
+
+/**
+ * Byte-array overload of [wavToPcm] — kept internal to this file because the
+ * File-overload is the only production caller; tests parse in-memory WAV
+ * buffers through the public [wavToPcm] by writing to a temp file.
+ */
+@Throws(IOException::class)
+internal fun wavBytesToPcm(bytes: ByteArray, source: String = "<bytes>"): DecodedWav {
+  if (bytes.size < 44) {
+    throw IOException("WAV too short (${bytes.size} bytes): $source")
+  }
+  if (bytes[0] != 'R'.code.toByte() || bytes[1] != 'I'.code.toByte() ||
+    bytes[2] != 'F'.code.toByte() || bytes[3] != 'F'.code.toByte()
+  ) {
+    throw IOException("missing RIFF magic: $source")
+  }
+  if (bytes[8] != 'W'.code.toByte() || bytes[9] != 'A'.code.toByte() ||
+    bytes[10] != 'V'.code.toByte() || bytes[11] != 'E'.code.toByte()
+  ) {
+    throw IOException("missing WAVE magic: $source")
+  }
+  val sampleRate = readLeInt(bytes, 24)
+  val bitsPerSample = readLeShort(bytes, 34).toInt() and 0xffff
+  val channels = readLeShort(bytes, 22).toInt() and 0xffff
+  val dataSize = readLeInt(bytes, 40)
+  if (dataSize < 0 || dataSize > bytes.size - 44) {
+    throw IOException("data chunk size $dataSize exceeds file body: $source")
+  }
+  if (sampleRate <= 0 || bitsPerSample <= 0 || channels <= 0) {
+    throw IOException(
+      "invalid WAV params: sampleRate=$sampleRate bits=$bitsPerSample ch=$channels: $source",
+    )
+  }
+  val pcm = bytes.copyOfRange(44, 44 + dataSize)
+  val bytesPerSample = bitsPerSample / 8
+  val denom = sampleRate.toLong() * bytesPerSample * channels
+  val durationMs = if (denom > 0) pcm.size.toLong() * 1000L / denom else 0L
+  return DecodedWav(pcm = pcm, durationMs = durationMs)
+}
+
+private fun readLeInt(buf: ByteArray, offset: Int): Int =
+  (buf[offset].toInt() and 0xff) or
+    ((buf[offset + 1].toInt() and 0xff) shl 8) or
+    ((buf[offset + 2].toInt() and 0xff) shl 16) or
+    ((buf[offset + 3].toInt() and 0xff) shl 24)
+
+private fun readLeShort(buf: ByteArray, offset: Int): Short =
+  (((buf[offset].toInt() and 0xff)) or
+    ((buf[offset + 1].toInt() and 0xff) shl 8)).toShort()
 
 private fun writeLeInt(buf: ByteArray, offset: Int, value: Int) {
   buf[offset] = (value and 0xff).toByte()

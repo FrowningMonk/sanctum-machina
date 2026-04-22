@@ -205,14 +205,22 @@ constructor(
               IllegalArgumentException("unknown model: $modelName")
             )
         val model = entry.model
-        // Single-engine invariant: release any OTHER Ready engine before initializing the
-        // target. Without this, switching from model A to B leaves A's native instance
-        // loaded alongside B — doubling RAM use and surprising the UI (Home re-open on A
-        // would find initStatus=Ready and skip warmup). releaseEngine only ever resets the
-        // target, so we iterate the snapshot here. lifecycleMutex is held, so no new Ready
-        // entries can appear during iteration.
+        // Single-engine invariant: release any OTHER Ready/Initializing engine before
+        // initializing the target. Without the Ready branch, switching from model A to B leaves
+        // A's native instance loaded alongside B — doubling RAM use and surprising the UI (Home
+        // re-open on A would find initStatus=Ready and skip warmup). The Initializing branch
+        // (Task 18 B2) covers the cross-model-switch scenario where a prior `initialize(A)` was
+        // cancelled mid-flight and left `A.initStatus == Initializing` — without this, that
+        // stale flag would survive `registry.initialize(B)` success and Task 10's TopAppBar
+        // derivation would render a perpetual spinner for A on any screen pinned to it.
+        // `lifecycleMutex` is held, so no new Ready/Initializing entries can appear during
+        // iteration.
         _models.value
-          .filter { it.initStatus == ModelInitStatus.Ready && it.model.name != modelName }
+          .filter {
+            (it.initStatus === ModelInitStatus.Ready ||
+              it.initStatus === ModelInitStatus.Initializing) &&
+              it.model.name != modelName
+          }
           .forEach { other ->
             releaseEngine(other.model)
             updateEntry(other.model.name) { it.copy(initStatus = ModelInitStatus.Idle) }
@@ -224,28 +232,40 @@ constructor(
         // still-allocated native instance (security-auditor-1 SM2). Safe no-op when Idle.
         releaseEngine(model)
 
-        val err1 = awaitInitialize(model)
-        if (err1.isEmpty() && model.instance != null) {
-          updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Ready) }
-          return@withLock Result.success(Unit)
+        // B2 cancellation recovery (Task 18): without this, cancelling a warmup mid-`awaitInitialize`
+        // (e.g. rapid cross-model double-tap) leaves `modelName` pinned at
+        // [ModelInitStatus.Initializing]. The derived TopAppBar then renders a Loading spinner
+        // forever for this model, because `WarmupCoordinator.isWarmupInProgress` correctly flips
+        // back to false on cancellation while the registry entry disagrees. Reset to Idle on
+        // CancellationException; the native engine is already cleaned up via
+        // `awaitInitialize.invokeOnCancellation` above.
+        try {
+          val err1 = awaitInitialize(model)
+          if (err1.isEmpty() && model.instance != null) {
+            updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Ready) }
+            return@withLock Result.success(Unit)
+          }
+
+          // T8: unconditional GPU→CPU fallback. No error-text parsing.
+          errorLog.e(LOG_TAG_INIT, "GPU init failed: $err1")
+          // Guard against partial native allocation before retry.
+          llmModelHelper.cleanUp(model, onDone = { })
+          model.configValues =
+            model.configValues + (ConfigKeys.ACCELERATOR.label to Accelerator.CPU.label)
+
+          val err2 = awaitInitialize(model)
+          if (err2.isEmpty() && model.instance != null) {
+            updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Ready) }
+            return@withLock Result.success(Unit)
+          }
+
+          errorLog.e(LOG_TAG_INIT, "CPU init failed: $err2")
+          updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Failed(err2)) }
+          Result.failure(RuntimeException("GPU+CPU init failed: $err2"))
+        } catch (ce: CancellationException) {
+          updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Idle) }
+          throw ce
         }
-
-        // T8: unconditional GPU→CPU fallback. No error-text parsing.
-        errorLog.e(LOG_TAG_INIT, "GPU init failed: $err1")
-        // Guard against partial native allocation before retry.
-        llmModelHelper.cleanUp(model, onDone = { })
-        model.configValues =
-          model.configValues + (ConfigKeys.ACCELERATOR.label to Accelerator.CPU.label)
-
-        val err2 = awaitInitialize(model)
-        if (err2.isEmpty() && model.instance != null) {
-          updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Ready) }
-          return@withLock Result.success(Unit)
-        }
-
-        errorLog.e(LOG_TAG_INIT, "CPU init failed: $err2")
-        updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Failed(err2)) }
-        Result.failure(RuntimeException("GPU+CPU init failed: $err2"))
       }
     }
 
