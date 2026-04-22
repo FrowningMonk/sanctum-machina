@@ -108,11 +108,24 @@ PhoneWrap/                                  # Repository root, working dir
 │       │   │                               # AudioRecorderBottomSheet (AudioRecord); MessageBubble + ThinkingBlock;
 │       │   │                               # InferenceSettingsBottomSheet + HeavyChangeDialog + ReinitProgressDialog;
 │       │   │                               # EffectiveConfig; SafeMarkdown + SafeUriHandler
-│       │   ├── modelmanager/               # ModelManagerScreen: RestartCrashBanner above model list (Phase 2.5); SnackbarHost
-│       │   └── theme/, SanctumApp.kt       # NavHost: modelmanager / chat / about
+│       │   ├── drawer/                     # Phase 3 — DrawerContent + DrawerViewModel; grouped chat list (Today/Yesterday/ThisWeek/Earlier);
+│       │   │                                 # long-press rename, swipe-to-confirm-delete, model-unavailable dialog;
+│       │   │                                 # footer «Модели» → model_manager + «О приложении» → about (user-spec §37)
+│       │   ├── home/                         # Phase 3 — HomeScreen + HomeViewModel; hasDownloadedModels gating,
+│       │   │                                 # clickable default-model label, corruption banner (AC-D5)
+│       │   ├── modelmanager/               # ModelManagerScreen: RestartCrashBanner above model list (Phase 2.5); SnackbarHost;
+│       │   │                                 # Phase 3 — default-model star badge + overflow «Сделать по умолчанию»
+│       │   └── theme/, SanctumApp.kt       # NavHost: home / chat/quick?modelId={id} / chat/draft / chat/{chatId} (Long) / model_manager / about
 │       ├── MainActivity.kt
-│       └── SanctumApplication.kt           # @HiltAndroidApp; process-guard installs CrashHandler before mainActivityFqn assignment (Phase 2.5)
-│                                           # Phase 3+: data/ (Room repos), di/ (app-level Hilt modules)
+│       └── SanctumApplication.kt           # @HiltAndroidApp; process-guard (getProcessName() == packageName) separates main
+│                                           # from :crash process. Main-process work: installs CrashHandler, assigns
+│                                           # DefaultDownloadRepository.mainActivityFqn, triggers SettingsMigrationHelper.migrateIfNeeded()
+│                                           # (Phase 2.5 → 3 per-model settings migration), kicks off
+│                                           # WarmupCoordinator.warmupDefault() on background scope (Phase 3 cold-start engine warm);
+│                                           # StartupHousekeeper coroutines: filesDir/quick/ purge, orphan .staging-* cleanup,
+│                                           # chatRepository.sweepZombieChats() — each wrapped in try/catch + ErrorLog.e;
+│                                           # installs Room corruption handler that flips AppCorruptionState.corruptionOccurred
+│                                           # and renames the db to sanctum.db.corrupt_{ts} so HomeScreen can surface AC-D5 banner.
 │
 ├── core-runtime/                           # :core-runtime gradle module — extracted Gallery core
 │   ├── build.gradle.kts                    # namespace = "app.sanctum.machina.core"
@@ -197,9 +210,12 @@ No other external services. No telemetry endpoints. No update-check endpoints. N
 
 **Model lifecycle:**
 
-- On app start: `ModelRegistry` loads allowlist from bundled asset, scans local files for downloaded models, populates a `StateFlow<List<ModelState>>`.
-- On first chat open: `ModelInitService.initialize(model)` calls `LlmModelHelper.initialize(...)` — this is expensive (seconds). Resulting `ModelRuntimeHandle` is held as an application-scoped singleton; subsequent chat switches within the same model call `resetConversation(...)` which is cheap.
-- On model switch: old handle is cleaned up via `LlmModelHelper.cleanUp`, new handle initialized.
+- On app start: `DefaultModelRegistry` loads allowlist from bundled asset, scans local files for downloaded models, populates `StateFlow<List<ModelEntry>>` (each entry carries `downloadStatus` + `initStatus`). `SanctumApplication` then kicks off `WarmupCoordinator.warmupDefault()` on a background coroutine — resolves `default_model_id` → `last_used_model_id` → no-op (AC-F5), translates `modelId` → `Model.name` via the registry snapshot, and calls `registry.initialize(modelName)` which invokes `LlmModelHelper.initialize(...)`. This is expensive (5–30 sec on real hardware); running it from `Application.onCreate` lets the Home screen render first while the engine warms in the background.
+- `ModelRegistry.activeModelName` is a derived `StateFlow<String?>` — projects the stable HF `modelId` of the single entry in `ModelInitStatus.Ready`, or null. Consumers (Home, ChatViewModel, Drawer) observe this reactively.
+- `ChatViewModel.onCleared()` does NOT call `registry.cleanup` — the engine outlives any `NavBackStackEntry`. Re-entering the same chat reuses the warm engine; same-model navigation is instant.
+- Cross-model switch goes through `WarmupCoordinator.cancelAndRestart(modelId)` — serialises via `restartMutex`, cancels the in-flight warmup Job (if any), then starts a new Job that calls `registry.initialize(newName)`. Inside `DefaultModelRegistry.initialize` the single-engine invariant is enforced: any prior `Ready` or `Initializing` entry with a different name is `releaseEngine`-d and flipped to `Idle` before the target flips to `Initializing`. A `catch(CancellationException)` resets the target's status to `Idle` so a cancelled warmup never leaves a stale `Initializing` state stranded in the registry.
+- Same-model "reset conversation" (user tap on ↻) goes through `registry.resetConversation(name, systemPrompt)` — keeps the native engine allocated, clears KV cache + re-renders Jinja with the effective system prompt. Cheap (milliseconds).
+- Heavy-setting reinit (accelerator flip) goes through `ChatViewModel.applyHeavySetting` → `registry.cleanup + registry.initialize` directly under the same lifecycle mutex; `WarmupCoordinator` is bypassed because the chat-modal `ReinitProgressDialog` owns the blocking UX (D15).
 
 ---
 
@@ -217,9 +233,9 @@ No other external services. No telemetry endpoints. No update-check endpoints. N
 - Relationships: One project has many chats (`chats.project_id`).
 
 **chats**
-- Purpose: A persistent conversation with a model, belonging to exactly one project.
-- Key fields: `id` (PK), `project_id` (FK → projects.id, **not null** — every persistent chat belongs to a project), `model_id` (TEXT, not null — which model was used; allows reopening a chat even if the user switched default models), `title` (TEXT, nullable — auto-generated from first message if null), `created_at` (INTEGER), `last_message_at` (INTEGER).
-- Relationships: One chat has many messages (`messages.chat_id`). One chat belongs to exactly one project.
+- Purpose: A persistent conversation with a model. Optionally belongs to a project (Phase 4+).
+- Key fields: `id` (PK), `project_id` (INTEGER, **nullable — no FK constraint in v1**; the `projects` table is added via `Migration(1,2)` in Phase 4 per AC-R4/AC-R7), `model_id` (TEXT, not null — which model was used; allows reopening a chat even if the user switched default models), `title` (TEXT, not null — auto-generated from first message, user-renameable), `is_manually_titled` (INTEGER 0/1 — distinguishes auto- from user-typed title, rename-blank resets to auto), `created_at` (INTEGER), `last_message_at` (INTEGER).
+- Relationships: One chat has many messages (`messages.chat_id`).
 - Note: **Quick chats are NOT stored in Room.** They are in-memory only — see "Quick chats" below.
 
 **messages**
@@ -227,11 +243,7 @@ No other external services. No telemetry endpoints. No update-check endpoints. N
 - Key fields: `id` (PK), `chat_id` (FK → chats.id, not null, indexed), `role` (TEXT, not null — `user` or `assistant`), `text` (TEXT — primary content), `thinking_text` (TEXT, nullable — assistant's reasoning channel), `image_path` (TEXT, nullable — relative path to stored image in app files), `audio_path` (TEXT, nullable — relative path to stored audio), `created_at` (INTEGER, indexed), `token_count` (INTEGER, nullable — cached for context window accounting).
 - Relationships: Belongs to exactly one chat.
 
-**project_files** *(Phase 4 — schema reserved now, populated later)*
-- Purpose: Files uploaded into a project, used as shared context for all chats in that project.
-- Key fields: `id` (PK), `project_id` (FK → projects.id, not null, indexed), `name` (TEXT), `storage_path` (TEXT), `text_content` (TEXT, nullable — extracted plain text), `embedding` (BLOB, nullable — populated by future `Embedder`), `created_at` (INTEGER).
-- Relationships: Belongs to exactly one project.
-- Note: Table created in v1 schema with all columns nullable so Phase 4 does not require a migration. No DAO methods exposed until Phase 4.
+**project_files** — NOT created in v1 schema (AC-R7). Added via `Migration(1,2)` in Phase 4 together with the `projects` table. v1 leaves `chats.project_id` as a plain nullable INTEGER with no FK and no index; the FK + index land in Phase 4 when the parent table exists.
 
 **models_meta** *(cached allowlist + local state + user overrides)*
 - Purpose: Persistent view of known models — both bundled allowlist entries and any imported/custom models. Local download state. User overrides of inference parameters.
@@ -262,8 +274,8 @@ This is the Incognito-mode equivalent: the only way to have a conversation that 
 
 ### Key Constraints
 
-- **Foreign keys:** `chats.project_id` → `projects.id` (ON DELETE SET NULL — deleting a project turns its chats into quick chats, does not destroy them). `messages.chat_id` → `chats.id` (ON DELETE CASCADE — deleting a chat deletes its messages). `project_files.project_id` → `projects.id` (ON DELETE CASCADE).
-- **Indexes:** `messages.chat_id`, `messages.created_at`, `chats.project_id`, `chats.last_message_at`, `project_files.project_id`.
+- **Foreign keys (v1):** `messages.chat_id` → `chats.id` (ON DELETE CASCADE — deleting a chat deletes its messages). `chats.project_id` has NO FK in v1 — it is a plain nullable column until `Migration(1,2)` in Phase 4 introduces the `projects` table.
+- **Indexes (v1):** `messages.chat_id`, `messages.created_at`, `chats.last_message_at`. `chats.project_id` is not indexed in v1 (no lookups by project yet).
 - **No unique business constraints** on user-facing fields (projects can share names, chats can share titles).
 
 ### Migration Strategy
