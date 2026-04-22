@@ -87,6 +87,7 @@ class WarmupCoordinatorTest {
   fun warmupDefault_usesDefaultModelId_whenSet() = runTest {
     appSettings.defaultModelId = "model-a"
     appSettings.lastUsedModelId = "model-b"
+    seedAllowlist("model-a", "model-b")
 
     val coordinator = newCoordinator()
     coordinator.warmupDefault()
@@ -99,6 +100,7 @@ class WarmupCoordinatorTest {
   fun warmupDefault_fallsBackToLastUsed_whenDefaultEmpty() = runTest {
     appSettings.defaultModelId = ""
     appSettings.lastUsedModelId = "model-b"
+    seedAllowlist("model-b")
 
     val coordinator = newCoordinator()
     coordinator.warmupDefault()
@@ -129,6 +131,7 @@ class WarmupCoordinatorTest {
   @Test
   fun warmupDefault_updatesLastUsedModelId_onSuccess() = runTest {
     appSettings.defaultModelId = "model-a"
+    seedAllowlist("model-a")
     registry.initializeHandler = { Result.success(Unit) }
 
     val coordinator = newCoordinator()
@@ -143,6 +146,7 @@ class WarmupCoordinatorTest {
   @Test
   fun warmupDefault_logsEngineWarmupError_onFailure() = runTest {
     appSettings.defaultModelId = "model-a"
+    seedAllowlist("model-a")
     registry.initializeHandler = { Result.failure(RuntimeException("GPU+CPU init failed")) }
 
     val coordinator = newCoordinator()
@@ -182,6 +186,7 @@ class WarmupCoordinatorTest {
   @Test
   fun cancelAndRestart_cancelsInFlightJobBeforeNewInitialize() = runTest {
     appSettings.defaultModelId = "model-a"
+    seedAllowlist("model-a", "model-b")
     val firstStarted = CompletableDeferred<Unit>()
     val firstCancelled = CompletableDeferred<Unit>()
     val secondStarted = CompletableDeferred<Unit>()
@@ -292,7 +297,8 @@ class WarmupCoordinatorTest {
     advanceUntilIdle()
 
     assertEquals(listOf("org/first-downloaded"), appSettings.setDefaultModelIdCalls)
-    assertEquals(listOf("org/first-downloaded"), registry.initializeCalls)
+    // Coordinator translates modelId → Model.name before calling registry.initialize.
+    assertEquals(listOf("gemma-local"), registry.initializeCalls)
   }
 
   @Test
@@ -337,6 +343,7 @@ class WarmupCoordinatorTest {
     // completes: each call should cancel the previous Job and start a new one." The default
     // is resolved each call — we change it between invocations to distinguish the two Jobs.
     appSettings.defaultModelId = "model-a"
+    seedAllowlist("model-a", "model-b")
     val firstStarted = CompletableDeferred<Unit>()
     val firstCancelled = CompletableDeferred<Unit>()
     val secondStarted = CompletableDeferred<Unit>()
@@ -381,6 +388,7 @@ class WarmupCoordinatorTest {
   @Test
   fun isWarmupInProgress_emitsTrue_duringWarmup() = runTest {
     appSettings.defaultModelId = "model-a"
+    seedAllowlist("model-a")
     registry.initializeHandler = { awaitCancellation() }
 
     val coordinator = newCoordinator()
@@ -393,6 +401,7 @@ class WarmupCoordinatorTest {
   @Test
   fun isWarmupInProgress_emitsFalse_afterCompletion() = runTest {
     appSettings.defaultModelId = "model-a"
+    seedAllowlist("model-a")
     // Gate inside the handler so the test can OBSERVE the true emission before completion —
     // otherwise `assertFalse(value)` would hold even for an implementation that never flipped
     // the flag to true (the initial StateFlow value is false).
@@ -420,6 +429,7 @@ class WarmupCoordinatorTest {
     // of the first Job alone does not reset the flag — the new Job's completion does. Both
     // would regress if the `finally` block unconditionally wrote false.
     appSettings.defaultModelId = "model-a"
+    seedAllowlist("model-a", "model-b")
     val secondRelease = CompletableDeferred<Unit>()
     registry.initializeHandler = { modelName ->
       when (modelName) {
@@ -461,6 +471,7 @@ class WarmupCoordinatorTest {
     // is cancelled outright (no restart), the flag must settle on `false` via the finally
     // block so no stuck spinner survives.
     appSettings.defaultModelId = "model-a"
+    seedAllowlist("model-a")
     registry.initializeHandler = { awaitCancellation() }
 
     val coordinator = newCoordinator()
@@ -478,6 +489,21 @@ class WarmupCoordinatorTest {
 
   private fun fakeModel(name: String, modelId: String): Model =
     Model(name = name, modelId = modelId)
+
+  /**
+   * Seed [registry]._models with entries keyed by [modelIds]. Each entry uses the same string
+   * for `name` and `modelId` so tests can assert `registry.initializeCalls == listOf(modelId)`
+   * (the coordinator translates modelId → Model.name via the registry snapshot).
+   */
+  private fun seedAllowlist(vararg modelIds: String) {
+    registry._models.value = modelIds.map { id ->
+      ModelEntry(
+        model = fakeModel(name = id, modelId = id),
+        downloadStatus = ModelDownloadStatus(status = ModelDownloadStatusType.SUCCEEDED),
+        initStatus = ModelInitStatus.Idle,
+      )
+    }
+  }
 }
 
 // ---------- Fakes (hand-rolled; no MockK/Mockito per patterns.md) ----------

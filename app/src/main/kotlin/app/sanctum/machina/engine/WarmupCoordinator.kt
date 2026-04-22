@@ -128,8 +128,17 @@ open class WarmupCoordinator @VisibleForTesting(otherwise = VisibleForTesting.PR
 
       warmupJob = scope.launch {
         try {
-          val result = registry.initialize(modelId)
-          result
+          // `registry.initialize` keys by Model.name (storage filename), but the
+          // Phase-3 identifier circulating through WarmupCoordinator / settings /
+          // nav is the HF Model.modelId. Translate via the registry snapshot;
+          // an unknown modelId here means the allowlist hasn't loaded yet or the
+          // model was deleted between the default-write and warmup dispatch.
+          val entry = registry.models.value.firstOrNull { it.model.modelId == modelId }
+          if (entry == null) {
+            errorLog.e(LOG_WARMUP, "no allowlist entry for modelId=$modelId")
+            return@launch
+          }
+          registry.initialize(entry.model.name)
             .onSuccess { persistLastUsedModelId(modelId) }
             .onFailure { cause ->
               errorLog.e(LOG_WARMUP, "initialize failed for $modelId", cause)
