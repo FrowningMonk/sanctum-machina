@@ -45,8 +45,11 @@ fun SanctumApp() {
                         navController.navigate("chat/$chatId")
                     },
                     onNewChat = {
+                        // Drawer "Новый чат" opens a persistent draft with the model picker
+                        // (TopAppBarState.Draft, AC-U7). The Home "Начать быстрый чат" button
+                        // is the incognito entry point that stays on chat/quick.
                         coroutineScope.launch { drawerState.close() }
-                        navController.navigate("chat/quick")
+                        navController.navigate("chat/draft")
                     },
                     onNavigateToModelManager = {
                         coroutineScope.launch { drawerState.close() }
