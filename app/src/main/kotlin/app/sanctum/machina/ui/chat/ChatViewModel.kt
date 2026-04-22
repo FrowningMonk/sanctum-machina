@@ -346,8 +346,17 @@ constructor(
      * serialises the handover — a rapid double-tap from the Draft dropdown or the «Загрузить»
      * button cannot interleave two `registry.initialize` calls against the same
      * `lifecycleMutex` (tech-spec Decision 3 race).
+     *
+     * Also re-pins [_chatModelId] to the new target so [observeEngineState] and
+     * [deriveTopAppBarState] track model B instead of staying on model A after
+     * the coordinator's single-engine release flips A → Idle. Without this
+     * re-pin, `uiState` would freeze at `Loading` because the VM kept watching
+     * the now-Idle prior model even after B reached Ready — the user had to
+     * back out of the chat to bootstrap a new VM on B. For the Failed→retry
+     * path the write is a no-op (same modelId).
      */
     fun loadModel(modelId: String) {
+        _chatModelId.value = modelId
         warmupCoordinator.cancelAndRestart(modelId)
     }
 
@@ -824,7 +833,7 @@ constructor(
         _uiState.first { it is ChatUiState.Ready }
         val target = autoResumeTarget ?: return
         if (autoResumeAttempted) return
-        resumePendingAssistantPersistent(identity, target.text)
+        resumePendingAssistantPersistent(identity, target)
     }
 
     /**
@@ -833,15 +842,16 @@ constructor(
      * streaming-bubble + dispatchInferencePersistent tail of [runInferencePersistent]
      * without its `chatRepository.savePersistentMessage(userMsg)` step.
      *
-     * Images/audio attached to the USER row are NOT re-decoded from disk here —
-     * the model only sees the text. This is acceptable for the current scope
-     * (MVP handover): the history still renders the image via B1 decode, and
-     * a follow-up USER turn can re-send the attachment if inference on the
-     * image is needed.
+     * Attachments on [userEntity] (`imagePath` / `audioPath`) are re-decoded
+     * from disk via the B1 helpers and forwarded to `runInference` so the
+     * model actually sees the image/audio the user attached to their first
+     * send — without this, the Draft→Persistent handover dropped the media
+     * and the assistant answered text-only on the first turn even though
+     * the history bubble displayed the attachment correctly.
      */
     private fun resumePendingAssistantPersistent(
         identity: ChatIdentity.Persistent,
-        userText: String,
+        userEntity: MessageEntity,
     ) {
         val model = currentReadyModel() ?: return
         // Commit the auto-resume attempt only after a model is locked in —
@@ -849,6 +859,7 @@ constructor(
         // otherwise consume the attempt and strand the unpaired USER row.
         autoResumeAttempted = true
         autoResumeTarget = null
+        val pending = decodeAttachmentsForEntity(userEntity)
         val accumulateThinking = shouldAccumulateThinking(model)
         val initialThinkingText: String? = if (accumulateThinking) "" else null
         _streamingMessage.value = Message(
@@ -861,8 +872,8 @@ constructor(
         _uiState.value = ChatUiState.Ready(isGenerating = true)
         dispatchInferencePersistent(
             identity = identity,
-            text = userText,
-            pending = emptyList(),
+            text = userEntity.text,
+            pending = pending,
             model = model,
             accumulateThinking = accumulateThinking,
         )

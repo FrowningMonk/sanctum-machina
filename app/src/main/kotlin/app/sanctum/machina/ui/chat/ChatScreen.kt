@@ -117,32 +117,39 @@ private fun ChatScreenBody(
     var showSettingsSheet by rememberSaveable { mutableStateOf(false) }
     val isQuick = viewModel.identity is ChatIdentity.Quick
 
-    when (val state = uiState) {
-        ChatUiState.Loading -> LoadingContent()
-        is ChatUiState.Failed -> FailedContent(rawCause = state.rawCause, onBack = onBack)
-        is ChatUiState.Ready ->
-            ReadyContent(
-                topAppBarState = topAppBarState,
-                isQuickMode = isQuick,
-                reinitInProgress = reinitInProgress,
-                messages = messages,
-                attachments = attachments,
-                modelCaps = modelCaps,
-                isGenerating = state.isGenerating,
-                snackbarHostState = snackbarHostState,
-                onSend = viewModel::send,
-                onPickImages = viewModel::addImages,
-                onRemoveAttachment = viewModel::removeAttachment,
-                onStop = viewModel::stop,
-                onReset = viewModel::resetConversation,
-                onSettings = { showSettingsSheet = true },
-                onBack = onBack,
-                onLoadModel = viewModel::loadModel,
-                onImageCaptured = viewModel::addImageBitmap,
-                onCameraError = viewModel::reportCameraError,
-                onAudioCaptured = viewModel::addAudio,
-                onAudioError = viewModel::reportAudioError,
-            )
+    // Loading is rendered through ReadyContent with the Send gate disabled rather
+    // than via a separate full-screen overlay: the cross-model-reinit UX (Task 18
+    // B2) needs the TopAppBar Loading chip to stay visible on top of the chat
+    // history / Draft model picker, not be hidden behind a centred spinner. The
+    // sendGated check inside ReadyContent already blocks sends whenever
+    // topAppBarState is Loading/Failed.
+    val failed = uiState as? ChatUiState.Failed
+    if (failed != null) {
+        FailedContent(rawCause = failed.rawCause, onBack = onBack)
+    } else {
+        val isGenerating = (uiState as? ChatUiState.Ready)?.isGenerating == true
+        ReadyContent(
+            topAppBarState = topAppBarState,
+            isQuickMode = isQuick,
+            reinitInProgress = reinitInProgress,
+            messages = messages,
+            attachments = attachments,
+            modelCaps = modelCaps,
+            isGenerating = isGenerating,
+            snackbarHostState = snackbarHostState,
+            onSend = viewModel::send,
+            onPickImages = viewModel::addImages,
+            onRemoveAttachment = viewModel::removeAttachment,
+            onStop = viewModel::stop,
+            onReset = viewModel::resetConversation,
+            onSettings = { showSettingsSheet = true },
+            onBack = onBack,
+            onLoadModel = viewModel::loadModel,
+            onImageCaptured = viewModel::addImageBitmap,
+            onCameraError = viewModel::reportCameraError,
+            onAudioCaptured = viewModel::addAudio,
+            onAudioError = viewModel::reportAudioError,
+        )
     }
 
     if (showSettingsSheet && uiState is ChatUiState.Ready) {
@@ -155,22 +162,6 @@ private fun ChatScreenBody(
 
     if (reinitInProgress) {
         ReinitProgressDialog()
-    }
-}
-
-@Composable
-private fun LoadingContent() {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            CircularProgressIndicator()
-            Text(
-                text = stringResource(R.string.chat_loading_model),
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        }
     }
 }
 
@@ -281,7 +272,12 @@ private fun ReadyContent(
     // no reinit is already in flight. Disabling the button whenever the UI is
     // not in Ready(isGenerating=false) or a reinit is running makes the tech-
     // spec Decision 3 race unreachable — `lifecycleMutex` is free at tap time.
-    val settingsEnabled = !isGenerating && !reinitInProgress
+    // Settings/Reset are only meaningful when an engine is Ready. During
+    // cross-model reinit (topAppBarState=Loading) or an explicit Failed
+    // state the sheet gate below would refuse to render anyway — disabling
+    // the buttons keeps the tap a no-op visible in the UI.
+    val engineUsable = topAppBarState is TopAppBarState.Ready
+    val settingsEnabled = engineUsable && !isGenerating && !reinitInProgress
 
     Scaffold(
         topBar = {
@@ -309,7 +305,7 @@ private fun ReadyContent(
                             contentDescription = stringResource(R.string.chat_action_settings),
                         )
                     }
-                    IconButton(onClick = onReset, enabled = !isGenerating) {
+                    IconButton(onClick = onReset, enabled = engineUsable && !isGenerating) {
                         Icon(
                             imageVector = Icons.Outlined.Refresh,
                             contentDescription = stringResource(R.string.chat_action_reset),

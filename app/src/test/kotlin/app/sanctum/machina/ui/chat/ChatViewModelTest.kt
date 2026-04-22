@@ -1612,6 +1612,42 @@ class ChatViewModelTest {
         }
 
     @Test
+    fun persistentMode_autoResume_decodesAttachmentsAndPassesToInference() = runTest(dispatcher) {
+        // Draft→Persistent first-send with an image must forward the bitmap to
+        // the model on auto-resume — without this, the first USER turn in a
+        // brand-new persistent chat answered text-only even when an image was
+        // attached (user report post-Task-18 round 1).
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        val relativePath = "attachments/7/img_test.png"
+        val imageFile = File(context.filesDir, relativePath).apply {
+            parentFile?.mkdirs()
+            val bmp = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888)
+            outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        }
+        fakeMessageDao.emit(
+            listOf(
+                MessageEntity(
+                    id = 1L, chatId = 7L, role = "user", text = "what's this?",
+                    imagePath = relativePath, createdAt = 10L,
+                ),
+            ),
+        )
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        assertEquals("auto-resume must dispatch inference", 1, fakeHelper.runInferenceCalls)
+        assertEquals(
+            "decoded image bitmap must be forwarded to runInference",
+            1,
+            fakeHelper.lastImages.size,
+        )
+        imageFile.delete()
+    }
+
+    @Test
     fun persistentMode_lastMessageIsAssistant_doesNotAutoResume() = runTest(dispatcher) {
         val model = Model(name = "m", modelId = "id-m")
         fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
@@ -1821,6 +1857,8 @@ private class FakeLlmHelper(
 ) : LlmModelHelper {
     var lastResultListener: ResultListener? = null
     var lastExtraContext: Map<String, String>? = null
+    var lastImages: List<Bitmap> = emptyList()
+    var lastAudioClips: List<ByteArray> = emptyList()
     var runInferenceCalls = 0
 
     override fun initialize(
@@ -1861,6 +1899,8 @@ private class FakeLlmHelper(
         sharedCalls += "runInference"
         lastResultListener = resultListener
         lastExtraContext = extraContext
+        lastImages = images
+        lastAudioClips = audioClips
     }
 
     override fun stopResponse(model: Model) {
