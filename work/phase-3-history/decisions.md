@@ -555,7 +555,7 @@ User device smoke на Honor 200 после Task 11 вскрыл четыре д
 ## Task 16: Pre-deploy QA
 
 **Status:** Done
-**Commit:** _pending_
+**Commit:** 004aca4
 **Agent:** main agent
 **Summary:** Final Wave pre-deploy QA for Phase 3 — Chat History. Full `./gradlew build` + `:app:testDebugUnitTest :core-runtime:testDebugUnitTest :core-settings:testDebugUnitTest :app:lintDebug :app:assembleDebug` все зелёные: 254 + 70 + 10 = 334 unit-тестов, 0 failures/errors/skipped, APK 123 MB собран. Все 11 шагов AVP из tech-spec пройдены; 10/11 passed, 1/11 not_verifiable (`connectedAndroidTest` без устройства в сессии — отложено к user-smoke перед merge). Статические проверки: schema JSON закоммичен (b9f47f1), `ALLOWED_COMPONENTS` = ровно 14, proto содержит все три optional-поля, `ModelRegistry.activeModelName` присутствует, `Model.modelId` присутствует, `ChatViewModel.onCleared()` не зовёт `registry.cleanup`, staging cleanup делегирован `StartupHousekeeper` (вызывается из `SanctumApplication.onCreate` внутри process-name guard), privacy manifest без регрессий (`allowBackup=false`, `dataExtractionRules=@xml/data_extraction_rules`). Audit follow-up: Task 13 Major M1 (`flowOn` missing в `buildMessagesFlow`) — принят как задокументированный tech-debt без блокера; Task 14 — 0 Critical/High/Medium; Task 15 — verdict passed. Вывод: **READY FOR MERGE** после прогона `connectedAndroidTest` на Honor 200.
 **Deviations:** Нет.
