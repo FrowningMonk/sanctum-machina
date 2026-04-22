@@ -50,7 +50,7 @@
 
 **Где живёт схема настроек:** `src/main/proto/app_settings.proto` — объявлен список параметров инференса (`max_tokens`, `top_k`, `top_p`, `temperature`, `enable_thinking`, `accelerator`, `system_prompt_default`) с именами, типами и тегами для бинарной сериализации. Proto описывает только форму записи.
 
-**Где живут значения по умолчанию:** **не в этом модуле**, а в `core-runtime/src/main/kotlin/.../core/data/Consts.kt` (`DEFAULT_TEMPERATURE = 1.0f`, `DEFAULT_TOPK = 64`, `DEFAULT_TOPP = 0.95f`, `DEFAULT_MAX_TOKEN = 1024`). Логика разделения: `core-settings` хранит то, что задал пользователь, и возвращает `null`, если оверрайда нет; `core-runtime` подставляет константу при инференсе — он знает, чем стартовать модель «из коробки».
+**Где живут значения по умолчанию:** `core-runtime/src/main/kotlin/.../core/data/Consts.kt` — `DEFAULT_TEMPERATURE = 1.0f`, `DEFAULT_TOPK = 64`, `DEFAULT_TOPP = 0.95f`, `DEFAULT_MAX_TOKEN = 1024`. `core-settings` хранит только пользовательские оверрайды (возвращает `null`, если ничего не задано); `core-runtime` подставляет дефолт при инференсе.
 
 ## 3. Конфиги сборки
 
