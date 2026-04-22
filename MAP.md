@@ -12,7 +12,23 @@
 | `.gradle/` | Кеш Gradle | нет (gitignore) |
 | `.idea/` | Конфиг Android Studio / IntelliJ | нет (gitignore) |
 | `.kotlin/` | Кеш компилятора Kotlin | нет (gitignore) |
-| `build/` | Выхлоп сборки | нет (gitignore) |
+| `build/` | Выхлоп сборки. См. расшифровку ниже | нет (gitignore) |
+
+### Откуда берётся `build/`
+
+- **Рождается:** при первой Gradle-задаче (`./gradlew assembleDebug`, `./gradlew test` и т.п.) или при «Gradle sync» в Android Studio.
+- **Что внутри:** скомпилированные `.class`, сгенерированный код (Hilt-DI, KSP, protobuf, Room-DAO, `R.java`), финальные `.aar`/`.apk`, кеши, отчёты.
+- **Жизненный цикл:** инкрементально обновляется на каждом ребилде, чистится через `./gradlew clean` (или удалением папки — безопасно, восстановится при следующей сборке).
+- **Почему gitignored:** 100% производное от `src/` + `build.gradle.kts` + `libs.versions.toml`. Гигабайты, машинозависимое, всегда восстановимо.
+
+В проекте такие папки появляются параллельно у каждого модуля и в корне. Все четыре закрыты строкой `**/build/` в `.gitignore`:
+
+```
+./build
+./app/build
+./core-runtime/build
+./core-settings/build
+```
 
 ## 2. Ядро приложения
 
