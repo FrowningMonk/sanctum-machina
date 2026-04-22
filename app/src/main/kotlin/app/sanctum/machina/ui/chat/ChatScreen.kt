@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -323,6 +324,11 @@ private fun ReadyContent(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                // Tell imePadding() that Scaffold's innerPadding already accounts for the
+                // navigation-bar inset — without this the bottom gap equals IME + nav-bar
+                // instead of max(IME, nav-bar), leaving a visible empty strip under the
+                // input panel when the keyboard opens.
+                .consumeWindowInsets(innerPadding)
                 // AC-U4: lift the input bar above the IME. Depends on
                 // `WindowCompat.setDecorFitsSystemWindows(window, false)`
                 // already set by MainActivity.
