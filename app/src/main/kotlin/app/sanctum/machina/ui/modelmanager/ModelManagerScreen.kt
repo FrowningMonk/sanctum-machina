@@ -3,18 +3,24 @@ package app.sanctum.machina.ui.modelmanager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -32,6 +38,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -43,6 +50,7 @@ import app.sanctum.machina.core.data.ModelDownloadStatus
 import app.sanctum.machina.core.data.ModelDownloadStatusType
 import app.sanctum.machina.core.registry.ModelEntry
 import app.sanctum.machina.crash.RestartCrashBanner
+import app.sanctum.machina.ui.SanctumIcons
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -61,11 +69,15 @@ fun ModelManagerScreen(
 ) {
     val models by viewModel.models.collectAsStateWithLifecycle()
     val hasUnresolvedCrash by viewModel.hasUnresolvedCrash.collectAsStateWithLifecycle()
+    val defaultModelId by viewModel.defaultModelId.collectAsStateWithLifecycle()
+
+    val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
         viewModel.navEvents.collect { event ->
             when (event) {
-                is NavEvent.OpenChat -> onLoad(event.modelName)
+                is NavEvent.OpenQuickChat -> onLoad(event.modelId)
+                is NavEvent.ShowSnackbar -> snackbarHostState.showSnackbar(event.message)
             }
         }
     }
@@ -75,7 +87,6 @@ fun ModelManagerScreen(
     // picked up even though CrashState is a long-lived @Singleton.
     LaunchedEffect(Unit) { viewModel.refreshCrashState() }
 
-    val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     val successMessage = stringResource(R.string.log_export_success_toast)
     val errorMessage = stringResource(R.string.log_export_error_toast)
@@ -130,10 +141,12 @@ fun ModelManagerScreen(
             }
             ModelList(
                 models = models,
+                defaultModelId = defaultModelId,
                 contentPadding = PaddingValues(0.dp),
                 onDownload = viewModel::onDownload,
                 onCancel = viewModel::onCancel,
                 onLoad = viewModel::onLoad,
+                onSetDefault = viewModel::setDefaultModel,
             )
         }
     }
@@ -142,10 +155,12 @@ fun ModelManagerScreen(
 @Composable
 private fun ModelList(
     models: List<ModelEntry>,
+    defaultModelId: String,
     contentPadding: PaddingValues,
     onDownload: (ModelEntry) -> Unit,
     onCancel: (String) -> Unit,
     onLoad: (String) -> Unit,
+    onSetDefault: (String, String) -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -155,9 +170,12 @@ private fun ModelList(
         items(models, key = { it.model.name }) { entry ->
             ModelCard(
                 entry = entry,
+                isDefault = entry.model.modelId.isNotEmpty() &&
+                    entry.model.modelId == defaultModelId,
                 onDownload = { onDownload(entry) },
                 onCancel = { onCancel(entry.model.name) },
-                onLoad = { onLoad(entry.model.name) },
+                onLoad = { onLoad(entry.model.modelId) },
+                onSetDefault = { onSetDefault(entry.model.modelId, entry.model.name) },
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
         }
@@ -167,11 +185,17 @@ private fun ModelList(
 @Composable
 private fun ModelCard(
     entry: ModelEntry,
+    isDefault: Boolean,
     onDownload: () -> Unit,
     onCancel: () -> Unit,
     onLoad: () -> Unit,
+    onSetDefault: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Each card owns its overflow menu state — a single top-level variable would reopen every
+    // row when the user taps any row's overflow button.
+    var overflowExpanded by remember { mutableStateOf(false) }
+
     Card(
         modifier = modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
@@ -180,10 +204,43 @@ private fun ModelCard(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(
-                text = entry.model.name,
-                style = MaterialTheme.typography.titleMedium,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (isDefault) {
+                    Icon(
+                        imageVector = SanctumIcons.IconStarFill,
+                        contentDescription = stringResource(R.string.model_manager_default_badge_desc),
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp).padding(end = 8.dp),
+                    )
+                }
+                Text(
+                    text = entry.model.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                if (entry.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED && !isDefault) {
+                    Box {
+                        IconButton(onClick = { overflowExpanded = true }) {
+                            Icon(
+                                imageVector = Icons.Outlined.MoreVert,
+                                contentDescription = stringResource(R.string.model_manager_overflow_desc),
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = overflowExpanded,
+                            onDismissRequest = { overflowExpanded = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.model_manager_set_default)) },
+                                onClick = {
+                                    overflowExpanded = false
+                                    onSetDefault()
+                                },
+                            )
+                        }
+                    }
+                }
+            }
             Text(
                 text = stringResource(
                     R.string.model_size_gb_format,

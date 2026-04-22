@@ -1,5 +1,6 @@
 package app.sanctum.machina.ui
 
+import android.net.Uri
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.rememberDrawerState
@@ -148,10 +149,9 @@ fun SanctumApp() {
                 composable("model_manager") {
                     ModelManagerScreen(
                         onLoad = { modelId ->
-                            // Task 11 wires this to chat/quick?modelId={modelId} with proper
-                            // state handoff; for Task 7 the navigate call is already correct —
-                            // the route is registered above with an optional modelId arg.
-                            navController.navigate("chat/quick?modelId=$modelId")
+                            // Model IDs are HF paths like "litert-community/gemma-..."; slashes
+                            // would break the route match without percent-encoding.
+                            navController.navigate("chat/quick?modelId=${Uri.encode(modelId)}")
                         },
                         onAbout = { navController.navigate("about") },
                     )

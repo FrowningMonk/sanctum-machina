@@ -141,6 +141,11 @@
   <string name="corruption_banner_save_log">Сохранить лог</string>
   <string name="corruption_banner_dismiss">Закрыть</string>
 
+  <!-- Model Manager — default model selection (Phase 3 Task 11) -->
+  <string name="model_manager_default_badge_desc">Модель по умолчанию</string>
+  <string name="model_manager_overflow_desc">Дополнительные действия</string>
+  <string name="model_manager_set_default">Сделать по умолчанию</string>
+
   <!-- Drawer (Phase 3 Task 9) -->
   <string name="drawer_title">История чатов</string>
   <string name="drawer_new_chat">Новый чат</string>
