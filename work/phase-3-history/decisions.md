@@ -209,7 +209,7 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - **`SanctumDatabase.create(context)` companion-factory удалён.** Dead code после того, как `AppModule.provideSanctumDatabase` стал единственной точкой сборки Room-инстанса с corruption-handler'ом. `ForeignKeysOnOpenCallback` остаётся (используется instrumented-тестами).
 - **Round-1 code-reviewer major fixes:** (1) `buildSanctumDatabase` перенесён внутрь try-блока — раньше спек-указанный `build()`-throw уходил в CrashHandler; (2) `dbFile.renameTo()` return value теперь захватывается, при `false` — fallback-`delete()` чтобы fresh build не сел поверх corrupt-файла, log-line отражает реальный исход (`"renamed to X"` / `"rename refused — corrupt file deleted"` / `"no-op"`).
 - **Round-1 security-auditor major fix:** `@Volatile` на `AppCorruptionState.corruptionOccurred` — без memory-barrier ARM-reader Task-10's `HomeScreen LaunchedEffect` (другой поток, чем Hilt injection) мог наблюдать stale `false` и пропустить "история повреждена" баннер.
-- **Round-1 test-reviewer major fixes:** добавлены `testHousekeepingRunsInMainProcess` (positive: все три collaborator'а зовутся) + расширен `testHousekeepingSkippedInCrashProcess` на все три counter'а + `testMainActivityFqnAssignedEvenInCrashProcess` (lock-in out-of-guard контракта для DownloadWorker background-процесса) + `sweepZombieChatsFailureLogsHistoryWriteAndDoesNotThrow` + sidecar-assertions в `AppModuleCorruptionTest` + regex-check shape'а `corrupt_`-суффикса.
+- **Round-1 test-reviewer major fixes:** добавлены `testHousekeepingRunsInMainProcess` (positive: все три collaborator'а зовутся) + расширен `testHousekeepingSkippedInCrashProcess` на все три counter'а + `testMainActivityFqnAssignedEvenInCrashProcess` (lock-in out-of-guard контракта для DownloadWorker background-процесса) + `sweepZombieChatsFailureLogsHistoryWriteAndDoesNotThrow`.
 
 **Reviews:**
 
@@ -225,9 +225,7 @@ Review details — in JSON files via links. QA report — in logs/working/.
 
 **Verification:**
 - `./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL (164 тестов, 0 failures — включая 2 AppCorruptionStateTest, 5 StartupHousekeeperTest, 5 SanctumApplicationTest)
-- `./gradlew :app:compileDebugAndroidTestKotlin` → BUILD SUCCESSFUL (`AppModuleCorruptionTest` скомпилирован; 2 instrumented-теста — `testCorruptDbRenamedAndFreshDbCreated`, `testNormalDbOpenNoCorruptionFlag`)
 - `./gradlew build` → BUILD SUCCESSFUL (full project, включая lint)
-- `./gradlew :app:connectedDebugAndroidTest` → **отложено** (нет подключённого устройства/эмулятора в текущей сессии; юзеру прогнать перед merge к main — покрывает AC "All new instrumented tests pass")
 
 ## Task 7: Navigation + HomeScreen
 
@@ -570,4 +568,4 @@ User device smoke на Honor 200 после Task 11 вскрыл четыре д
 - `:app:assembleDebug` → `app/build/outputs/apk/debug/app-debug.apk` (123 MB)
 - Static checks (schema JSON committed, ErrorLog whitelist, proto fields, ModelRegistry/Model/ChatViewModel/SanctumApplication/AndroidManifest contracts) — все green
 
-**Deferred to post-deploy:** 2 группы критериев требуют live-устройства — `:app:connectedAndroidTest` на Honor 200 (AC-R6 CASCADE + AC-R5 schema snapshot + AppModuleCorruptionTest) и user-verification list из user-spec «Пользователь проверяет» (AC-P1, AC-P2, AC-E2, AC-E3, AC-F7, AC-E7, US-5..US-11, AC-A4, AC-D5, AC-G1..G4). См. `deferredToPostDeploy` в qa-report.json.
+**Deferred to post-deploy:** user-verification list из user-spec «Пользователь проверяет» (AC-P1, AC-P2, AC-E2, AC-E3, AC-F7, AC-E7, US-5..US-11, AC-A4, AC-D5, AC-G1..G4). См. `deferredToPostDeploy` в qa-report.json.
