@@ -521,3 +521,18 @@ User device smoke на Honor 200 после Task 11 вскрыл четыре д
 **Verification:**
 - Report → [logs/working/task-13/code-audit-report.md](logs/working/task-13/code-audit-report.md)
 - All 9 acceptance criteria from tasks/13.md verified in the report: 7 focus-area verdicts present; Major finding M1 carries file+line range+fix; `ChatViewModel.onCleared()` confirmed free of `registry.cleanup`; `cancelAndRestart` cancel-before-reinit confirmed; all three `ChatIdentity` branches confirmed covered; staging cleanup confirmed on success + failure + `StartupHousekeeper`; Main-thread I/O audited (Major M1 raised); Hilt scopes verified; no `Model.name` used for Room/DataStore persistence.
+
+
+## Task 14: Security Audit
+
+**Status:** Done
+**Commit:** <pending>
+**Agent:** main agent
+**Summary:** Полный security audit Phase 3 по семи focus areas из tech-spec (file-path injection, SQL, quick/ purge, PII в логах, attachment decode, cross-process crash state, DataStore migration atomicity) + OWASP Mobile Top 10 sweep + SafeMarkdown/privacy-manifest regression check. Все семь focus areas — PASS. Findings: 0 Critical / 0 High / 0 Medium / 1 Low / 1 Info. **F1 (Low)**: `SettingsMigrationHelper` — транзиентный IOException в `isSettingsMigrated()` возвращает false и запускает re-migration на уже-мигрированных данных; все ключи станут orphan и сдропятся. Fix: перенести sentinel-check внутрь `dataStore.updateData { ... }` блока. **F2 (Info)**: `ChatViewModel.kt:1192,1275` форвардит `onError` payload движка в ErrorLog без caller-side cap — полагается на 500-char truncate в ErrorLog; harden `safeMsg.take(200)`. No Critical / High findings — Task 16 QA может стартовать.
+**Deviations:** None.
+
+**Reviews:** Нет сторонних ревьюверов — security-auditor IS the review для этой задачи (per task-14 spec).
+
+**Verification:**
+- Report → [logs/working/task-14/security-audit-report.md](logs/working/task-14/security-audit-report.md)
+- Все 7 acceptance criteria из tasks/14.md проверены в отчёте: 7 focus-area verdicts с evidence, F1 и F2 с severity/file:line/description/fix, OWASP sweep завершён без unaddressed critical/high, SafeMarkdown verified на новом UI (HomeScreen, DrawerContent используют plain `Text`), `allowBackup=false` + `dataExtractionRules` unchanged, отчёт записан на указанный путь, запись в decisions.md (этот блок).
