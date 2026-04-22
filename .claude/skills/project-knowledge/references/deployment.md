@@ -101,7 +101,7 @@ None. See `project.md § Out of Scope`. The on-device log is the only record.
 
 ### Health Checks
 
-No server, no health endpoint. At app start `SanctumApplication.onCreate` runs two sanity checks: (a) Room database opens, (b) last-used model's file still exists at its stored path; if deleted externally, mark it not-downloaded in `models_meta`. Failures log at ERROR level; the app continues running.
+No server, no health endpoint. At app start a small chain of sanity checks runs, each isolated so the next keeps going on failure (all ERROR-logged via `ErrorLog.e`, app never aborts): (a) Room DB open — wrapped in `di/AppModule.provideSanctumDatabase`, on failure the `sanctum.db` file is renamed to `sanctum.db.corrupt_{ts}` (with `-journal` / `-wal` / `-shm` sidecars dropped), a fresh empty DB is built, `AppCorruptionState.corruptionOccurred` is flipped so `HomeScreen` shows the AC-D5 banner, logged as `history-read`. (b) Model-file presence is owned by `DefaultModelRegistry`'s constructor scan — `ModelEntry.isDownloaded` reflects file existence before any UI reads the flow, so externally-deleted model files surface as "Модель недоступна" without a separate `SanctumApplication` check. (c) `StartupHousekeeper` runs three independent tasks: `filesDir/quick/` purge (`attachment-save` on failure — incognito guarantee must not fail silently), orphan `.staging-*` directory cleanup (`attachment-save`), and `chatRepository.sweepZombieChats()` (removes 0-message chats whose attachments dir vanished, logs `history-write`).
 
 ### Metrics
 

@@ -226,9 +226,7 @@ No other external services. No telemetry endpoints. No update-check endpoints. N
 
 ## Data Model
 
-**Phase 2 reality (as of `v0.2-ui`):** Room is NOT yet introduced. Chats, messages, attachments all live in `ChatViewModel.StateFlow` and are discarded on process death. The Room schema described below is the Phase 3 target. Only the `models_meta` equivalent ships in Phase 2, implemented via Proto DataStore in `:core-settings` (schema: [core-settings/src/main/proto/app_settings.proto](core-settings/src/main/proto/app_settings.proto) — `map<string, PerModelSettings>` keyed by `Model.modelId`, every field `optional` for "use allowlist default" semantics).
-
-**Database:** SQLite via Room 2.7.x. Single database `sanctum.db` in the app's private storage.
+**Database:** SQLite via Room 2.7.x. Single database `sanctum.db` in the app's private storage. Shipped as v1 in Phase 3; schema JSON lives at `app/schemas/app.sanctum.machina.data.SanctumDatabase/1.json` (committed). The `models_meta` equivalent is NOT a Room table — it lives in Proto DataStore in `:core-settings` (schema: [core-settings/src/main/proto/app_settings.proto](core-settings/src/main/proto/app_settings.proto) — `map<string, PerModelSettings>` keyed by `Model.modelId`, every field `optional` for "use allowlist default" semantics; `default_model_id` + `last_used_model_id` + `settings_keys_migrated` added in Phase 3).
 
 ### Main Tables
 
