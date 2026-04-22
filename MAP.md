@@ -33,9 +33,17 @@
 | `build.gradle.kts` | Корневой Gradle-скрипт | да |
 | `settings.gradle.kts` | Реестр модулей проекта (`app`, `core-runtime`, `core-settings`) | да |
 | `gradle.properties` | Глобальные параметры Gradle | да |
-| `gradle/` | Версии зависимостей (version catalog `libs.versions.toml`) — единственное здесь, что иногда правится вручную | да |
+| `gradle/` | Две истории сразу: пин самого Gradle (`wrapper/`) и список всех зависимостей проекта (`libs.versions.toml`). См. расшифровку ниже | да |
 | `gradlew` / `gradlew.bat` | Скрипты-обёртки Gradle Wrapper (Unix / Windows) | да |
 | `local.properties` | Локальные пути Android SDK (у каждого свои) | нет (gitignore) |
+
+### Что внутри `gradle/`
+
+| Файл | Аналог в Python-мире | Зачем |
+|---|---|---|
+| `wrapper/gradle-wrapper.jar` | — (своего аналога нет) | Маленький загрузчик (бинарник, ~43 KB). Скачивает нужный Gradle при первом запуске `./gradlew`. Автогенерируется, руками не правится |
+| `wrapper/gradle-wrapper.properties` | `.python-version` (pyenv) | Пинит **сам Gradle** (одна строчка: `distributionUrl=...gradle-8.13-bin.zip`). Трогаем только при апгрейде Gradle |
+| `libs.versions.toml` | **`requirements.txt`** | Version catalog: список **всех** библиотек и плагинов проекта с версиями. Сюда добавляем/обновляем зависимости. Главный файл этой папки |
 
 ## 4. Конфиги репозитория
 
