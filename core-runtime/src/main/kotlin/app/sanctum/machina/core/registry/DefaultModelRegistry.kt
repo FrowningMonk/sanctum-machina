@@ -205,6 +205,18 @@ constructor(
               IllegalArgumentException("unknown model: $modelName")
             )
         val model = entry.model
+        // Single-engine invariant: release any OTHER Ready engine before initializing the
+        // target. Without this, switching from model A to B leaves A's native instance
+        // loaded alongside B — doubling RAM use and surprising the UI (Home re-open on A
+        // would find initStatus=Ready and skip warmup). releaseEngine only ever resets the
+        // target, so we iterate the snapshot here. lifecycleMutex is held, so no new Ready
+        // entries can appear during iteration.
+        _models.value
+          .filter { it.initStatus == ModelInitStatus.Ready && it.model.name != modelName }
+          .forEach { other ->
+            releaseEngine(other.model)
+            updateEntry(other.model.name) { it.copy(initStatus = ModelInitStatus.Idle) }
+          }
         // Flip to Initializing first so the StateFlow never advertises Ready over a null instance
         // during the subsequent releaseEngine window (code-reviewer-2 R2-Min-2).
         updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Initializing) }
