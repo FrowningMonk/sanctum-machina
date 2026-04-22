@@ -704,6 +704,20 @@ constructor(
                     // returns a non-null modelId without an explicit `!!`.
                     ?: registry.activeModelName.mapNotNull { it }.first()
                 _chatModelId.value = pinned
+                // Explicit-modelId Quick flow from Model Manager: the route pins a
+                // model the coordinator is not currently warming (or is warming a
+                // different one). Without this trigger, the entry stays at
+                // ModelInitStatus.Idle and the body renders a perpetual spinner.
+                // Skip if the target is already Ready — cancelAndRestart would
+                // needlessly recycle a healthy engine.
+                if (explicitModelId != null) {
+                    val alreadyReady = registry.models.value
+                        .firstOrNull { it.model.modelId == explicitModelId }
+                        ?.initStatus == ModelInitStatus.Ready
+                    if (!alreadyReady) {
+                        warmupCoordinator.cancelAndRestart(explicitModelId)
+                    }
+                }
                 applyEffectiveConfigToModel()
             }
         }
