@@ -395,3 +395,31 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL (APK собран)
 - `./gradlew :app:compileDebugKotlin` → BUILD SUCCESSFUL (Hilt-граф резолвит новый `WarmupCoordinator` параметр в `ChatViewModel` и `AppCorruptionState` + `LogExportManager` в `HomeViewModel`)
 - User device smoke — **deferred to phase-level QA** (memory: `Verify UI chain before device smoke`). Wave 5 Phase 3 ещё не закрыта; `tasks/10.md` → Verification Steps → User (imePadding, Draft model picker, «Загрузить», incognito indicator) требуют прогона на Honor 200 в составе общей приёмки фазы вместе с Task 11.
+
+## Task 11: Model Manager updates
+
+**Status:** Done
+**Commit:** 27e8588 (impl), ac1cf1e (review round 1 fixes)
+**Agent:** main agent
+**Summary:** `ModelManagerViewModel` теперь инжектит `AppSettingsRepository`, экспозит `defaultModelId: StateFlow<String>` через `observeDefaultModelId().stateIn(viewModelScope, WhileSubscribed(5_000), "")` и `setDefaultModel(modelId, modelName)` (DataStore write → `NavEvent.ShowSnackbar`). `NavEvent.OpenChat` упразднён: `onLoad(modelId)` эмитит `NavEvent.OpenQuickChat(modelId)`; `SanctumApp.kt` навигирует на `chat/quick?modelId=${Uri.encode(modelId)}` (percent-encoding нужен — HF paths содержат `/`). `ModelManagerScreen` рендерит `SanctumIcons.IconStarFill` (accent tint) лидирующим бейджем на строке default-модели и `DropdownMenu` overflow с единственным пунктом «Сделать по умолчанию», видимым только для `SUCCEEDED` и не-default строк; `overflowExpanded` — per-card `remember`. Три строки ресурсов добавлены (badge desc / overflow desc / menu item); snackbar-текст захардкожен per tasks/11.md. Закрывает AC-F4 (quick chat routing) и AC-F7 (default selection UX), US-8 (п. 7) и US-12.
+**Deviations:** None.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: APPROVED, 0 critical / 0 major / 4 optional minor (modifier order, LazyColumn key comment, UnconfinedTestDispatcher pattern note, future-i18n note) → [logs/working/task-11/code-reviewer-1.json](logs/working/task-11/code-reviewer-1.json)
+- test-reviewer: PASSED, 0 critical / 0 major / 4 minor (redundant assertFalse, ordering coverage gap, UNDISPATCHED comment rationale, missing empty-string test) → [logs/working/task-11/test-reviewer-1.json](logs/working/task-11/test-reviewer-1.json)
+
+*Fixes applied after round 1:*
+- Modifier reorder: `.padding(end = 8.dp).size(20.dp)` — icon draws at true 20dp.
+- Comment added on `LazyColumn` key vs `modelId` identity split.
+- Redundant `assertFalse { simpleName == "OpenChat" }` удалён (exact-list `assertEquals` уже это enforcer).
+- Extracted `collectNavEvents(vm)` helper (DRY across three tests); reworded UNDISPATCHED rationale as defensive-discipline.
+- New test `setDefaultModel_persistsBeforeEmittingSnackbar` — sequencing regression guard via `FakeAppSettingsRepository.onSetDefaultModelId` probe.
+- New test `defaultModelId_emitsEmptyStringWhenUnset` — locks proto3-default first-launch contract.
+
+**Verification:**
+- `./gradlew :app:testDebugUnitTest --tests "app.sanctum.machina.ui.modelmanager.ModelManagerViewModelTest"` → BUILD SUCCESSFUL (5 тестов, 0 failures — 3 TDD-anchor + 2 добавленных по ревью)
+- `./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL (полный `:app` unit-test, без регрессий Phase 1/2/2.5/3)
+- `./gradlew build` → BUILD SUCCESSFUL (lint + assembleDebug + assembleRelease + testRelease)
+- User device smoke — **deferred to phase-level QA** (memory: `Verify UI chain before device smoke`). Task 11 замыкает last piece of Wave 5 UI — полноценный прогон (star indicator, overflow + snackbar + ⭐ migration, quick-chat launch из Model Manager) выполняется в составе общей приёмки Phase 3.
