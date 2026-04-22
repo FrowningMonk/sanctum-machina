@@ -40,6 +40,14 @@
 | `core-runtime/` | Ядро LLM-инференса (модели, реестр, загрузка, LiteRT-runtime, multimodal). Забрано из Google AI Edge Gallery, ~4100 строк | да |
 | `core-settings/` | Настройки инференса на модель (temperature, top_k, top_p и т.п.) в DataStore+proto. Вынесено из Gallery в отдельный модуль, зависит от `core-runtime` | да |
 
+### Что внутри `core-settings/`
+
+| Имя | Тип | Что это | В git |
+|---|---|---|---|
+| `build/` | папка | Артефакт сборки модуля. Кэш, рождается при первом билде, всё внутри 100% производное от `src/` + `build.gradle.kts`. Скип | нет (gitignore) |
+| `src/` | папка | Все исходники модуля: Kotlin-код, `.proto`-схема, тесты. Структура внутри (`main/`, `test/`) задана соглашением Gradle/Android, не нашим выбором | да |
+| `build.gradle.kts` | файл | Конфиг сборки модуля: 5 плагинов (включая **`protobuf`** — только здесь), namespace `app.sanctum.machina.core.settings`, зависимость на `:core-runtime`, тянет `androidx.datastore` + `protobuf-javalite`. Содержит блок `protobuf { ... }` для кодогенерации Java-классов из `.proto` | да |
+
 ## 3. Конфиги сборки
 
 > Работают, не трогаем. Часть генерируется автоматически.
