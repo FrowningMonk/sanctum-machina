@@ -115,17 +115,22 @@ PhoneWrap/                                  # Repository root, working dir
 │       │   │                                 # clickable default-model label, corruption banner (AC-D5)
 │       │   ├── modelmanager/               # ModelManagerScreen: RestartCrashBanner above model list (Phase 2.5); SnackbarHost;
 │       │   │                                 # Phase 3 — default-model star badge + overflow «Сделать по умолчанию»
-│       │   └── theme/, SanctumApp.kt       # NavHost: home / chat/quick?modelId={id} / chat/draft / chat/{chatId} (Long) / model_manager / about
+│       │   └── theme/, SanctumApp.kt       # NavHost: home / chat/quick?modelId={id} / chat/draft / chat/{chatId} (Long) / model_manager / about.
+│       │                                     # The legacy chat/{modelName} (String) route is kept registered as a tombstone
+│       │                                     # that redirects to home — guards against deep links left over from Phase 2.
 │       ├── MainActivity.kt
 │       └── SanctumApplication.kt           # @HiltAndroidApp; process-guard (getProcessName() == packageName) separates main
 │                                           # from :crash process. Main-process work: installs CrashHandler, assigns
 │                                           # DefaultDownloadRepository.mainActivityFqn, triggers SettingsMigrationHelper.migrateIfNeeded()
 │                                           # (Phase 2.5 → 3 per-model settings migration), kicks off
 │                                           # WarmupCoordinator.warmupDefault() on background scope (Phase 3 cold-start engine warm);
-│                                           # StartupHousekeeper coroutines: filesDir/quick/ purge, orphan .staging-* cleanup,
-│                                           # chatRepository.sweepZombieChats() — each wrapped in try/catch + ErrorLog.e;
-│                                           # installs Room corruption handler that flips AppCorruptionState.corruptionOccurred
-│                                           # and renames the db to sanctum.db.corrupt_{ts} so HomeScreen can surface AC-D5 banner.
+│                                           # launches StartupHousekeeper.run() on background scope (filesDir/quick/ purge,
+│                                           # orphan .staging-* cleanup, chatRepository.sweepZombieChats() — each wrapped in
+│                                           # try/catch + ErrorLog.e). Note: the Room corruption handler is NOT here — it lives
+│                                           # in di/AppModule.provideSanctumDatabase which catches db-open failure, renames the
+│                                           # db to sanctum.db.corrupt_{ts} (dropping -journal/-wal/-shm sidecars), flips
+│                                           # AppCorruptionState.corruptionOccurred, logs via ErrorLog.e("history-read", …),
+│                                           # and re-builds a fresh db that surfaces the AC-D5 banner on HomeScreen.
 │
 ├── core-runtime/                           # :core-runtime gradle module — extracted Gallery core
 │   ├── build.gradle.kts                    # namespace = "app.sanctum.machina.core"
@@ -234,7 +239,7 @@ No other external services. No telemetry endpoints. No update-check endpoints. N
 
 **chats**
 - Purpose: A persistent conversation with a model. Optionally belongs to a project (Phase 4+).
-- Key fields: `id` (PK), `project_id` (INTEGER, **nullable — no FK constraint in v1**; the `projects` table is added via `Migration(1,2)` in Phase 4 per AC-R4/AC-R7), `model_id` (TEXT, not null — which model was used; allows reopening a chat even if the user switched default models), `title` (TEXT, not null — auto-generated from first message, user-renameable), `is_manually_titled` (INTEGER 0/1 — distinguishes auto- from user-typed title, rename-blank resets to auto), `created_at` (INTEGER), `last_message_at` (INTEGER).
+- Key fields: `id` (PK), `project_id` (INTEGER, **nullable — no FK constraint in v1**; the `projects` table is added via `Migration(1,2)` in Phase 4 per AC-R4/AC-R7), `model_id` (TEXT, not null — which model was used; allows reopening a chat even if the user switched default models), `title` (TEXT, nullable — `AutoTitleGenerator` produces one from the first user message at commit time, and the user can rename via the drawer long-press menu; null falls back to «Без названия» in the drawer), `is_manually_titled` (INTEGER 0/1 — distinguishes auto- from user-typed title, rename-blank resets to auto), `created_at` (INTEGER), `last_message_at` (INTEGER).
 - Relationships: One chat has many messages (`messages.chat_id`).
 - Note: **Quick chats are NOT stored in Room.** They are in-memory only — see "Quick chats" below.
 
