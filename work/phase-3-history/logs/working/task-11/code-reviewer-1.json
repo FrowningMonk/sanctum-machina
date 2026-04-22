@@ -1,0 +1,50 @@
+{
+  "status": "approved",
+  "summary": "Task 11 implementation cleanly closes AC-F4 (OpenQuickChat routing) and AC-F7 (star badge + overflow default selection). Constructor-injected AppSettingsRepository, WhileSubscribed(5_000) StateFlow, per-card overflow state, snackbar-via-NavEvent, and Uri.encode of HF-style modelIds are all idiomatic. No stale OpenChat references remain in app/src/main, the tombstone route still guards deep links, and new string resources are in place. Nothing blocking.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerScreen.kt",
+      "line": 170,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "LazyColumn key is entry.model.name; the rest of the card keys on entry.model.modelId. The modelId is the stable HF path (proto3 default \"\"). If two yet-to-be-indexed entries ever have an empty modelId on cold start, name is a safer LazyColumn key — the current choice is fine. Non-blocking observation only.",
+      "benefit": "Consistency between the composition key and the per-row identity used by isDefault/onSetDefault; current split is intentional (name is guaranteed unique in the registry) but worth a one-line comment if kept.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerScreen.kt",
+      "line": 213,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "Modifier.size(20.dp).padding(end = 8.dp) applies the 8dp padding inside the 20dp-sized box, which shrinks the drawable area. Prefer Modifier.padding(end = 8.dp).size(20.dp), or put spacing on the Row via Arrangement.spacedBy. Visually minor at 20dp but technically the icon is not 20dp.",
+      "benefit": "Icon renders at the intended 20dp size; separates spacing from sizing.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerViewModel.kt",
+      "line": 90,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "Snackbar literal \"Модель по умолчанию: $modelName\" is hardcoded per task 11.md line 41 and the Russian-strings convention in CLAUDE.md, so this is acceptable. If the project later pulls user-facing VM strings into string resources, the snackbar emission can be refactored to emit a StringRes id or a typed event; not required here.",
+      "benefit": "Future-proofing for localisation; no action required now.",
+      "optional": true
+    },
+    {
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerViewModelTest.kt",
+      "line": 52,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "Tests declare UnconfinedTestDispatcher but also call advanceUntilIdle(). With an unconfined dispatcher, coroutines run eagerly to their first suspension and advanceUntilIdle is a no-op for already-completed work. Works correctly for the current assertions, but a StandardTestDispatcher + advanceUntilIdle would match the pattern used by HomeViewModelTest the class comment cites.",
+      "benefit": "Consistency with the referenced HomeViewModelTest pattern; no functional impact.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 5,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 4,
+    "testCoverageAssessment": "adequate"
+  }
+}

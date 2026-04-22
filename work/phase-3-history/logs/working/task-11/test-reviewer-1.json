@@ -1,0 +1,49 @@
+{
+  "status": "passed",
+  "summary": "Three VM-level unit tests cleanly cover all three behavioral TDD anchors from tasks/11.md (setDefaultModel side effects + snackbar, reactive defaultModelId wiring, onLoad -> OpenQuickChat). All assertions are meaningful and survive the litmus test — removing the core logic from the VM would make each test fail. Fakes are narrow and uphold the AppSettingsRepository contract for the methods the VM actually uses. Test pyramid is appropriate: UI (star + overflow visibility) is correctly deferred to user verification per the task spec. No critical or major issues found; minor improvements listed below.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerViewModelTest.kt:126-129",
+      "issue": "The 'OpenChat must not be emitted' guard uses `it::class.simpleName == \"OpenChat\"`. Since OpenChat was removed from the NavEvent sealed interface in this task, the assertion is vacuously true — no concrete type named OpenChat exists in the sealed hierarchy to begin with. If someone later re-adds OpenChat under a different name/package, this guard would silently still pass. The stronger assertion is already present in the preceding `assertEquals(listOf(OpenQuickChat(...)), events)`, which asserts both the exact event and the exact list length.",
+      "recommendation": "Either drop the `assertFalse` line entirely (redundant with the `assertEquals` above — which already fails if anything other than OpenQuickChat is emitted) or convert it to a compile-time guarantee via a sealed-interface `when` exhaustiveness check in a separate test. Concrete replacement: delete lines 126-129; the `assertEquals(listOf<NavEvent>(NavEvent.OpenQuickChat(\"some-model-id\")), events)` already enforces 'exactly one event, of type OpenQuickChat'."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerViewModelTest.kt (new test)",
+      "issue": "Order of operations in `setDefaultModel` is not asserted: the spec requires `appSettings.setDefaultModelId(modelId)` to complete *before* the Snackbar is emitted (so that by the time the UI renders the snackbar, the ⭐ has already moved). Current test checks both happened, but not the sequencing. A refactor that emits the snackbar before awaiting the DataStore write (e.g., `_navEvents.emit(...)` moved above `appSettings.setDefaultModelId(...)`) would not be caught.",
+      "recommendation": "Add a test `setDefaultModel_persistsBeforeEmittingSnackbar`. Concrete approach: make `FakeAppSettingsRepository.setDefaultModelId` record an ordered event in a shared `actionLog: MutableList<String>`, and have the navEvents collector append 'snackbar:<msg>' to the same log. After `advanceUntilIdle()`, assert `assertEquals(listOf(\"setDefault:model-id\", \"snackbar:Модель по умолчанию: Model Name\"), actionLog)`. Alternative: make `FakeAppSettingsRepository.setDefaultModelId` suspend on a `CompletableDeferred` latch the test controls, then assert no snackbar until the latch completes."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerViewModelTest.kt:78-80, 100-102, 118-120",
+      "issue": "The 'UNDISPATCHED start is load-bearing' comment is present on two of three sites but the reasoning is split across three near-duplicate blocks. More importantly, the `UnconfinedTestDispatcher` chosen for `Dispatchers.setMain` already means `viewModelScope.launch { _navEvents.emit(...) }` runs inline up to its first suspension — combined with `extraBufferCapacity = 1` on the MutableSharedFlow, even a late subscriber would observe the replayed buffered value on most runs. The UNDISPATCHED start is still the right belt-and-braces pattern, but the comment overstates 'needed' (it's defensive, not strictly required given current VM internals). Not a correctness issue, but the rationale as written could mislead a future editor who 'cleans up' the comment and removes the subscription-ordering discipline.",
+      "recommendation": "Extract a small helper `private fun TestScope.collectNavEvents(vm: ModelManagerViewModel, into: MutableList<NavEvent>)` that encapsulates the UNDISPATCHED launch + comment once, then reuse across tests. Update the comment to: 'UNDISPATCHED guarantees the subscription is registered before the VM method call regardless of future changes to the SharedFlow replay/buffer config — keep this even if current tests pass without it.'"
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerViewModelTest.kt (new test)",
+      "issue": "No test covers the 'unset' default case (`default_model_id == \"\"`). The VM's `stateIn(..., initialValue = \"\")` + proto3 default behavior is a real edge case flagged in tasks/11.md 'Edge cases' (first-launch, no default). Regression risk: a future change to the initial-value seed (e.g., someone changes it to `null` or a sentinel) would break UI star logic silently.",
+      "recommendation": "Add `defaultModelId_emitsEmptyStringWhenUnset`. Concrete approach: do NOT call `settings.setDefault(...)` before constructing the VM; subscribe with UNDISPATCHED; `advanceUntilIdle()`; `assertEquals(\"\", vm.defaultModelId.value)`. This locks in the contract that the UI's `entry.model.modelId == defaultModelId` comparison returns `false` for every row on first launch."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 3,
+    "litmusTest": {
+      "checked": 3,
+      "passed": 3,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 3,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

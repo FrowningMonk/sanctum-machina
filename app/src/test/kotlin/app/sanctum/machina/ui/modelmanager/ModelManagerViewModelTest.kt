@@ -27,8 +27,6 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -38,11 +36,12 @@ import org.robolectric.annotation.Config
 /**
  * TDD harness for [ModelManagerViewModel] (Phase-3 Task 11).
  *
- * Follows the same pattern as [app.sanctum.machina.ui.home.HomeViewModelTest]: hand-rolled
- * fakes, `StandardTestDispatcher` + `Dispatchers.setMain`, `advanceUntilIdle` to drain
- * `viewModelScope` coroutines. Covers the three acceptance anchors from tasks/11.md: default
- * model selection (AC-F7), quick-chat routing (AC-F4), and reactive exposure of
- * `default_model_id` from [AppSettingsRepository].
+ * Uses `UnconfinedTestDispatcher` for `Dispatchers.setMain` so `viewModelScope.launch { emit }`
+ * runs inline up to its first suspension — combined with UNDISPATCHED subscription (see
+ * [collectNavEvents]) the SharedFlow is observed deterministically without replay. Fakes are
+ * hand-rolled per patterns.md. Covers the acceptance anchors from tasks/11.md: default model
+ * selection ordering (AC-F7), quick-chat routing (AC-F4), and the reactive `default_model_id`
+ * contract including the proto3-default "unset" state.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -72,12 +71,7 @@ class ModelManagerViewModelTest {
     @Test
     fun setDefaultModel_updatesSettingsAndEmitsSnackbar() = runTest {
         val vm = ModelManagerViewModel(registry, crashState, logExport, settings)
-        val events = mutableListOf<NavEvent>()
-        // UNDISPATCHED start runs the coroutine inline until its first suspension — the SharedFlow
-        // subscription happens before the test body calls the VM, so the first emit is observed.
-        backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
-            vm.navEvents.collect { events += it }
-        }
+        val events = collectNavEvents(vm)
 
         vm.setDefaultModel("model-id", "Model Name")
         advanceUntilIdle()
@@ -87,6 +81,39 @@ class ModelManagerViewModelTest {
             listOf<NavEvent>(NavEvent.ShowSnackbar("Модель по умолчанию: Model Name")),
             events,
         )
+    }
+
+    @Test
+    fun setDefaultModel_persistsBeforeEmittingSnackbar() = runTest {
+        // Regression guard: the UI relies on the ⭐ having moved by the time the snackbar
+        // appears. Swapping `emit` and `setDefaultModelId` order would pass the previous test
+        // but fail this one.
+        val vm = ModelManagerViewModel(registry, crashState, logExport, settings)
+        val actionLog = mutableListOf<String>()
+        settings.onSetDefaultModelId = { actionLog += "setDefault:$it" }
+        backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            vm.navEvents.collect { event ->
+                actionLog += "event:${event::class.simpleName}"
+            }
+        }
+
+        vm.setDefaultModel("abc", "A B C")
+        advanceUntilIdle()
+
+        assertEquals(listOf("setDefault:abc", "event:ShowSnackbar"), actionLog)
+    }
+
+    @Test
+    fun defaultModelId_emitsEmptyStringWhenUnset() = runTest {
+        // First-launch contract from tasks/11.md 'Edge cases': proto3 default_model_id is "",
+        // so no row should get a ⭐. Locks the `stateIn(initialValue = "")` seed.
+        val vm = ModelManagerViewModel(registry, crashState, logExport, settings)
+        backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            vm.defaultModelId.collect { /* keep subscription alive */ }
+        }
+        advanceUntilIdle()
+
+        assertEquals("", vm.defaultModelId.value)
     }
 
     @Test
@@ -112,21 +139,26 @@ class ModelManagerViewModelTest {
     @Test
     fun onLoad_emitsOpenQuickChatEvent() = runTest {
         val vm = ModelManagerViewModel(registry, crashState, logExport, settings)
-        val events = mutableListOf<NavEvent>()
-        // UNDISPATCHED start runs the coroutine inline until its first suspension — the SharedFlow
-        // subscription happens before the test body calls the VM, so the first emit is observed.
-        backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
-            vm.navEvents.collect { events += it }
-        }
+        val events = collectNavEvents(vm)
 
         vm.onLoad("some-model-id")
         advanceUntilIdle()
 
+        // Exact-list assertion already enforces 'exactly one event, of type OpenQuickChat'.
         assertEquals(listOf<NavEvent>(NavEvent.OpenQuickChat("some-model-id")), events)
-        assertFalse(
-            "onLoad must not emit the retired OpenChat event",
-            events.any { it::class.simpleName == "OpenChat" },
-        )
+    }
+
+    // UNDISPATCHED start guarantees the subscription is registered before the VM method call
+    // regardless of future changes to the SharedFlow replay/buffer config — keep this even if
+    // current tests pass without it.
+    private fun kotlinx.coroutines.test.TestScope.collectNavEvents(
+        vm: ModelManagerViewModel,
+    ): MutableList<NavEvent> {
+        val events = mutableListOf<NavEvent>()
+        backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            vm.navEvents.collect { events += it }
+        }
+        return events
     }
 }
 
@@ -156,6 +188,9 @@ private class FakeAppSettingsRepository : AppSettingsRepository {
     private val lastUsedModelId = MutableStateFlow("")
     val setDefaultModelIdCalls: MutableList<String> = mutableListOf()
 
+    /** Optional ordering probe — the sequencing test uses this to record the write before the emit. */
+    var onSetDefaultModelId: (String) -> Unit = {}
+
     fun setDefault(id: String) { defaultModelId.value = id }
 
     override fun observePerModelSettings(modelId: String): Flow<PerModelSettings?> =
@@ -166,6 +201,7 @@ private class FakeAppSettingsRepository : AppSettingsRepository {
     override suspend fun getDefaultModelId(): String = defaultModelId.value
     override suspend fun setDefaultModelId(id: String) {
         setDefaultModelIdCalls += id
+        onSetDefaultModelId(id)
         defaultModelId.value = id
     }
     override fun observeDefaultModelId(): Flow<String> = defaultModelId

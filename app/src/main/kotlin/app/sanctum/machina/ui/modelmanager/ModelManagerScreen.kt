@@ -167,6 +167,8 @@ private fun ModelList(
         contentPadding = contentPadding,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        // Compose identity keys on Model.name (guaranteed unique in the registry); isDefault/onSetDefault
+        // below operate on Model.modelId (HF path, empty string pre-Task-2).
         items(models, key = { it.model.name }) { entry ->
             ModelCard(
                 entry = entry,
@@ -210,7 +212,8 @@ private fun ModelCard(
                         imageVector = SanctumIcons.IconStarFill,
                         contentDescription = stringResource(R.string.model_manager_default_badge_desc),
                         tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp).padding(end = 8.dp),
+                        // Padding first, size second — otherwise padding would eat the 20dp drawable area.
+                        modifier = Modifier.padding(end = 8.dp).size(20.dp),
                     )
                 }
                 Text(
