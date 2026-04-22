@@ -76,3 +76,8 @@ Thumbs.db
 # Vendor — Gallery source snapshot (read-only reference, never committed)
 # ============================================================================
 gallery-source/
+
+# ============================================================================
+# Personal — NOTES.md is the boss's local memo, intentionally out of VCS
+# ============================================================================
+NOTES.md
