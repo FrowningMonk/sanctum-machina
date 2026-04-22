@@ -540,7 +540,7 @@ User device smoke на Honor 200 после Task 11 вскрыл четыре д
 ## Task 15: Test Audit
 
 **Status:** Done
-**Commit:** (pending)
+**Commit:** 100ef75
 **Agent:** main agent
 **Summary:** Phase-3 test audit по 7 dimensions из tasks/15.md (atomic transition, concurrency, error paths, pyramid balance, meaningful assertions, double-bubble, TDD) + per-file assessment всех 12 тестов + AC-to-test mapping из tech-spec Testing Strategy. Все 7 dimensions — PASS. Test quality verdict: **passed** (decision matrix: 0 critical, 0 high, 2 medium, 1 low, 1 info → `taskRequired.needed = false`). **G1 (Medium)**: `ChatRepositoryTest` rollback тесты симулируют Room `@Transaction` через hand-rolled `transactionRunner` — production `withTransaction` wiring не exercised напрямую; рекомендация — 1 instrumented тест. **G2 (Medium)**: DB-corruption E2E (AC-D5 / Decision 9) покрыт только в `AppCorruptionStateTest` (вне scope task-15) — нет теста "corrupt file → rename → fresh DB usable"; рекомендация — 1 instrumented тест. **G3 (Low)**: `ChatTopAppBarStateTest.kt` не существует как отдельный файл — TopAppBar state machine тесты консолидированы в `ChatViewModelTest.topAppBarState_*` (9 методов); documentation drift в tasks/15.md. **G4 (Medium, borderline Low)**: delete-open-chat-while-streaming risk (tech-spec Risks, code-research J4) не покрыт тестом — рекомендация 1 метод в `ChatViewModelTest`. **G5 (Info)**: `ErrorLogTest` extensions для 6 новых компонент Phase-3 — exist, out-of-scope but noted. TDD compliance PASS: каждый `feat: task N` commit landит impl + tests вместе, нет impl-only commits.
 **Deviations:** None.
