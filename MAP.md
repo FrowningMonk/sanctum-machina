@@ -48,6 +48,8 @@
 | `src/` | папка | Все исходники модуля: Kotlin-код, `.proto`-схема, тесты. Структура внутри (`main/`, `test/`) задана соглашением Gradle/Android, не нашим выбором | да |
 | `build.gradle.kts` | файл | Конфиг сборки модуля: 5 плагинов (включая **`protobuf`** — только здесь), namespace `app.sanctum.machina.core.settings`, зависимость на `:core-runtime`, тянет `androidx.datastore` + `protobuf-javalite`. Содержит блок `protobuf { ... }` для кодогенерации Java-классов из `.proto` | да |
 
+**Где живёт схема настроек:** `src/main/proto/app_settings.proto` — объявлен список параметров инференса (`max_tokens`, `top_k`, `top_p`, `temperature`, `enable_thinking`, `accelerator`, `system_prompt_default`) с именами, типами и тегами для бинарной сериализации. Сами **значения по умолчанию** задаются не здесь, а в Kotlin-коде модуля — proto описывает только форму записи.
+
 ## 3. Конфиги сборки
 
 > Работают, не трогаем. Часть генерируется автоматически.
