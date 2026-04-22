@@ -40,4 +40,3 @@
 
 - **`logs/`** в корне — есть на диске, **НЕ в `.gitignore`**, содержит `tasks/` и `techspec/` (рабочие логи валидаторов). Решить: убрать в `.gitignore` или перенести под `work/`.
 - **`core-runtime`** и **`core-settings`** — нужно одной фразой определить роль каждого, чтобы карта была честной.
-- **3 KDoc-комментария в коде** ссылаются на удалённый `work/phase-2.5-logexport/tech-spec.md` (см. `CrashHandler.kt:40`, `CrashReportActivity.kt:53`, `LogExportManager.kt:49`).

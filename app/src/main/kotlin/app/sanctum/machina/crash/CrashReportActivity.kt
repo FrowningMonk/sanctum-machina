@@ -49,8 +49,6 @@ private const val TIMESTAMP_PATTERN = "yyyyMMdd-HHmm"
  * alone. The activity runs in `android:process=":crash"` (declared in
  * `AndroidManifest.xml` by Task 5) so it survives `Process.killProcess` of
  * the main process.
- *
- * See `work/phase-2.5-logexport/tech-spec.md` Flow A, Decisions 2 / 3 / 5.
  */
 class CrashReportActivity : ComponentActivity() {
 

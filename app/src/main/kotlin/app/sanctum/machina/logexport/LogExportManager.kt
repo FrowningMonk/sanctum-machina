@@ -45,8 +45,6 @@ enum class ExportSource { About, CrashReport }
  *  * **Manual secondary** — `LogExportManager(Context)`. Used by the `:crash`
  *    process's `CrashReportActivity` (Decision 5), which runs without Hilt.
  *    Collaborators are constructed from the [Context] on the spot.
- *
- * See `work/phase-2.5-logexport/tech-spec.md` Decisions 1, 5, 7, 8, 11.
  */
 @Singleton
 // `open` so test doubles can substitute `buildExport` / `writeTo` without exercising the

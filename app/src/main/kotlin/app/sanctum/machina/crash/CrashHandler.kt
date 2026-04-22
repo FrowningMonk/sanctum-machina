@@ -36,8 +36,6 @@ private val DEFAULT_CRASH_LOG_WRITER: (File, String) -> Unit = { file, content -
  * `getProcessName() == packageName` guard so it never runs in the `:crash`
  * process. The class intentionally has no `suspend` functions and no coroutine
  * imports — enforced by `CrashHandlerTest`.
- *
- * See `work/phase-2.5-logexport/tech-spec.md` Decisions 4, 5, 6, 7, 10.
  */
 class CrashHandler(
     private val context: Context,
