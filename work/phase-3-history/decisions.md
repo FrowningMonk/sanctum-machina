@@ -551,3 +551,23 @@ User device smoke на Honor 200 после Task 11 вскрыл четыре д
 - Report → [logs/working/task-15/test-audit-report.md](logs/working/task-15/test-audit-report.md)
 - Все 9 acceptance criteria из tasks/15.md проверены в отчёте: 12 test files прочитаны, atomic transition coverage assessed (happy + 2 failure paths + message-insert rollback), WarmupCoordinator cancelAndRestart ordering verified через `CompletableDeferred.isCompleted`, ModelRegistry concurrent-read covered через StateFlow.map atomicity + `noStaleReady` test + real-registry wiring test, double-bubble test присутствует (`doubleBubble_noSimultaneousStreamingAndPersisted` на :259 ChatViewModelTest.kt), AC-to-test mapping полный с 2 gaps записанными (G2, G4), pyramid balance assessed (no misplacements, 9 unit + 3 instrumented — правильный split), TDD compliance PASS via git log, отчёт записан, decisions.md entry (этот блок).
 - No Critical or High severity findings → **Task 16 QA не заблокирован**. G1/G2/G4 оформлены как post-QA follow-on recommendations (не блокеры).
+
+## Task 16: Pre-deploy QA
+
+**Status:** Done
+**Commit:** _pending_
+**Agent:** main agent
+**Summary:** Final Wave pre-deploy QA for Phase 3 — Chat History. Full `./gradlew build` + `:app:testDebugUnitTest :core-runtime:testDebugUnitTest :core-settings:testDebugUnitTest :app:lintDebug :app:assembleDebug` все зелёные: 254 + 70 + 10 = 334 unit-тестов, 0 failures/errors/skipped, APK 123 MB собран. Все 11 шагов AVP из tech-spec пройдены; 10/11 passed, 1/11 not_verifiable (`connectedAndroidTest` без устройства в сессии — отложено к user-smoke перед merge). Статические проверки: schema JSON закоммичен (b9f47f1), `ALLOWED_COMPONENTS` = ровно 14, proto содержит все три optional-поля, `ModelRegistry.activeModelName` присутствует, `Model.modelId` присутствует, `ChatViewModel.onCleared()` не зовёт `registry.cleanup`, staging cleanup делегирован `StartupHousekeeper` (вызывается из `SanctumApplication.onCreate` внутри process-name guard), privacy manifest без регрессий (`allowBackup=false`, `dataExtractionRules=@xml/data_extraction_rules`). Audit follow-up: Task 13 Major M1 (`flowOn` missing в `buildMessagesFlow`) — принят как задокументированный tech-debt без блокера; Task 14 — 0 Critical/High/Medium; Task 15 — verdict passed. Вывод: **READY FOR MERGE** после прогона `connectedAndroidTest` на Honor 200.
+**Deviations:** Нет.
+
+**Reviews:** QA — самопроверяющая задача, сторонних ревьюверов нет (per task-16 spec).
+
+**Verification:**
+- Full report → [logs/working/qa-report.json](logs/working/qa-report.json)
+- `./gradlew build` → BUILD SUCCESSFUL in 1m 56s (388 tasks)
+- Unit tests: `:app` 254/254, `:core-runtime` 70/70, `:core-settings` 10/10 — 0 failures
+- `:app:lintDebug` → no critical errors; HTML report at `app/build/reports/lint-results-debug.html`
+- `:app:assembleDebug` → `app/build/outputs/apk/debug/app-debug.apk` (123 MB)
+- Static checks (schema JSON committed, ErrorLog whitelist, proto fields, ModelRegistry/Model/ChatViewModel/SanctumApplication/AndroidManifest contracts) — все green
+
+**Deferred to post-deploy:** 2 группы критериев требуют live-устройства — `:app:connectedAndroidTest` на Honor 200 (AC-R6 CASCADE + AC-R5 schema snapshot + AppModuleCorruptionTest) и user-verification list из user-spec «Пользователь проверяет» (AC-P1, AC-P2, AC-E2, AC-E3, AC-F7, AC-E7, US-5..US-11, AC-A4, AC-D5, AC-G1..G4). См. `deferredToPostDeploy` в qa-report.json.
