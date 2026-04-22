@@ -423,3 +423,27 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL (полный `:app` unit-test, без регрессий Phase 1/2/2.5/3)
 - `./gradlew build` → BUILD SUCCESSFUL (lint + assembleDebug + assembleRelease + testRelease)
 - User device smoke — **deferred to phase-level QA** (memory: `Verify UI chain before device smoke`). Task 11 замыкает last piece of Wave 5 UI — полноценный прогон (star indicator, overflow + snackbar + ⭐ migration, quick-chat launch из Model Manager) выполняется в составе общей приёмки Phase 3.
+
+### Task 11 follow-ups (device smoke fallout)
+
+User device smoke на Honor 200 после Task 11 вскрыл четыре дефекта в smoke-цепочке Wave 4-5 — ни один не regression собственно Task 11, но каждый требовал фикса прежде чем «Загрузить» / «Начать быстрый чат» заработало реально. Фиксы — отдельные коммиты, ссылки ниже. Тесты остались зелёными, APK пересобран между итерациями.
+
+**1. Explicit-modelId warmup** (коммит `a4e035f`, `fix: trigger warmup for explicit quick-chat modelId`)
+  `ChatViewModel.bootstrapChatModelId()` пиннил nav-arg `modelId` в `_chatModelId` но не звал `warmupCoordinator.cancelAndRestart(id)` — если WarmupCoordinator не грел именно эту модель (cold-start без default, cross-model switch), entry оставался в `ModelInitStatus.Idle` → `ChatUiState.Loading` навсегда. Фикс: тригерим warmup когда `explicitModelId != null && initStatus != Ready`.
+
+**2. Auto-warmup после первого скачивания** (коммит `b5beac5`, `fix: auto-trigger warmup when default_model_id is auto-set on first download`)
+  `WarmupCoordinator.startDefaultModelObserver` авто-записывал `default_model_id` при первом `SUCCEEDED`, но warmup не триггерил — Home «Начать быстрый чат» при первом запуске без default suspending навсегда в `registry.activeModelName.first()`. Фикс: после `appSettings.setDefaultModelId` сразу зовём `launchWarmup(modelId)`. Регрессионный тест `ac_f3Observer_triggersWarmup_afterAutoSettingDefault` пинит поведение.
+
+**3. modelId → Model.name translation** (коммит `85cb71f`, `fix: translate modelId → Model.name before registry.initialize`)
+  **Главный дефект** (нашли через `errors.log`): `WarmupCoordinator.launchWarmup(modelId)` передавал HF `modelId` в `registry.initialize()`, а `DefaultModelRegistry.initialize(modelName)` ищет по `Model.name` (storage filename). Результат: `IllegalArgumentException: unknown model: <modelId>` → warmup тихо падал в `engine-warmup` лог, UI крутился бесконечно. Фикс: внутри `launchWarmup` резолвим `registry.models.firstOrNull { modelId == X }?.model?.name` и зовём `initialize(name)`. Тесты получили helper `seedAllowlist(vararg modelIds)` — `ChatViewModelTest`, `WarmupCoordinatorTest` все прошли.
+
+**4. Single-engine invariant violation** (коммит `58bb44e`, `fix: release prior Ready engine on cross-model initialize`)
+  User flow A → write → B → write → back to A → чат открывался мгновенно без переинициализации. `DefaultModelRegistry.initialize(B)` делал `releaseEngine(B)` (идемпотент на том же target), но НЕ чистил ранее Ready'нутый A — оба native instance висели в памяти одновременно, нарушая single-engine invariant (D-T9, R3). Фикс: перед флипом target'а в `Initializing` итерируем snapshot `models.filter { Ready && name != target }` и делаем `releaseEngine + флип в Idle` (под `lifecycleMutex`, новых Ready не появится).
+
+**5. ChatScreen IME + navigation-bar insets** (коммит `8ebd2ce`, `chore: ChatScreen imePadding + NOTES deferral for nav-bar gap`)
+  Task 10 добавил `.imePadding()` чтобы поле ввода поднималось над клавиатурой (AC-U4). Побочный эффект: `Scaffold.innerPadding` уже включает nav-bar, `imePadding` добавляет ПОЛНУЮ высоту IME (которая уже накрывает nav-bar) → двойной учёт, пустой зазор высотой с нав-бар между клавиатурой и панелью ввода. Фикс: `.consumeWindowInsets(innerPadding).imePadding()` — стандартный Compose-паттерн `max(IME, navBar)` вместо суммы. На Honor 200 визуально зазор всё ещё виден — вынесено в NOTES как deferred follow-up (подозрение на non-standard inset reporting в HarmonyOS).
+
+**Verification после фиксов:**
+- `./gradlew :app:testDebugUnitTest :core-runtime:testDebugUnitTest` → BUILD SUCCESSFUL (241 тест, 0 failures кроме одного Robolectric flaky `testHousekeepingSkippedInCrashProcess` — проходит в изоляции, pre-existing state-leak между тестами, не касается фиксов).
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL.
+- User device smoke на Honor 200 (`2026-04-22`): (a) «Загрузить» A → работает, (b) «Загрузить» B → работает, (c) возврат на A после фикса 4 → корректно переинициализируется, (d) «Начать быстрый чат» после перезапуска → мгновенный (default модель прогрета `warmupDefault` на старте app'а), (e) star-индикатор + overflow «Сделать по умолчанию» — визуально корректны.
