@@ -472,15 +472,33 @@ class WarmupCoordinatorTest {
     // A→Ready, then cross-model switch to B. The coordinator must fully release A's
     // warmup lifecycle and drive B through initialize() to a successful completion —
     // no deadlock / stale Initializing that would leave the UI on a forever spinner.
+    //
+    // The handler doubles as a fake `initialize` that publishes Ready for the target
+    // and Idle for the prior Ready — otherwise `registry.models` stays frozen and
+    // scenario-3 (stale Initializing on A) would go undetected.
     appSettings.defaultModelId = "model-a"
     seedAllowlist("model-a", "model-b")
-    registry.initializeHandler = { Result.success(Unit) }
+    registry.initializeHandler = { modelName ->
+      registry._models.value = registry._models.value.map { entry ->
+        when (entry.model.name) {
+          modelName -> entry.copy(initStatus = ModelInitStatus.Ready)
+          else -> entry.copy(initStatus = ModelInitStatus.Idle)
+        }
+      }
+      Result.success(Unit)
+    }
 
     val coordinator = newCoordinator()
     coordinator.warmupDefault()
     advanceUntilIdle()
     assertEquals(listOf("model-a"), registry.initializeCalls)
     assertFalse(coordinator.isWarmupInProgress.value)
+    val afterA = registry._models.value
+    assertEquals(
+      "model-a should be Ready after its warmup",
+      ModelInitStatus.Ready,
+      afterA.single { it.model.name == "model-a" }.initStatus,
+    )
 
     coordinator.cancelAndRestart("model-b")
     advanceUntilIdle()
@@ -489,6 +507,17 @@ class WarmupCoordinatorTest {
     assertFalse(
       "B initialize returned success → flag must settle at false",
       coordinator.isWarmupInProgress.value,
+    )
+    val afterB = registry._models.value
+    assertEquals(
+      "model-b must be Ready after cross-model switch",
+      ModelInitStatus.Ready,
+      afterB.single { it.model.name == "model-b" }.initStatus,
+    )
+    assertEquals(
+      "model-a must not linger Ready — single-engine invariant",
+      ModelInitStatus.Idle,
+      afterB.single { it.model.name == "model-a" }.initStatus,
     )
   }
 

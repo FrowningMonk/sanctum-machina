@@ -807,16 +807,23 @@ constructor(
     /**
      * Waits for the pinned Persistent-mode engine to reach [ChatUiState.Ready]
      * once, then dispatches a one-shot inference for the unpaired USER row
-     * captured in [autoResumeTarget] (Task 18 B4). `autoResumeAttempted` is
-     * flipped BEFORE the dispatch so a Ready→Initializing→Ready flutter (e.g.
-     * heavy-setting reinit) cannot schedule a second inference for the same row.
+     * captured in [autoResumeTarget] (Task 18 B4).
+     *
+     * Invariant: [_uiState.first { Ready }] intentionally hangs through a
+     * terminal `Failed` state — the auto-resume stays armed until the user
+     * taps «Загрузить» → engine reaches Ready → dispatch. Do NOT persist
+     * [autoResumeAttempted] across process restarts; a new VM on the next
+     * cold start sees the unpaired USER row and re-arms correctly.
+     *
+     * The flag is flipped INSIDE [resumePendingAssistantPersistent], AFTER
+     * the [currentReadyModel] null-check succeeds, so a late engine flap
+     * (Ready→Idle) between the Ready signal and this function does not
+     * consume the auto-resume attempt — a fresh VM can still recover.
      */
     private suspend fun observeFirstReadyThenResume(identity: ChatIdentity.Persistent) {
         _uiState.first { it is ChatUiState.Ready }
         val target = autoResumeTarget ?: return
         if (autoResumeAttempted) return
-        autoResumeAttempted = true
-        autoResumeTarget = null
         resumePendingAssistantPersistent(identity, target.text)
     }
 
@@ -837,6 +844,11 @@ constructor(
         userText: String,
     ) {
         val model = currentReadyModel() ?: return
+        // Commit the auto-resume attempt only after a model is locked in —
+        // a Ready→Idle flap between the Ready signal and this point would
+        // otherwise consume the attempt and strand the unpaired USER row.
+        autoResumeAttempted = true
+        autoResumeTarget = null
         val accumulateThinking = shouldAccumulateThinking(model)
         val initialThinkingText: String? = if (accumulateThinking) "" else null
         _streamingMessage.value = Message(

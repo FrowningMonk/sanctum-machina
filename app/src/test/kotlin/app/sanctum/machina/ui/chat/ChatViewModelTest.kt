@@ -1492,10 +1492,12 @@ class ChatViewModelTest {
     }
 
     @Test
-    fun persistentMode_messageWithMissingFile_attachmentOmitted() = runTest(dispatcher) {
+    fun persistentMode_messageWithMissingFile_attachmentOmittedAndLogged() = runTest(dispatcher) {
         val model = Model(name = "m", modelId = "id-m")
         fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
         fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        val errorLogFile = File(context.filesDir, "logs/errors.log")
+        errorLogFile.parentFile?.deleteRecursively()
         fakeMessageDao.emit(
             listOf(
                 MessageEntity(
@@ -1519,6 +1521,19 @@ class ChatViewModelTest {
             0,
             userMsg.attachments.size,
         )
+        // B1-AC3 requires a log entry under the `attachment-read` component —
+        // bare-absent attachment would pass the size assertion even if the
+        // decode branch were removed entirely.
+        val deadlineMs = System.currentTimeMillis() + 2_000
+        while (System.currentTimeMillis() < deadlineMs) {
+            if (errorLogFile.exists() && errorLogFile.readText().contains("attachment-read")) break
+            Thread.sleep(20)
+        }
+        assertTrue(
+            "expected errors.log entry under 'attachment-read' component; got: " +
+                (if (errorLogFile.exists()) errorLogFile.readText() else "<no log file>"),
+            errorLogFile.exists() && errorLogFile.readText().contains("attachment-read"),
+        )
     }
 
     @Test
@@ -1526,6 +1541,16 @@ class ChatViewModelTest {
         val model = Model(name = "m", modelId = "id-m")
         fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
         fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        // Plant a decoy PNG outside `filesDir/attachments/` — if the containment
+        // check is removed or canonicalised incorrectly, BitmapFactory would
+        // successfully decode this decoy and the assertion below would fail.
+        // Keeps the test from passing trivially due to "file does not exist"
+        // (test-reviewer-1 T18-TEST-1).
+        val decoy = File(context.filesDir, "secret.png").apply {
+            parentFile?.mkdirs()
+            val bmp = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888)
+            outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        }
         // Traversal escape — the resolved path canonicalises outside filesDir/attachments/.
         fakeMessageDao.emit(
             listOf(
@@ -1545,11 +1570,12 @@ class ChatViewModelTest {
 
         val userMsg = vm.messages.value.first { it.role == MessageRole.USER }
         assertEquals(
-            "path outside attachments root must not yield an attachment",
+            "path outside attachments root must not yield an attachment even when a decoy exists",
             0,
             userMsg.attachments.size,
         )
         assertEquals("traversal", userMsg.text)
+        decoy.delete()
     }
 
     // ---- Task 18 B4 — persistent auto-resume --------------------------------
