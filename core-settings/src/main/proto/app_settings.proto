@@ -17,4 +17,7 @@ message PerModelSettings {
 
 message AppSettings {
   map<string, PerModelSettings> per_model_overrides = 1;
+  optional string default_model_id = 2;
+  optional string last_used_model_id = 3;
+  optional bool settings_keys_migrated = 4;
 }

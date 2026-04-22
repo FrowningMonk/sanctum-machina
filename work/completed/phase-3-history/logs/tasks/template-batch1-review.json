@@ -1,0 +1,123 @@
+{
+  "validator": "task-validator",
+  "batch": [0, 1, 2, 3, 4],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "content",
+      "task": 1,
+      "section": "Context Files",
+      "issue": "user-spec.md is not listed in Context Files. It is a mandatory context file per template and task-creator rules.",
+      "fix": "Add `- [user-spec.md](../user-spec.md)` to the Feature section of Context Files."
+    },
+    {
+      "severity": "critical",
+      "category": "content",
+      "task": 2,
+      "section": "Context Files",
+      "issue": "user-spec.md is not listed in Context Files. It is a mandatory context file per template and task-creator rules.",
+      "fix": "Add `- [user-spec.md](../user-spec.md)` to the Feature section of Context Files."
+    },
+    {
+      "severity": "critical",
+      "category": "content",
+      "task": 3,
+      "section": "Context Files",
+      "issue": "project.md and architecture.md use wrong relative depth: `../../.claude/skills/project-knowledge/references/...`. From `work/phase-3-history/tasks/`, the correct relative path is `../../../.claude/skills/project-knowledge/references/...`. These links will not resolve.",
+      "fix": "Change all PK references from `../../.claude/...` to `../../../.claude/...` in Context Files."
+    },
+    {
+      "severity": "critical",
+      "category": "content",
+      "task": 4,
+      "section": "Context Files",
+      "issue": "project.md and architecture.md use wrong relative depth: `../../.claude/skills/project-knowledge/references/...`. From `work/phase-3-history/tasks/`, the correct relative path is `../../../.claude/skills/project-knowledge/references/...`. These links will not resolve.",
+      "fix": "Change all PK references from `../../.claude/...` to `../../../.claude/...` in Context Files."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 0,
+      "section": "TDD Anchor",
+      "issue": "TDD Anchor entries are not in the required format `\\`tests/path::test_name\\` — description`. Instead the section contains prose narrative and compile commands (not test entries). For a code-writing task the format should list actual test methods even if they are compilation-only gates.",
+      "fix": "Either remove the TDD Anchor section entirely if the task genuinely has no unit-testable logic, or convert the smoke compile checks into the template format. Since this is a UI/design task that cannot be unit-tested, removing the section is acceptable. The current content creates a misleading stub."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 0,
+      "section": "Context Files",
+      "issue": "Files modified in this task — `gradle/libs.versions.toml` and `app/build.gradle.kts` (Google Fonts dependency) — are not listed in Context Files. The 'What to do' step 10 explicitly adds a dependency there.",
+      "fix": "Add links to `gradle/libs.versions.toml` and `app/build.gradle.kts` in the Context Files Modify section."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 1,
+      "section": "Context Files",
+      "issue": "project.md path is `../../.claude/skills/project-knowledge/references/project.md`. From `work/phase-3-history/tasks/`, the correct relative path is `../../../.claude/skills/project-knowledge/references/project.md`. The PK architecture.md uses the same wrong depth.",
+      "fix": "Change PK references from `../../.claude/...` to `../../../.claude/...`."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 2,
+      "section": "Required Skills",
+      "issue": "Required Skills uses an absolute path `C:/Users/Vladimir/.claude/skills/code-writing/SKILL.md` instead of the portable `~/.claude/skills/code-writing/SKILL.md` used in all other tasks. Absolute paths are machine-specific and will break on other machines.",
+      "fix": "Replace the absolute path with `~/.claude/skills/code-writing/SKILL.md`."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 2,
+      "section": "Context Files",
+      "issue": "Context Files for PK entries use absolute paths (`C:/AI-WORK/PhoneWrap/.claude/skills/...`) and code files also use absolute paths. All other tasks use relative paths. Absolute paths are machine-specific.",
+      "fix": "Replace absolute PK paths with `../../../.claude/skills/project-knowledge/references/...` and code file paths with relative paths like `../../../core-settings/src/...`."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 4,
+      "section": "Context Files",
+      "issue": "Code files listed under 'Code files (читать для понимания контрактов)' are given as raw paths without markdown link format: `app/src/main/kotlin/...` instead of `[FileName.kt](../../../app/src/...)`. Per validation rules, all Context Files entries must be markdown links.",
+      "fix": "Convert the four DAO/entity raw-path entries to markdown links: e.g. `[ChatDao.kt](../../../app/src/main/kotlin/app/sanctum/machina/data/dao/ChatDao.kt)`."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 4,
+      "section": "Context Files",
+      "issue": "New files to create are listed as bullet points with raw paths under 'Новые файлы' — not as markdown links. Same rule applies: all file references in Context Files should be markdown links.",
+      "fix": "Either remove the 'to create' file list (these do not exist yet and cannot be linked) or move it to the Details section where raw paths are acceptable."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 2,
+      "section": "Post-completion",
+      "issue": "Post-completion section is written in English ('Write report to decisions.md', 'If deviated from spec') while all other tasks use Russian. Minor inconsistency.",
+      "fix": "Translate to Russian to match the language of Tasks 0, 3, 4: 'Записать краткий отчёт в decisions.md', 'Если отклонились от спека — описать отклонение и причину', 'Обновить user-spec/tech-spec если что-то изменилось'."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 0,
+      "section": "TDD Anchor",
+      "issue": "Tech-spec Task 0 does not define TDD Anchor tests or Verify-smoke — only Verify-user. The task correctly carries the Verify-user forward into the User subsection of Verification Steps. No carry-forward loss detected. (Informational note, not a defect.)",
+      "fix": "No action required."
+    },
+    {
+      "severity": "minor",
+      "category": "decomposition",
+      "task": 1,
+      "section": "Details",
+      "issue": "Details section 'Dependencies' mentions `kotlinx-coroutines-test` should be added here or in Task 1, but Task 1's scope is Room foundation only. The coroutines-test dependency is owned by Task 3 per tech-spec context. This creates ambiguity about which task owns the test dependency.",
+      "fix": "Clarify in Details that `kotlinx-coroutines-test` for androidTest is confirmed present; if not, reference that Task 3 adds it for unit tests. The androidTest version may already exist from Phase 2."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 14
+  }
+}

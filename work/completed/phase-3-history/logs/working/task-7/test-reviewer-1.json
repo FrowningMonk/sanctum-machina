@@ -1,0 +1,42 @@
+{
+  "status": "passed",
+  "summary": "HomeViewModelTest covers all four TDD anchor cases from tasks/7.md with meaningful behavioural assertions, correctly handles the WhileSubscribed collector problem via a backgroundScope subscribe helper, and uses a FakeModelRegistry that is faithful to the full ModelRegistry interface surface. The suite follows the project's JUnit 4 + runTest + StandardTestDispatcher convention (same as WarmupCoordinatorTest) and every test passes the litmus test: removing the `any { status == SUCCEEDED }` predicate in HomeViewModel would cause the two assertTrue cases to fail. One bonus test for the `activeModelName` pass-through is low-value but not redundant. No critical or major issues.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "redundant_testing",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/home/HomeViewModelTest.kt:122-130 (activeModelName_isPassedThrough_fromRegistry)",
+      "issue": "The `activeModelName` property in HomeViewModel is a one-line direct reference assignment (`val activeModelName = registry.activeModelName`). The test verifies a value set *before* the VM is constructed is visible through the VM — this catches only one failure mode: somebody replacing the pass-through with a different source. It does not require `advanceUntilIdle()` (there is no `stateIn`), does not test reactivity on changes, and duplicates zero behavior the HomeScreen path does not already exercise at integration time.",
+      "recommendation": "Either (a) delete this test and rely on compile-time type checks / HomeScreen visual verification for the pass-through, or (b) strengthen it into a reactivity test by calling `registry.setActiveModelName('model-a')`, then `registry.setActiveModelName('model-b')` after the VM is constructed and asserting `viewModel.activeModelName.value == 'model-b'` — which would catch an accidental `.stateIn(..., initialValue = ...)` wrapping that loses updates. Prefer (b) if the property's reactivity contract matters for the HomeScreen bottom chip."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/home/HomeViewModelTest.kt:136-138 (subscribe helper)",
+      "issue": "The `subscribe` helper documents the WhileSubscribed-collector requirement in a comment, but the helper is opt-in — a future test author who forgets to call it will silently observe the initial seed `false` and may write a passing-but-meaningless assertion (e.g. an `assertFalse` case that would pass regardless of the predicate). The 5th test (`activeModelName_isPassedThrough_fromRegistry`) already skips `subscribe` correctly (because that flow has no `stateIn`), proving the inconsistency is easy to introduce.",
+      "recommendation": "Consider refactoring to a single helper `private fun TestScope.createViewModel(): HomeViewModel` that constructs the VM *and* launches `backgroundScope.launch { vm.hasDownloadedModels.collect {} }` in one step, so no test can accidentally bypass the collector. Keep the doc-comment explaining WhileSubscribed inside the helper. The `activeModelName` case would then either opt out via a separate factory or be switched to the strengthened reactivity form proposed in the previous finding."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/home/HomeViewModelTest.kt (overall)",
+      "issue": "There is no test asserting the `initialValue = false` seed is observed by the UI before the first registry emission is mapped. This matters: if a refactor changes `initialValue = false` to `initialValue = true`, the Home placeholder would momentarily not render for a legitimate no-models first-run (AC-F2 / US-8). The current suite only asserts `.value` after `advanceUntilIdle()`, by which time the mapped value has already replaced the seed.",
+      "recommendation": "Add `hasDownloadedModels_initialValueIsFalse_beforeFirstEmission`: construct the VM without emitting anything from registry (registry starts with the fake's default empty list which already maps to false, so instead: construct the VM, assert `viewModel.hasDownloadedModels.value == false` *without* calling `subscribe(...)` and *without* `advanceUntilIdle()`). This test fails if the seed is flipped to `true`. Tiny addition, catches a real Home placeholder regression."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 1,
+    "litmusTest": {
+      "checked": 5,
+      "passed": 4,
+      "failed": 1
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 5,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

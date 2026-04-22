@@ -1,0 +1,36 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "severity": "minor",
+      "location": "app/src/main/kotlin/app/sanctum/machina/logexport/DeviceInfoCollector.kt:110-112",
+      "issue": "Inline comment claims 'Kotlin-nullable parameters collide with non-null at the JVM signature level' as justification for the thunk pattern. That's not technically true — ModelRegistry? and ModelRegistry have the same JVM erased signature; only the Kotlin-level nullability annotation differs, so a nullable-parameter primary ctor would compile and run fine alongside the no-arg overload. The thunk is still a perfectly reasonable design (it avoids a null-check at each call site and makes the crash-path stub explicit), but the stated rationale is misleading. Decision 10 'alternatives considered' also names the nullable-parameter option as 'viable'.",
+      "fix": "Rewrite the comment to describe the real benefit: 'Captures the registry lookup as a thunk so the two construction paths differ only in what they return (empty vs live), removing a branch at every call site.' Or drop the comment entirely — the two @Inject / no-arg overloads are self-explanatory."
+    },
+    {
+      "severity": "minor",
+      "location": "app/src/main/kotlin/app/sanctum/machina/logexport/DeviceInfoCollector.kt:108",
+      "issue": "`entriesProvider` is captured at construction time and re-invoked on every `activeModelId()` / `downloadedModels()` call. With the Hilt-injected ModelRegistry this is fine (StateFlow.value is a cheap volatile read), but the name reads like a factory — a reviewer might think it re-creates the list. This is purely cosmetic.",
+      "fix": "Rename to `entriesSnapshot` or `readEntries`, or inline a private `currentEntries(): List<ModelEntry>` helper with a doc comment."
+    },
+    {
+      "severity": "nit",
+      "location": "app/src/test/kotlin/app/sanctum/machina/data/SettingsMigrationHelperTest.kt:32",
+      "issue": "`import org.junit.Assert.assertNull` is unused.",
+      "fix": "Remove the import."
+    },
+    {
+      "severity": "nit",
+      "location": "app/src/test/kotlin/app/sanctum/machina/data/SettingsMigrationHelperTest.kt (sentinel_preventsRerun)",
+      "issue": "The sentinel-test captures updateCount AFTER the first migration but never asserts that the first migration actually performed work (updateCount >= 1). If isSettingsMigrated() somehow returned true from a fresh store, the test would still pass trivially. Low-risk since other tests exercise the happy path, but the invariant is weaker than it could be.",
+      "fix": "Add `assertEquals(\"first migration must update once\", 1, countAfterFirst)` before the second call, or reset the counter before the first call and assert == 1 then == 1 again."
+    },
+    {
+      "severity": "nit",
+      "location": "core-settings/src/main/kotlin/app/sanctum/machina/core/settings/DefaultAppSettingsRepository.kt:73-82 and :105-114",
+      "issue": "`observeDefaultModelId()` / `observeLastUsedModelId()` catch IOException by emitting `AppSettings.getDefaultInstance()` upstream and then mapping to the field. The outcome is equivalent to `catch { emit(\"\") }` placed after the map (as the task description suggested). Current placement means that ANY downstream collector of either observe flow will also observe a default-instance emission when the OTHER field errors — in practice indistinguishable because all fields in the default instance are empty, but the coupling is non-obvious.",
+      "fix": "Optional: move `.catch { ... emit(\"\") }` after `.map { it.defaultModelId }` to match the AC wording literally. Current behavior is correct; change is purely for consistency with the spec example."
+    }
+  ],
+  "notes": "Implementation matches tech-spec and task cleanly across all 6 sub-areas (proto, repository, Model.modelId, ErrorLog whitelist, SettingsMigrationHelper, DeviceInfoCollector). Key correctness checks all pass:\n\n1. Atomicity — SettingsMigrationHelper wraps the entire rekey in a single dataStore.updateData {} block; the counting-store test asserts exactly one invocation even with 3 keys.\n2. Sentinel guard — isSettingsMigrated() is checked before any work and markSettingsMigrated() is called after the updateData block. Second call short-circuits.\n3. Orphan logging — errorLog.e(\"settings-io\", ...) fired per dropped key; orphanKey_droppedAndLogged verifies exact count.\n4. Crash-path stub preserved — LogExportManager(context) at line 73 continues to call AndroidDeviceInfoProvider(context), which routes to the no-arg secondary constructor with the empty-list thunk. Decision 10 semantics preserved (null activeModelId, emptyList downloadedModels in :crash process).\n5. Hilt graph — LogExportModule.bindDeviceInfoProvider still binds AndroidDeviceInfoProvider; the @Inject constructor(Context, ModelRegistry) satisfies Dagger's single-@Inject-constructor requirement. Private primary ctor is a Kotlin implementation detail Dagger never sees.\n6. ErrorLog whitelist — 14 components total (8 + 6); knownComponents_accepted updated with the explicit `assertEquals(14, allowed.size)` guard so drift is caught in CI.\n7. Cross-file consistency — Model.modelId default of \"\" means all existing Model(...) call sites compile; AllowedModel.toModel() now passes modelId = modelId (one-liner per spec).\n\nDeviation from spec text (minor, approved):\n- The task suggested 'make registry nullable' OR a separate overload. Implementer chose a thunk via a private primary ctor + two public ctors — equivalent expressiveness, slightly cleaner consumption site (no ?: emptyList() scattered around). Decision 10 explicitly lists the nullable alternative as 'viable but adds complexity'; the thunk achieves the same outcome with less.\n\nNo overengineering: every line pulls its weight. No underengineering: error paths, sentinel, orphan logging, atomicity all present. No regression risk for Phase 2.5 LogExportManager — verified by reading LogExportManager.kt:71-75 (non-Hilt secondary ctor path unchanged, AndroidDeviceInfoProvider(context) still resolves).\n\nTest quality note (will be covered by test-reviewer in depth): the Robolectric-backed SettingsMigrationHelperTest uses real DataStore + real DefaultAppSettingsRepository + a thin CountingDataStore decorator — high-fidelity, low-mock setup, consistent with patterns.md's no-MockK convention. Good call on using FakeModelRegistry as a hand-rolled stub.\n\nAC-smoke checks verified locally:\n- `grep -c ...` on ErrorLog.kt → 6 (passes AC).\n- ErrorLog whitelist has exactly 14 entries.\n- app_settings.proto contains all 3 new optional fields with correct tags (2, 3, 4)."
+}

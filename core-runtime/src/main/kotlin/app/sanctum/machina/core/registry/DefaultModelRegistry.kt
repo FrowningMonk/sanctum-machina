@@ -1,6 +1,7 @@
 package app.sanctum.machina.core.registry
 
 import android.content.Context
+import androidx.annotation.VisibleForTesting
 import app.sanctum.machina.core.data.Accelerator
 import app.sanctum.machina.core.data.ConfigKeys
 import app.sanctum.machina.core.data.DownloadRepository
@@ -25,10 +26,13 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -46,8 +50,8 @@ private const val LOG_TAG_INIT = "inference-init"
  * receives the same payload shape Phase-1 produced when no prompt was
  * configured.
  *
- * Extracted as an internal top-level function so Task 10's TDD anchor tests
- * can drive the mapping without standing up the full registry graph.
+ * Exposed as an internal top-level function so the mapping can be exercised
+ * by unit tests without standing up the full registry graph.
  */
 internal fun buildSystemInstruction(configValues: Map<String, Any>): Contents? {
   val raw = configValues[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label] as? String
@@ -57,6 +61,25 @@ internal fun buildSystemInstruction(configValues: Map<String, Any>): Contents? {
   val nonBlank = raw?.takeIf { it.isNotBlank() } ?: return null
   return Contents.of(listOf(Content.Text(nonBlank)))
 }
+
+/**
+ * D7: project the list of [ModelEntry] into the stable HF [Model.modelId] of the single entry
+ * currently in [ModelInitStatus.Ready], or `null` if none. Exposed as an internal top-level
+ * function so the derivation can be unit-tested without constructing the full registry graph;
+ * [DefaultModelRegistry.activeModelName] is the sole production call site.
+ *
+ * Projects `modelId` — not `name` or `displayName` — because `chat.model_id` in Room stores the
+ * stable HF id, and same-model fast-path equality in DrawerContent / ChatViewModel depends on the
+ * strings matching. Referential equality (`===`) matches the project convention for comparing
+ * [ModelInitStatus] values (see [cleanup], [resetConversation]).
+ */
+internal fun deriveActiveModelName(
+  models: StateFlow<List<ModelEntry>>,
+  scope: CoroutineScope,
+): StateFlow<String?> =
+  models
+    .map { list -> list.firstOrNull { it.initStatus === ModelInitStatus.Ready }?.model?.modelId }
+    .stateIn(scope, SharingStarted.Eagerly, null)
 // LOG_TAG_CLEANUP ("inference-cleanup") — whitelisted in user-spec D11; not used yet because
 // LlmChatModelHelper.cleanUp swallows its own exceptions internally. Phase 2 debt: surface
 // close-failures via ErrorLog if/when cleanUp grows a throwing error path.
@@ -85,8 +108,14 @@ constructor(
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
   private val lifecycleMutex = Mutex()
 
-  private val _models = MutableStateFlow<List<ModelEntry>>(emptyList())
+  // `_models` is internal to let same-module unit tests drive the derived StateFlow
+  // deterministically; external consumers use the read-only `models` projection below.
+  @VisibleForTesting
+  internal val _models = MutableStateFlow<List<ModelEntry>>(emptyList())
   override val models: StateFlow<List<ModelEntry>> = _models.asStateFlow()
+
+  // D7: see `deriveActiveModelName` KDoc; `ModelRegistry.activeModelName` carries the public KDoc.
+  override val activeModelName: StateFlow<String?> = deriveActiveModelName(models, scope)
 
   init {
     scope.launch {
@@ -176,6 +205,26 @@ constructor(
               IllegalArgumentException("unknown model: $modelName")
             )
         val model = entry.model
+        // Single-engine invariant: release any OTHER Ready/Initializing engine before
+        // initializing the target. Without the Ready branch, switching from model A to B leaves
+        // A's native instance loaded alongside B — doubling RAM use and surprising the UI (Home
+        // re-open on A would find initStatus=Ready and skip warmup). The Initializing branch
+        // (Task 18 B2) covers the cross-model-switch scenario where a prior `initialize(A)` was
+        // cancelled mid-flight and left `A.initStatus == Initializing` — without this, that
+        // stale flag would survive `registry.initialize(B)` success and Task 10's TopAppBar
+        // derivation would render a perpetual spinner for A on any screen pinned to it.
+        // `lifecycleMutex` is held, so no new Ready/Initializing entries can appear during
+        // iteration.
+        _models.value
+          .filter {
+            (it.initStatus === ModelInitStatus.Ready ||
+              it.initStatus === ModelInitStatus.Initializing) &&
+              it.model.name != modelName
+          }
+          .forEach { other ->
+            releaseEngine(other.model)
+            updateEntry(other.model.name) { it.copy(initStatus = ModelInitStatus.Idle) }
+          }
         // Flip to Initializing first so the StateFlow never advertises Ready over a null instance
         // during the subsequent releaseEngine window (code-reviewer-2 R2-Min-2).
         updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Initializing) }
@@ -183,28 +232,40 @@ constructor(
         // still-allocated native instance (security-auditor-1 SM2). Safe no-op when Idle.
         releaseEngine(model)
 
-        val err1 = awaitInitialize(model)
-        if (err1.isEmpty() && model.instance != null) {
-          updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Ready) }
-          return@withLock Result.success(Unit)
+        // B2 cancellation recovery (Task 18): without this, cancelling a warmup mid-`awaitInitialize`
+        // (e.g. rapid cross-model double-tap) leaves `modelName` pinned at
+        // [ModelInitStatus.Initializing]. The derived TopAppBar then renders a Loading spinner
+        // forever for this model, because `WarmupCoordinator.isWarmupInProgress` correctly flips
+        // back to false on cancellation while the registry entry disagrees. Reset to Idle on
+        // CancellationException; the native engine is already cleaned up via
+        // `awaitInitialize.invokeOnCancellation` above.
+        try {
+          val err1 = awaitInitialize(model)
+          if (err1.isEmpty() && model.instance != null) {
+            updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Ready) }
+            return@withLock Result.success(Unit)
+          }
+
+          // T8: unconditional GPU→CPU fallback. No error-text parsing.
+          errorLog.e(LOG_TAG_INIT, "GPU init failed: $err1")
+          // Guard against partial native allocation before retry.
+          llmModelHelper.cleanUp(model, onDone = { })
+          model.configValues =
+            model.configValues + (ConfigKeys.ACCELERATOR.label to Accelerator.CPU.label)
+
+          val err2 = awaitInitialize(model)
+          if (err2.isEmpty() && model.instance != null) {
+            updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Ready) }
+            return@withLock Result.success(Unit)
+          }
+
+          errorLog.e(LOG_TAG_INIT, "CPU init failed: $err2")
+          updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Failed(err2)) }
+          Result.failure(RuntimeException("GPU+CPU init failed: $err2"))
+        } catch (ce: CancellationException) {
+          updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Idle) }
+          throw ce
         }
-
-        // T8: unconditional GPU→CPU fallback. No error-text parsing.
-        errorLog.e(LOG_TAG_INIT, "GPU init failed: $err1")
-        // Guard against partial native allocation before retry.
-        llmModelHelper.cleanUp(model, onDone = { })
-        model.configValues =
-          model.configValues + (ConfigKeys.ACCELERATOR.label to Accelerator.CPU.label)
-
-        val err2 = awaitInitialize(model)
-        if (err2.isEmpty() && model.instance != null) {
-          updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Ready) }
-          return@withLock Result.success(Unit)
-        }
-
-        errorLog.e(LOG_TAG_INIT, "CPU init failed: $err2")
-        updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Failed(err2)) }
-        Result.failure(RuntimeException("GPU+CPU init failed: $err2"))
       }
     }
 

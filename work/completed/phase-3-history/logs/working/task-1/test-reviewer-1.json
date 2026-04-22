@@ -1,0 +1,96 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "status": "needs_improvement",
+  "summary": "All 8 TDD anchors are present and most tests have meaningful, specific assertions (field equality, sort order, cascade counts, schema presence). Test independence is correct (@Before creates a fresh in-memory DB, @After closes it). However there is one material reliability issue: `foreignKeyEnforcementEnabled` constructs the DB via `Room.inMemoryDatabaseBuilder` directly, which bypasses `SanctumDatabase.create()`'s `ForeignKeysOnOpenCallback`. The test still passes, but for the wrong reason (Room 2.x enables foreign_keys=ON by default for new in-memory DBs) — so the test does not actually guard the production PRAGMA callback that Decision 1 and AC-R6 depend on. Additionally, `observeAllEmitsOnInsert` and `observeByChatSortedByCreatedAtAsc` take `.first()` snapshots *after* inserts without a live collector, so they verify query results on subscribe rather than reactive re-emission — acceptable for the sort test, but weak for the TDD anchor whose stated purpose is 'collect Flow, insert a chat, assert emission arrives'. Two tests (`freshDbOpens`, `schemaContainsChatsAndMessages`) are borderline framework-level checks. No critical bugs hidden; fix the FK-callback coverage gap and the Flow reactivity anchor, and this passes.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "anti_pattern",
+      "location": "app/src/androidTest/kotlin/app/sanctum/machina/data/SanctumDatabaseTest.kt:41-59",
+      "issue": "`foreignKeyEnforcementEnabled` builds the DB with `Room.inMemoryDatabaseBuilder(...).allowMainThreadQueries().build()` in `@Before` — it never applies `ForeignKeysOnOpenCallback`. The test passes only because Room's in-memory SQLite sets `PRAGMA foreign_keys = ON` by default for newly-opened databases, not because the production callback in `SanctumDatabase.create()` ran. Delete the `.addCallback(ForeignKeysOnOpenCallback)` line from production `SanctumDatabase.create()` and this test still passes green — classic litmus-test failure. This is the exact AC (AC-R6 / Decision 1) the test is supposed to guard, so the coverage is currently false confidence.",
+      "litmusTestFailed": true,
+      "recommendation": "Option A (preferred): expose a test-friendly builder or run this specific test against `SanctumDatabase.create(context)` on a real file DB (use `context.deleteDatabase('sanctum.db')` in @Before/@After to guarantee a fresh file). That forces the production `addCallback` path to execute. Option B: refactor `SanctumDatabase.kt` to expose `ForeignKeysOnOpenCallback` (e.g. `internal val ForeignKeysOnOpenCallback`) and have the test builder attach it explicitly: `Room.inMemoryDatabaseBuilder(ctx, SanctumDatabase::class.java).addCallback(SanctumDatabase.ForeignKeysOnOpenCallback).allowMainThreadQueries().build()`. Then add a second test that explicitly *does not* attach the callback and verifies the behavior — but only meaningful if Option B chosen. Minimum acceptable fix: Option A with a file-backed DB, because it proves the production wiring end-to-end. Also add an assertion `PRAGMA foreign_keys` returns 1: `db.openHelper.readableDatabase.query(\"PRAGMA foreign_keys\").use { c -> c.moveToFirst(); assertEquals(1, c.getInt(0)) }`."
+    },
+    {
+      "severity": "major",
+      "category": "empty_test",
+      "location": "app/src/androidTest/kotlin/app/sanctum/machina/data/dao/ChatDaoTest.kt:104-112",
+      "issue": "`observeAllEmitsOnInsert` is the TDD anchor for Flow reactivity ('collect Flow, insert a chat, assert emission arrives'), but it calls `dao.observeAll().first()` before and after the insert with no live collector between them. Room's `Flow<List<T>>` always runs the underlying query on new subscription, so this test passes even if Room's invalidation tracker never fires on insert. The test currently only proves 'a fresh Flow collector sees the row we inserted' — which is indistinguishable from `getAll()`. The reactive-emission property is not verified.",
+      "litmusTestFailed": true,
+      "recommendation": "Use a single collector across the insert boundary. Example with StateFlow + collector job: `val flow = dao.observeAll(); val emissions = mutableListOf<List<ChatEntity>>(); val job = launch(UnconfinedTestDispatcher()) { flow.toList(emissions) }; // baseline emission arrives; dao.insert(...); // wait for second emission via e.g. `flow.drop(1).first()`; assertTrue(emissions.last().size == 1); job.cancel()`. Simpler alternative using `turbine` (if it fits the project): `dao.observeAll().test { awaitItem().also { assertEquals(0, it.size) }; dao.insert(...); val after = awaitItem(); assertEquals(1, after.size); cancelAndIgnoreRemainingEvents() }`. If neither is desired, at minimum rename the test to `observeAllReturnsInsertedRowOnFreshCollect` so the name matches what is actually tested, and add a separate test that uses a live collector for the emission semantics."
+    },
+    {
+      "severity": "minor",
+      "category": "empty_test",
+      "location": "app/src/androidTest/kotlin/app/sanctum/machina/data/dao/MessageDaoTest.kt:64-76",
+      "issue": "`observeByChatSortedByCreatedAtAsc` has the same single-snapshot pattern: three inserts happen before the `.first()` subscription. This test is valid for verifying the sort order of the query (which is its primary purpose), but its name implies Flow semantics. Lower severity than the ChatDao case because there is no TDD anchor promising emission-on-insert for `observeByChat`.",
+      "litmusTestFailed": false,
+      "recommendation": "Either (a) keep the test but rename to `observeByChatReturnsMessagesSortedByCreatedAtAsc` to make the narrow intent explicit, or (b) refactor to a live-collector pattern as in the previous finding if you want emission semantics covered. Also add one negative test that inserts messages for a *different* chatId and asserts `observeByChat(chatIdA).first()` does not include them — this actually exercises the `WHERE chat_id = :chatId` clause, which is currently not asserted (a bug that swapped `chat_id` for a literal would go undetected)."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/androidTest/kotlin/app/sanctum/machina/data/dao/MessageDaoTest.kt",
+      "issue": "No test for `observeByChat` / `getByChatId` filtering correctness. All existing tests operate on a single chat, so a regression that returns messages from all chats (e.g. missing WHERE clause) would pass every test in the file. Given that chat isolation is a core product invariant for history (Phase 3), this gap is worth closing.",
+      "litmusTestFailed": false,
+      "recommendation": "Add test `observeByChatOnlyReturnsMessagesForThatChat`: insert two chats (chatA, chatB), insert 2 messages into each with distinct text, assert `messageDao.observeByChat(chatA).first()` contains only the chatA texts and size == 2; same for chatB. Also assert `countByChatId(chatA) == 2` and `countByChatId(chatB) == 2`."
+    },
+    {
+      "severity": "minor",
+      "category": "redundant_testing",
+      "location": "app/src/androidTest/kotlin/app/sanctum/machina/data/SanctumDatabaseTest.kt:36-38",
+      "issue": "`freshDbOpens` asserts only `db.isOpen`. This tests Room itself — if `Room.inMemoryDatabaseBuilder(...).build()` returned a closed DB, every other test in every file would also fail in @Before. The test catches no failure mode that another test does not already catch.",
+      "litmusTestFailed": false,
+      "recommendation": "Either delete the test, or promote it to a real smoke check: assert that both DAO accessors return non-null instances (`assertNotNull(db.chatDao())`, `assertNotNull(db.messageDao())`) — that at least guards against forgetting an abstract accessor on `SanctumDatabase`."
+    },
+    {
+      "severity": "minor",
+      "category": "redundant_testing",
+      "location": "app/src/androidTest/kotlin/app/sanctum/machina/data/SanctumDatabaseTest.kt:62-66",
+      "issue": "`schemaContainsChatsAndMessages` verifies that Room created the tables declared in `@Database(entities = ...)`. This is guaranteed by the framework; the only way it can fail is if an entity is removed from the annotation — in which case `chatDao()`/`messageDao()` tests in the sibling files would also fail. The `noProjectFilesTable` / `noProjectsTable` tests, by contrast, are meaningful because they assert *absence* (Decision 1 / AC-R7). Keep those; this one is redundant.",
+      "litmusTestFailed": false,
+      "recommendation": "Delete `schemaContainsChatsAndMessages` — it is covered transitively by every DAO test. Keep `noProjectFilesTable` and `noProjectsTable` unchanged; they are the AC-R7 guards and genuinely valuable."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/androidTest/kotlin/app/sanctum/machina/data/dao/ChatDaoTest.kt",
+      "issue": "No test exercises `ChatEntity.projectId` being set to a non-null value and round-tripping through insert+getById. Given Decision 1 explicitly calls out `project_id` as nullable INTEGER with no FK (v1) — intended to accept values in v2 without migration — a test round-tripping `projectId = 42L` would guard against someone accidentally adding a FK or changing nullability.",
+      "litmusTestFailed": false,
+      "recommendation": "Add test `insertChatWithProjectIdRoundTrips`: `val id = dao.insert(ChatEntity(projectId = 42L, modelId = \"m\", createdAt = 1L, lastMessageAt = 1L)); assertEquals(42L, dao.getById(id)!!.projectId)`. Combined with `noProjectsTable`, this pins the 'nullable Long, no FK' contract."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/androidTest/kotlin/app/sanctum/machina/data/dao/MessageDaoTest.kt",
+      "issue": "No test for nullable-column round-trips on `MessageEntity` (`thinkingText`, `imagePath`, `audioPath`, `tokenCount`). The schema JSON alone does not prove the Kotlin types are wired correctly.",
+      "litmusTestFailed": false,
+      "recommendation": "Add one small test `nullableFieldsRoundTrip`: insert a message with `thinkingText = \"reasoning\", imagePath = \"/f/a.png\", audioPath = \"/f/b.m4a\", tokenCount = 128`, read it back, assert each. Default-null case is already implicitly covered by `insertAndGetByChatId` but add one explicit `nullableFieldsDefaultToNull` assertion on `msg.thinkingText == null && msg.imagePath == null && msg.audioPath == null && msg.tokenCount == null` inside the existing test."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 8,
+    "litmusTest": {
+      "checked": 11,
+      "passed": 9,
+      "failed": 2
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 0,
+      "integration": 11,
+      "e2e": 0,
+      "assessment": "healthy"
+    },
+    "tddAnchorCoverage": {
+      "expected": 8,
+      "present": 8,
+      "highQuality": 6,
+      "weak": 2
+    }
+  },
+  "taskRequired": {
+    "needed": true,
+    "reason": "Two major findings that require source-file changes to fix correctly: (1) `foreignKeyEnforcementEnabled` must exercise the production `ForeignKeysOnOpenCallback` path — currently false-positive; (2) `observeAllEmitsOnInsert` TDD anchor must use a live collector to actually test Flow reactivity. Both are mechanical fixes (< ~30 lines each) but must land before the task can claim AC-R6 is guarded by a test."
+  }
+}

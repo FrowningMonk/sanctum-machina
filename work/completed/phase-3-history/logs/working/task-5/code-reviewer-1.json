@@ -1,0 +1,86 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "WarmupCoordinator and AppModule are cleanly implemented, correctly wire Hilt (including the @Binds → DefaultChatRepository path), and the cancelAndJoin + restartMutex serialisation is sound — cancellation propagates through DefaultModelRegistry.awaitInitialize's suspendCancellableCoroutine so lifecycleMutex is released before the next initialize runs. Tests exercise every TDD-anchor scenario and pass under UnconfinedTestDispatcher. Findings are limited to a few correctness edges in the _isWarmupInProgress transition, unhandled exceptions in background coroutines (observer + post-success settings write), and minor polish around the AppModule (module-per-concern naming and a Context import that appears unused).",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/engine/WarmupCoordinator.kt",
+      "line": 112,
+      "severity": "major",
+      "category": "best-practices",
+      "suggestion": "During cancelAndRestart, _isWarmupInProgress can briefly emit `false` between the old Job's finally (which sets it false) and the `_isWarmupInProgress.value = true` on line 117. The block comment claims observers never see a `false` gap, but the current ordering contradicts that: `warmupJob?.cancelAndJoin()` resumes AFTER the old finally runs, so the StateFlow has already been flipped to false by the outgoing Job before we set it back to true. Set `_isWarmupInProgress.value = true` BEFORE `cancelAndJoin()`, or hoist the true-write into cancelAndRestart before the mutex is acquired. Test `isWarmupInProgress_emitsFalse_afterCancellation` does not catch this because it checks the terminal value after a successful second warmup, not the transient during-cancel value; Task 10's UI spinner will flicker.",
+      "benefit": "Eliminates a visible spinner flicker when the user taps Load on a second model while the default warmup is still running — the exact UX Decision 3 is meant to protect.",
+      "optional": false
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/engine/WarmupCoordinator.kt",
+      "line": 134,
+      "severity": "major",
+      "category": "error-handling",
+      "suggestion": "The AC-F3 observer coroutine has no try/catch. If `appSettings.getDefaultModelId()` or `setDefaultModelId(...)` throws (IOException from DataStore, CancellationException aside), the exception propagates up through `scope.launch` with the default CoroutineExceptionHandler — it is logged to logcat only, never to ErrorLog, and the observer dies silently. Wrap the inner body in try/catch and log failures via `errorLog.e(\"settings-io\", \"AC-F3 auto-default failed\", cause)` (settings-io is already in ALLOWED_COMPONENTS). Same pattern belongs inside `launchWarmup`'s inner launch for `appSettings.setLastUsedModelId(modelId)` after a successful initialize — a throw there currently goes unreported.",
+      "benefit": "Aligns with the project-wide \"every failure path logs through ErrorLog\" convention and prevents a silent-stuck coordinator if DataStore writes fail.",
+      "optional": false
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/engine/WarmupCoordinator.kt",
+      "line": 141,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "The observer uses `firstOrNull { ... SUCCEEDED }` which picks by list order. This matches the task's edge-case spec (\"iteration order of the list\"), but the test `ac_f3Observer_setsDefaultModelId_onFirstDownloadedModel_whenEmpty` only asserts one specific model-id is written and never re-verifies the iteration-order contract when several SUCCEEDED entries exist in the same emission. Add a test case with two SUCCEEDED entries in the initial emission to pin the \"first in list wins\" contract before AC-F3's behaviour drifts.",
+      "benefit": "Locks the iteration-order guarantee so a future refactor cannot silently change which model becomes the default.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/engine/WarmupCoordinator.kt",
+      "line": 101,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "`cancelAndRestart(modelId)` dispatches into `scope.launch { launchWarmup(modelId) }` and returns immediately — the caller gets no handle to the new warmup. Task 10's TopAppBar may want to chain UI state (e.g., show a toast if the new initialize fails after the spinner clears). Consider returning `Job` or a `Deferred<Result<Unit>>` so downstream consumers can observe completion without polling `isWarmupInProgress`.",
+      "benefit": "Gives downstream UI a structured way to react to post-cancel warmup outcomes instead of inferring completion from StateFlow transitions.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/di/AppModule.kt",
+      "line": 3,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The `android.content.Context` import is required (used in `provideSanctumDatabase`) — no issue. However the module name `AppModule` is at odds with `patterns.md § Hilt module organization`: \"one module per concern (`InferenceModule`, `PersistenceModule`, `DownloadModule`, `AuthModule`). Avoid a single 'god module'.\" The current module mixes persistence (Room DB + DAOs + ChatRepository) with what will become the warmup/engine path (already reserved in the KDoc for Task 6). Consider renaming to `PersistenceModule` now, before Task 6 adds the corruption handler — once the file grows to cover corruption + future engine-warmup bindings, renaming is noisier.",
+      "benefit": "Keeps the Hilt graph aligned with the documented module-per-concern convention; makes the module name describe its actual payload.",
+      "optional": true
+    },
+    {
+      "file": "app/src/test/kotlin/app/sanctum/machina/engine/WarmupCoordinatorTest.kt",
+      "line": 164,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "`awaitLogFile` polls on file existence with a 2-second real-time deadline. It will return the moment the file is created — but `appendText` may still be flushing when `errorLogFile.readText()` runs on line 155. On a slow CI host this has a nonzero chance of reading an empty file. Poll on `errorLogFile.exists() && errorLogFile.length() > 0` (and/or check for the literal \"ERROR [engine-warmup]\" substring) instead of just existence.",
+      "benefit": "Eliminates a rare flaky-test failure mode on constrained CI runners.",
+      "optional": true
+    },
+    {
+      "file": "app/src/test/kotlin/app/sanctum/machina/engine/WarmupCoordinatorTest.kt",
+      "line": 280,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "`isWarmupInProgress_emitsFalse_afterCancellation` asserts the terminal `false` only AFTER the second (successful) model-b warmup completes. It does not assert the flag is `false` immediately after cancellation but BEFORE the new Job is counted — which is what AC-F6's acceptance criterion promises (\"false when idle, completed, OR cancelled\") and what would catch the transient-flicker issue flagged in the WarmupCoordinator.kt finding above. Add a test that cancels an in-flight warmup without starting a new one (e.g., expose a test-only `cancel()` helper, or cancel the coordinator's scope directly) and asserts `isWarmupInProgress.value == false` at that instant.",
+      "benefit": "Proves the flag transition contract (cancellation → false) is independent of the subsequent warmup succeeding, tightening the AC-F6 guarantee.",
+      "optional": true
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/engine/WarmupCoordinator.kt",
+      "line": 89,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "`warmupDefault()` is fire-and-forget via `scope.launch`. Rapid-fire calls stack outer launches on `restartMutex`; each will serially cancel the job started by the previous one, causing avoidable churn. Consider guarding with `if (!restartMutex.tryLock()) return` inside the outer launch, or short-circuiting on `warmupJob?.isActive == true && warmupJob?.let { currentModelId == modelId } == true`. Not a correctness issue — behaviour is idempotent by design — but it wastes cycles and generates redundant `cancelAndJoin` traces.",
+      "benefit": "Avoids N-way thrashing if SanctumApplication.onCreate or a Compose recomposition accidentally triggers warmupDefault multiple times.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 3,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 2,
+    "minorIssuesCount": 6,
+    "testCoverageAssessment": "adequate"
+  }
+}

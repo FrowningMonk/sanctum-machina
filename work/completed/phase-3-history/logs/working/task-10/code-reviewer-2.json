@@ -1,0 +1,64 @@
+{
+  "status": "approved",
+  "summary": "Round-2 review of commit 4105365. All five round-1 optional minors are resolved correctly: Spacer(Modifier.width(8.dp)) now renders the intended banner gap; topAppBarState.combine takes registry.activeModelName as a fourth reactive argument so activeModelId flows with no stale .value read; FailedLoadButton and the SanctumApp NavHost both carry explanatory KDoc/comments; the incognito-wrapper scope is a deliberate interpretation deferred to decisions.md per the commit message. The LogExportManager `open` widening does not affect Hilt binding. No regressions introduced; test seam widenings are appropriate.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "line": 97,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "`kotlinx.coroutines.SupervisorJob()` is used as a fully-qualified name inline rather than importing it alongside the other `kotlinx.coroutines.*` symbols already imported at the top of the file (CoroutineScope, Dispatchers, flow types). A one-line `import kotlinx.coroutines.SupervisorJob` would match the file's own convention for the neighbouring types. Same nit for the `kotlinx.coroutines.CompletableDeferred` at line 540, which already existed before this commit — purely stylistic.",
+      "benefit": "Keeps import hygiene consistent with the rest of the test file.",
+      "optional": true
+    }
+  ],
+  "round1Resolutions": [
+    {
+      "finding": "HomeScreen.kt:192 — Spacer(Modifier.padding) collapsed to zero",
+      "status": "resolved",
+      "evidence": "HomeScreen.kt:195 now uses `Spacer(Modifier.width(8.dp))` with an inline comment referencing code-reviewer-1; `width` import added at line 16. Renders the intended 8dp horizontal gap between the dismiss and save-log TextButtons."
+    },
+    {
+      "finding": "ChatViewModel.kt:219 — activeModelName read as .value snapshot inside combine",
+      "status": "resolved",
+      "evidence": "ChatViewModel.kt:219-225 — combine now takes four arguments (registry.models, _chatModelId, warmupCoordinator.isWarmupInProgress, registry.activeModelName) and the lambda receives `activeModelId` directly. `deriveTopAppBarState` is called with the flowed value, so any transition of activeModelName (including flips while the other three flows are idle) will now retrigger the derivation. Matches the Kotlin combine(flow1, flow2, flow3, flow4) overload — StateFlow<String?> is a Flow<String?>, no type friction. Initial value and SharingStarted.Eagerly preserved; no behavioural regression for existing tests."
+    },
+    {
+      "finding": "ChatScreen.kt:494 — FailedLoadButton empty-modelId guard undocumented",
+      "status": "resolved",
+      "evidence": "ChatScreen.kt:487-495 — KDoc block added explaining that `deriveTopAppBarState` will never construct Failed with an empty modelId (Quick/Persistent identity requires a pinned _chatModelId or resolvable activeModelId) and that the `enabled = modelId.isNotEmpty()` guard is a defensive no-op for future refactors. Clear and specific; no dead code added."
+    },
+    {
+      "finding": "SanctumApp.kt:119 — overlapping chat/{chatId} LongType vs chat/{modelName} StringType",
+      "status": "resolved",
+      "evidence": "SanctumApp.kt:119-122 — four-line comment block above the `chat/{chatId}` declaration now states: (a) registration order matters, (b) NavType.LongType rejects non-numeric segments, (c) the StringType tombstone catches fall-throughs and redirects home. Documents the fragile coexistence contract so a future Navigation upgrade that changes match-order semantics will surface against this comment rather than silently regressing."
+    },
+    {
+      "finding": "ChatScreen.kt:89 — Quick incognito theme wraps Loading/Failed branches",
+      "status": "deferred_by_design",
+      "evidence": "Commit message explicitly defers this to decisions.md as a deliberate interpretation of the spec (the task body says 'обернуть содержимое ChatScreen' while the edge-case clause says the theme applies only to Quick). Acceptable resolution for an optional minor that flagged a spec-reading ambiguity; no code change needed. Will surface in decisions.md at task completion (per the task-10.md post-completion checklist and the commit message)."
+    }
+  ],
+  "testFileReview": [
+    {
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt",
+      "notes": "FakeWarmupCoordinator now owns a SupervisorJob-backed CoroutineScope and exposes shutdown(); tearDown() calls it — addresses the parent startDefaultModelObserver leak. The new `topAppBarState_persistentInitializing_returnsLoading` test pins the entry-driven Initializing arm distinct from warmupInFlight — correctly uses `fakeRegistry.publishEntry(model, ModelInitStatus.Initializing)` to target the ModelInitStatus-derived branch without setting isWarmupInProgressState. The `loadModel_delegatesToWarmupCoordinator` test adds a second `vm.loadModel(\"id-c\")` call and asserts `listOf(\"id-b\", \"id-c\")` — guards against idempotence-coalescing regressions. The draft-models test adds a `draft.currentModelId == \"id-a\"` assertion pinning the dropdown check-mark invariant. All four new/extended assertions are tight and orthogonal to existing coverage."
+    },
+    {
+      "file": "app/src/test/kotlin/app/sanctum/machina/ui/home/HomeViewModelTest.kt",
+      "notes": "Four new tests cover: `corruptionOccurred_reflectsFalse_byDefault`, `corruptionOccurred_reflectsTrue_whenFlagSet` (both polarities of the AppCorruptionState pass-through), `buildAndWrite_success_delegatesThroughLogExportManager` (verifies both arguments and that writeTo receives the buildExport output), and `buildAndWrite_ioException_returnsFailure` (IOException propagation to Result.failure). The `RecordingLogExport` fake extends the production class via the `LogExportManager(Context)` secondary constructor — constructs real DeviceInfoCollector and LogcatReader but never exercises them because buildExport/writeTo are overridden. Clean test double pattern matching the project's no-MockK convention."
+    },
+    {
+      "file": "app/src/main/kotlin/app/sanctum/machina/logexport/LogExportManager.kt",
+      "notes": "`open class` + `open suspend fun buildExport` + `open suspend fun writeTo` widens production visibility for test substitution. Hilt binding is NOT affected: @Singleton on an open class is a supported Hilt pattern (Hilt generates a factory from @Inject constructor; it does not require `final`). The class is still @Singleton-scoped, the @Inject constructor is unchanged, and LogExportModule.kt (checked) only binds CommandRunner and DeviceInfoProvider — LogExportManager itself is constructor-injected, not @Binds-bound. No risk of Hilt graph failure. The secondary `LogExportManager(Context)` constructor (used by CrashReportActivity) is not declared `open`, but open-ness of the class does not require constructors to be opened — this compiles correctly."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 7,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 1,
+    "testCoverageAssessment": "adequate"
+  }
+}

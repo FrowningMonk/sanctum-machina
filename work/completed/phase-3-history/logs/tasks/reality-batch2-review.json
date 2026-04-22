@@ -1,0 +1,75 @@
+{
+  "validator": "reality-checker",
+  "batch": [3, 4, 5],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 5,
+      "issue": "Task 5 and tech-spec both reference 'ModelEntry.isDownloaded' as an existing field ('ModelEntry.isDownloaded is a field on ModelEntry already set by DefaultModelRegistry on startup scan'). The actual ModelEntry class (core-runtime/.../ModelEntry.kt) has NO 'isDownloaded' field. Its fields are: model: Model, downloadStatus: ModelDownloadStatus, initStatus: ModelInitStatus. Download state is accessed as entry.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED. The AC-F3 observer TDD anchor ('fake registry emits a ModelEntry with isDownloaded=true') will fail to compile because 'isDownloaded' does not exist as a field.",
+      "fix": "Replace every 'entry.isDownloaded' reference in Task 5 (AC-F3 observer implementation, TDD anchor, implementation hints) with 'entry.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED'. In WarmupCoordinatorTest, construct the fake ModelEntry with downloadStatus = ModelDownloadStatus(status = ModelDownloadStatusType.SUCCEEDED) to simulate a downloaded model. Note: Task 9 (note at line ~155) says 'ModelEntry.isDownloaded уже существует в текущем ModelRegistry' — this is also incorrect and will affect Task 9 as well."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 4,
+      "issue": "Task 4 defines DefaultChatRepository with '@Inject constructor(chatDao: ChatDao, messageDao: MessageDao, ioDispatcher: CoroutineDispatcher)' but ErrorLog is not listed as a constructor parameter. The sweepZombieChats method must call ErrorLog.e(\"history-write\", ...) per AC-P8 and the tech-spec testing strategy. ErrorLog.e is a suspend fun and requires injection. The implementation cannot compile without ErrorLog in the constructor.",
+      "fix": "Add ErrorLog as a constructor parameter: @Inject constructor(chatDao: ChatDao, messageDao: MessageDao, errorLog: ErrorLog, ioDispatcher: CoroutineDispatcher = Dispatchers.IO). Update the AppModule @Binds binding in Task 5 — Hilt will inject ErrorLog automatically since it is a @Singleton. Update ChatRepositoryTest's FakeChatRepository to include an ErrorLog or provide a test double."
+    },
+    {
+      "severity": "major",
+      "category": "tdd",
+      "task": 3,
+      "issue": "Task 3 TDD strategy prescribes building a 'FakeModelRegistry that derives activeModelName from it using the exact same map + stateIn logic as the real class'. Tests written against a fake that contains a copy of the production derivation logic do not validate that DefaultModelRegistry.activeModelName is actually wired correctly — they only verify the derivation math in the fake. If DefaultModelRegistry forgets to add the override, all fake-based tests still pass.",
+      "fix": "Add at least one test that directly inspects DefaultModelRegistry.activeModelName by mutating its internal _models state through the existing test infrastructure. Look at how AllowlistLoaderTest and SystemInstructionTest drive DefaultModelRegistry-adjacent types, or expose a testable path. The 5 fake-based tests are valuable but must be supplemented by at least one test against the real implementation."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 5,
+      "issue": "Task 5 WarmupCoordinator constructor includes '@ApplicationContext Context' as an injected dependency, but nowhere in the described WarmupCoordinator logic (warmupDefault, cancelAndRestart, AC-F3 observer) is Context actually used. The three dependencies that are actually needed are ModelRegistry, AppSettingsRepository, and ErrorLog. Injecting Context without a documented use case is dead code and could confuse code reviewers.",
+      "fix": "Remove @ApplicationContext Context from the WarmupCoordinator constructor unless a concrete purpose is identified. If it is needed as future scaffolding for something not in this task, document the reason explicitly in a comment."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 5,
+      "issue": "Task 5 Details section contains full algorithm specifications for AppModule and WarmupCoordinator that cross the boundary from hints into prescriptions: exact Room.databaseBuilder call with exact DB name; exact job?.cancelAndJoin() cancellation pattern; exact AC-F3 observer structure including where to cancel the collecting Job. Per the validation checklist, implementation hints containing step-by-step algorithms or code blocks with full logic are a 'major' finding.",
+      "fix": "Replace prescriptive code sequences with directional hints. For example: 'For cancelAndRestart, ensure that the in-flight Job is fully terminated before launching the new initialize call — see kotlinx.coroutines Job cancellation semantics.' Keep the intent (cancel before reinit) without prescribing the exact API call site."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 4,
+      "issue": "Task 4 Details section contains a complete step-by-step algorithm for AutoTitleGenerator ('trim → collapse whitespace (все \\s+ → один пробел) → если результат ≤ 20 символов → вернуть как есть; иначе найти последний пробел в позиции ≤ 20, обрезать, добавить \"…\"; если пробела нет → обрезать hard на 20 + \"…\"') and the exact SimpleDateFormat call ('SimpleDateFormat(\"dd.MM HH:mm\", Locale.getDefault()).format(Date(createdAtMs))'). This is a complete implementation, not a hint.",
+      "fix": "Replace the algorithm body with a reference to AC-U2 in the user-spec, which already specifies the algorithm. The date format locale is a legitimate hint since it is not specified in AC-U2 — keep that. Remove the step-by-step from/to/cut logic from Details."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 4,
+      "issue": "ChatRepositoryTest TDD anchor item 'test_commitDraftChat_ioExceptionOnStagingWrite' describes 'IOException до Room INSERT → Room row не создан, staging удалён'. But per the interface design, DefaultChatRepository.commitDraftChat receives stagingDir as a parameter — the caller (ChatViewModel) is responsible for writing files to staging before calling the repository. The repository itself does not perform staging writes; it only performs the rename. An 'IOException on staging write' before Room INSERT is not a scenario the repository can trigger since it does not do the writing. The test either tests the wrong layer or tests the wrong step name for the rename-before-Room scenario.",
+      "fix": "Clarify what this test actually covers. If it means 'rename() fails before Room INSERT completes' — that scenario is impossible since the current design does Room INSERT first, then rename. If it is testing that a pre-condition failure (stagingDir null, not a real IOException) skips Room INSERT, rename the test accordingly. Review the commit sequence: staging write (caller) → Room INSERT (repo) → rename (repo). The repo can only fail on INSERT or rename."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 5,
+      "issue": "Task 5 tells the implementer to use CoreRuntimeModule as the structural reference for AppModule, but CoreRuntimeModule is an 'object' (not abstract class), uses only @Provides, and has no @Binds. LogExportModule (the actual precedent for a Hilt module in :app) is an abstract class with only @Binds. AppModule needs both @Binds (for ChatRepository → DefaultChatRepository) and @Provides (for SanctumDatabase, ChatDao, MessageDao). The correct pattern to reference is 'abstract class with a companion object or separate inner object for @Provides', not CoreRuntimeModule.",
+      "fix": "Update the hint to reference the standard pattern for mixing @Binds and @Provides: 'abstract class AppModule with @Binds methods, plus a companion object containing @Provides methods'. Remove the CoreRuntimeModule reference as it uses a different (pure-object @Provides-only) pattern."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "Task 3 Acceptance Criteria includes 'No changes made outside ModelRegistry.kt, DefaultModelRegistry.kt, and the new test file'. The task Dependencies section notes 'kotlinx-coroutines-test must be present in core-runtime/build.gradle.kts as a testImplementation — confirm before writing tests; add if missing'. The actual core-runtime/build.gradle.kts already has 'testImplementation(libs.kotlinx.coroutines.test)', so no change is needed. But if it were absent, modifying build.gradle.kts would technically violate the acceptance criterion's 'no changes outside 3 files' constraint. The criterion wording should not block a necessary build file addition.",
+      "fix": "Narrow the AC to 'No changes made to production Kotlin sources outside ModelRegistry.kt and DefaultModelRegistry.kt', leaving build configuration changes explicitly permitted."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 41,
+    "issues_found": 9
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "round": 2,
+  "verdict": "approved",
+  "summary": "All in-scope round-1 findings from commit 05c9732 are addressed correctly. M1 is resolved with a synchronous Send-gate flip in commitDraft and a matching revert on failure; m2 removes the redundant observer and correctly relies on the combine in buildMessagesFlow plus stop()'s interrupted-bubble handling; m3 collapses to a single finally-driven `_reinitInProgress = false`; m4 replaces `first { it != null }!!` with `mapNotNull { it }.first()`. M2 (route heavy apply through WarmupCoordinator.cancelAndRestart) is explicitly deferred with a documented rationale tied to Task 5 coordinator contract work and is accepted. Two stale doc references to the removed observePersistedForHandover remain (cosmetic, tracked as minor).",
+  "findings": [
+    {
+      "id": "M1",
+      "severity": "resolved",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 548,
+      "title": "Draft Send-gate flipped synchronously, revert on failure present",
+      "detail": "`commitDraft` now sets `_uiState.value = ChatUiState.Ready(isGenerating = true)` at line 548 BEFORE `viewModelScope.launch`, after the `modelId`/`currentReadyModel()` guards. The failure branch at line 577 reverts to `Ready(isGenerating = false)` alongside the error log and snackbar, restoring retry. A rapid double-tap's second `send()` will now observe `isGenerating = true` at the outer gate (line 174) and return immediately. Success path leaves the flag `true` so Quick/Persistent can't race — the Persistent VM that loads on nav will re-initialize its own state from the engine observer.",
+      "recommendation": "No action."
+    },
+    {
+      "id": "M2",
+      "severity": "deferred-accepted",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 325,
+      "title": "applyHeavySetting still calls registry.cleanup + registry.initialize directly — deferral accepted",
+      "detail": "Lines 325-326 still bypass `WarmupCoordinator.cancelAndRestart`. Commit message and decisions.md acknowledge this: the current coordinator.cancelAndRestart does not perform an explicit cleanup pass, and Task 8's sequencing tests assert `stopResponse → cleanup → initialize` on the registry. A full migration requires Task 5 coordinator contract work. The tech-spec lifecycleMutex risk remains but is an inherited constraint, not a Task 8 regression. Accepting as deferred with the documented tracking in decisions.md.",
+      "recommendation": "Track in a follow-up referencing Task 5 coordinator contract; no block on Task 8."
+    },
+    {
+      "id": "m1",
+      "severity": "out-of-scope",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 544,
+      "title": "Draft staged attachments deferral — out of scope per task",
+      "detail": "`@Suppress(\"UNUSED_PARAMETER\") val attachmentsPlaceholder = pending` at line 544; commit clears `_attachments` on success. Deferral acknowledged in decisions.md. No change requested per round-2 scope.",
+      "recommendation": "No action in Task 8."
+    },
+    {
+      "id": "m2",
+      "severity": "resolved",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 484,
+      "title": "observePersistedForHandover removed — combine is the sole invariant",
+      "detail": "The init-block launch and the function itself are gone. `buildMessagesFlow` (line 484) still suppresses `streaming` when `persisted.lastOrNull()?.role == ROLE_ASSISTANT`, which is the load-bearing invariant for D4. `stop()` (line 184-200) marks the streaming bubble as `interrupted=true` (keeping it visible, not nulled) — correct for AC-R3 since no ASSISTANT row is persisted on stop, so the combine won't hide it, and the user still sees the interrupted partial. Non-Persistent modes use `updateLastAssistantInMemory` and are unaffected. `resetConversation` and `applyHeavySetting`'s prior-streaming clear still null `_streamingMessage` explicitly where appropriate.",
+      "recommendation": "No action."
+    },
+    {
+      "id": "m3",
+      "severity": "resolved",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 343,
+      "title": "applyHeavySetting relies solely on finally for _reinitInProgress reset",
+      "detail": "Both early-return assignments removed (lines 305 and 320 now use `?: return@launch` without a side-assignment); the `finally` at line 343-345 is the single writer for `_reinitInProgress.value = false` and covers all exit paths (early return, exception in cleanup/initialize, onSuccess, onFailure). Verified no remaining writes in the try body.",
+      "recommendation": "No action."
+    },
+    {
+      "id": "m4",
+      "severity": "resolved",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 475,
+      "title": "mapNotNull { it }.first() replaces first { it != null }!!",
+      "detail": "`mapNotNull` import added at line 38; line 475 now reads `registry.activeModelName.mapNotNull { it }.first()` returning a non-null `String` without the bang. Readability improved; semantics identical.",
+      "recommendation": "No action."
+    },
+    {
+      "id": "n1",
+      "severity": "minor",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 126,
+      "title": "Stale KDoc references to removed observePersistedForHandover",
+      "detail": "Two comments still mention the removed function: line 126 (`cleared by the side-effect collector in [observePersistedForHandover]`) inside the `messages` KDoc, and line 488 (`collector in [observePersistedForHandover] has not yet fired`) inside `buildMessagesFlow`. Since the side-effect collector no longer exists, these KDoc links dangle and the narrative is now incorrect — the combine is the sole mechanism, not a defence-in-depth over a collector. Not a functional issue but misleading for future readers.",
+      "recommendation": "Update both comments to describe the combine as the single invariant; remove the `[observePersistedForHandover]` references. Can be rolled into the next cosmetic touch-up."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 1,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 1,
+    "testCoverageAssessment": "adequate"
+  }
+}

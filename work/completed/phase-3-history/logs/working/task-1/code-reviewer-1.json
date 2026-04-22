@@ -1,0 +1,113 @@
+{
+  "reviewer": "code-reviewer",
+  "task": "phase-3-history/task-1",
+  "commit": "b9f47f1",
+  "verdict": "APPROVED_WITH_SUGGESTIONS",
+  "status": "approved_with_suggestions",
+  "summary": "Task 1 faithfully implements the Room foundation against tech-spec Data Models and Decision 1: v1 schema contains only chats and messages, chats.project_id is nullable INTEGER without FK, messages.chat_id has ON DELETE CASCADE, all DAOs are suspend/Flow, KSP schema export is wired correctly and 1.json matches the entity definitions. Scope is respected — no ChatRepository, AppModule, or WarmupCoordinator. One meaningful concern: the instrumented tests build the in-memory database directly via Room.inMemoryDatabaseBuilder without attaching ForeignKeysOnOpenCallback, so the production callback path is not covered by the test that claims to prove it. A few minor stylistic and catalog-hygiene suggestions.",
+  "metrics": {
+    "filesReviewed": 10,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 1,
+    "minorIssuesCount": 4,
+    "nitIssuesCount": 3,
+    "testCoverageAssessment": "adequate"
+  },
+  "criticalIssues": [],
+  "findings": [
+    {
+      "id": "T1-M1",
+      "severity": "major",
+      "category": "testing",
+      "file": "app/src/androidTest/kotlin/app/sanctum/machina/data/SanctumDatabaseTest.kt",
+      "line": 25,
+      "issue": "foreignKeyEnforcementEnabled test does not actually verify the production PRAGMA foreign_keys = ON wiring. The @Before builds the DB via Room.inMemoryDatabaseBuilder(context, SanctumDatabase::class.java).allowMainThreadQueries().build() — it does NOT call SanctumDatabase.create(), and it does NOT re-attach ForeignKeysOnOpenCallback via .addCallback(...). The same bypass exists in ChatDaoTest.setUp (line 28) and MessageDaoTest.setUp (line 28), which means MessageDaoTest::onDeleteCascadeRemovesMessages is also testing whatever in-memory default SQLite happens to expose, not the app's callback contract.",
+      "impact": "AC-R6 (CASCADE works) and the task's explicit Foreign-Key-enforcement AC are validated only by coincidence of the test runtime's default SQLite behaviour, not by the code path the production app uses. If a future refactor removes the callback from create(), nothing in this test suite notices. The task's 'Foreign keys PRAGMA' note in tasks/1.md explicitly warns about this: 'the in-memory DB must also have PRAGMA foreign_keys = ON enabled (the Callback is called on open, so it fires automatically for in-memory DBs too)' — but that guarantee only holds if the callback is registered on the test's builder, which it is not here.",
+      "recommendation": "Extract the callback registration into a helper, e.g. a private fun Room.Builder<SanctumDatabase>.applySanctumCallbacks() in SanctumDatabase, and call it from both create() and each test's setUp. Alternative: expose an internal factory SanctumDatabase.createInMemoryForTest(context) that mirrors create() minus persistence. Smallest fix: in each androidTest setUp, add .addCallback(SanctumDatabase.ForeignKeysOnOpenCallback) (after making that object internal). After the fix, a regression where the callback is dropped from create() will correctly break foreignKeyEnforcementEnabled and onDeleteCascadeRemovesMessages."
+    },
+    {
+      "id": "T1-N1",
+      "severity": "minor",
+      "category": "maintainability",
+      "file": "app/src/main/kotlin/app/sanctum/machina/data/SanctumDatabase.kt",
+      "line": 38,
+      "issue": "ForeignKeysOnOpenCallback is declared private, which forecloses the cleanest fix for T1-M1 (tests cannot reference it). Naming convention: val holding an anonymous object is named in PascalCase as if it were a class — mildly misleading. Kotlin convention is object ForeignKeysOnOpenCallback : Callback() { ... }.",
+      "impact": "Cosmetic, and couples to T1-M1 — if tests need to attach the callback they must either become same-package or the symbol must be widened.",
+      "recommendation": "Convert to a top-level or companion-scoped `object ForeignKeysOnOpenCallback : RoomDatabase.Callback()` at internal visibility so tests in app/src/androidTest can share it. Equivalent one-liner if keeping current shape: change `private val` to `internal val`."
+    },
+    {
+      "id": "T1-N2",
+      "severity": "minor",
+      "category": "dependencies",
+      "file": "gradle/libs.versions.toml",
+      "line": 28,
+      "issue": "Kotlin/KSP minor versions are not strictly aligned: kotlin = 2.2.0, ksp = 2.3.6, kotlin-reflect = 2.2.21. The task notes that ksp 2.3.6 is compatible with kotlin 2.2.0 + Room 2.7.x, and the successful schema export confirms it, but the drift between kotlin-reflect 2.2.21 and kotlin 2.2.0 is unrelated to Task 1 and predates it.",
+      "impact": "No functional issue for this task. Left as a nudge during the next Wave that touches the version catalog.",
+      "recommendation": "Out of scope for Task 1 fix. Track as tech debt: align kotlin and kotlin-reflect to the same patch version, document the KSP/Kotlin version contract in references/architecture.md § Key Dependencies."
+    },
+    {
+      "id": "T1-N3",
+      "severity": "minor",
+      "category": "readability",
+      "file": "app/src/main/kotlin/app/sanctum/machina/data/model/ChatEntity.kt",
+      "line": 11,
+      "issue": "@Index(value = [\"last_message_at\"]) does not name the index explicitly. Schema JSON shows Room auto-names it index_chats_last_message_at, which is fine today but is implicit. For symmetry with the MessageEntity indices (also unnamed, auto-named index_messages_chat_id / index_messages_created_at) this is consistent, but the tech-spec's SQL sketch uses idx_chats_last_msg, idx_messages_chat_id, idx_messages_created_at. Not a blocker — implementation chose Room's auto-naming convention over the tech-spec's hand-rolled names. Schema JSON is authoritative going forward.",
+      "impact": "Cosmetic. Any future code that references an index by name (e.g. ANALYZE or EXPLAIN) must use Room's auto-generated names. Migration diffs will be readable either way.",
+      "recommendation": "Leave as-is. If naming parity with the tech-spec SQL is desired, pass name = \"idx_chats_last_msg\" etc. on each @Index — but this is purely stylistic and does not change behaviour."
+    },
+    {
+      "id": "T1-N4",
+      "severity": "minor",
+      "category": "maintainability",
+      "file": "app/src/main/kotlin/app/sanctum/machina/data/SanctumDatabase.kt",
+      "line": 27,
+      "issue": "DATABASE_NAME is declared but not yet referenced from anywhere else in this commit. SanctumApplication / AppModule (Tasks 5–6) are expected to use it when they wrap corruption handling, so it will have a consumer shortly — but in isolation, the file is technically carrying one unused public constant.",
+      "impact": "None. Forward-looking wiring is acceptable for a foundation task.",
+      "recommendation": "No action for Task 1. Ensure Task 6 (SanctumApplication rework) references SanctumDatabase.DATABASE_NAME instead of re-declaring 'sanctum.db' as a string literal."
+    },
+    {
+      "id": "T1-NT1",
+      "severity": "nit",
+      "category": "readability",
+      "file": "app/src/androidTest/kotlin/app/sanctum/machina/data/dao/MessageDaoTest.kt",
+      "line": 41,
+      "issue": "Helper insertChat() hardcodes modelId = \"m\" and timestamps = 1L for brevity. Together with the single-letter text values (\"A\", \"B\", \"C\", \"x\", \"y\") this is concise but the intent — ordering proof — is carried only by the timestamp, not by the test variable names. A reader scanning observeByChatSortedByCreatedAtAsc has to read the createdAt field to understand why A < B < C.",
+      "impact": "Purely readability. Test assertions are correct.",
+      "recommendation": "Optional: rename to makeChat(modelId = \"m\", ts = 1L) with defaulted args, and use textual markers like \"first-100ms\", \"second-200ms\", \"third-300ms\" in the ordering test. Not worth a dedicated commit."
+    },
+    {
+      "id": "T1-NT2",
+      "severity": "nit",
+      "category": "testing",
+      "file": "app/src/androidTest/kotlin/app/sanctum/machina/data/dao/ChatDaoTest.kt",
+      "line": 88,
+      "issue": "observeAllEmitsSortedByLastMessageDesc and observeAllEmitsOnInsert overlap in coverage — the former implicitly verifies emission on insert (since it collects .first() after inserting). The latter is mostly a subset.",
+      "impact": "Minor duplication; keeps TDD anchor names visible, so not harmful.",
+      "recommendation": "Leave — the TDD anchor list in tasks/1.md explicitly calls out observeAllEmitsOnInsert by name; keeping the test dedicated to that anchor is more informative than collapsing it."
+    },
+    {
+      "id": "T1-NT3",
+      "severity": "nit",
+      "category": "testing",
+      "file": "app/src/androidTest/kotlin/app/sanctum/machina/data/SanctumDatabaseTest.kt",
+      "line": 62,
+      "issue": "schemaContainsChatsAndMessages reads sqlite_master but does not filter out android_metadata or Room's own room_master_table; harmless because the test checks 'in names' not 'equals names'. Also, noProjectsTable and noProjectFilesTable are two tests that each call readTableNames() independently — could be one parameterised test. Stylistic only.",
+      "impact": "None.",
+      "recommendation": "No action."
+    }
+  ],
+  "acceptance_criteria_check": {
+    "schema_matches_data_models": "PASS — app/schemas/.../1.json columns, types, nullability, defaults, indices, FK all match tech-spec Data Models section.",
+    "decision_1_compliance": "PASS — chats.project_id is nullable INTEGER with no FK; no projects or project_files entity; verified by SanctumDatabaseTest.noProjectsTable and noProjectFilesTable.",
+    "suspend_or_flow_dao_only": "PASS — every method in ChatDao and MessageDao is suspend or Flow. No blocking return types.",
+    "ksp_schema_export_wired": "PASS — ksp.arg(\"room.schemaLocation\", \"$projectDir/schemas\") in app/build.gradle.kts; 1.json generated at app/schemas/app.sanctum.machina.data.SanctumDatabase/1.json and committed.",
+    "gradle_catalog_entries": "PASS — room 2.7.1, androidxTestRunner 1.6.2, androidxTestExtJunit 1.2.1 present; library entries typed with version.ref.",
+    "scope_discipline_no_feature_creep": "PASS — no ChatRepository, AppModule, WarmupCoordinator, SettingsMigrationHelper. Pure data-layer foundation.",
+    "fk_enforcement_verified_by_test": "PARTIAL — the assertion is correct but the test builder bypasses the production callback registration (see T1-M1). Result: test's pass is not a strong proof of the production wiring."
+  },
+  "required_changes": [],
+  "recommended_changes": [
+    "T1-M1: re-attach ForeignKeysOnOpenCallback in androidTest setUp (or extract a shared callback-application helper) so foreignKeyEnforcementEnabled and onDeleteCascadeRemovesMessages actually exercise the production code path."
+  ],
+  "verdict_rationale": "No blocking or critical issues. Schema is correct, Decision 1 is respected, DAOs follow the project pattern, KSP export works, scope is clean. The single major finding (T1-M1) is a test-strength concern, not a production bug — the production callback IS registered correctly in SanctumDatabase.create(); the tests just don't reach through it. Recommended for approval with the T1-M1 follow-up applied before Task 5 (WarmupCoordinator) starts depending on the DB's FK contract."
+}

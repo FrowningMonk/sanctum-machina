@@ -1,0 +1,67 @@
+{
+  "validator": "task-validator",
+  "batch": [10, 11, 12, 13, 14],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 10,
+      "section": "TDD Anchor",
+      "issue": "TDD Anchor entries list a file path once at the top of the section as prose, then enumerate test names and descriptions without repeating the path on each line. The template format requires each entry to be `tests/path::test_name` — description. Currently entries look like `topAppBarState_draft_returnsDownloadedModels — description` without a file path prefix.",
+      "fix": "Prefix each TDD entry with the full path and `::` separator: `` `app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatTopAppBarStateTest.kt::topAppBarState_draft_returnsDownloadedModels` — при ChatIdentity.Draft и двух downloaded-моделях topAppBarState возвращает Draft с обеими моделями ``"
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 11,
+      "section": "TDD Anchor",
+      "issue": "Same TDD Anchor format issue as Task 10: test file path is mentioned as prose above the list, not embedded in each entry. Template format requires `file::test_name — description` per entry.",
+      "fix": "Prefix each entry with the full test file path: `` `app/src/test/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerViewModelTest.kt::setDefaultModel_updatesSettingsAndEmitsSnackbar` — description ``"
+    },
+    {
+      "severity": "major",
+      "category": "decomposition",
+      "task": 11,
+      "section": "Details → Dependencies",
+      "issue": "Task 11 depends_on lists [7, 8] but not Task 2. Task 11 explicitly uses AppSettingsRepository methods added in Task 2 (`observeDefaultModelId()`, `setDefaultModelId()`) and the `Model.modelId` field added in Task 2. The Details section even says these are 'обязательные предусловия'. Wave ordering (wave 5 vs wave 1) prevents a runtime ordering problem, but the dependency is not declared — a tool orchestrating tasks by depends_on alone would not know Task 11 needs Task 2's output. Also depends_on is missing Task 0 for Model.modelId (Task 2 adds it).",
+      "fix": "Add Task 2 to depends_on: `depends_on: [2, 7, 8]`. Task 2 is wave 1, Task 7 and 8 are wave 4; all < wave 5. No wave conflict."
+    },
+    {
+      "severity": "minor",
+      "category": "decomposition",
+      "task": 10,
+      "section": "Details → Files",
+      "issue": "Tech-spec Task 10 'Files to modify' lists only ChatScreen.kt and HomeScreen.kt, but the task also explicitly modifies ChatViewModel.kt (adds TopAppBarState sealed class, WarmupCoordinator injection, `loadModel()` method). ChatViewModel.kt is not listed in the task's frontmatter metadata context and is not in the tech-spec files list for this task. The divergence from tech-spec files list should be noted.",
+      "fix": "Update tech-spec Task 10 'Files to modify' to include ChatViewModel.kt, or add a note in Details → Files explaining that ChatViewModel.kt changes are partial additions on top of Task 8's rework. This is a traceability gap (H: Carry-forward)."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 13,
+      "section": "Context Files",
+      "issue": "ModelRegistryActiveModelTest.kt is listed under 'New files to audit' with path `../../../core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/ModelRegistryActiveModelTest.kt`. Test files live under `src/test/kotlin/`, not `src/main/kotlin/`. The tech-spec also lists this file as created in Task 3's 'Files to create' under the test path.",
+      "fix": "Correct the path to `../../../core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/ModelRegistryActiveModelTest.kt`"
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 14,
+      "section": "Context Files",
+      "issue": "Under 'Primary audit targets (highest risk)' and the Details → Full file list, source files are listed as plain paths (e.g., `app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt`) rather than markdown links. The template requires all files in Context Files to be formatted as markdown links `[name](path)`, not plain text.",
+      "fix": "Convert plain-text file paths to markdown links with both name and path. Example: `[DefaultChatRepository.kt](../../../app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt)`"
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 14,
+      "section": "Verification Steps",
+      "issue": "The Verification Steps → Automated section contains grep commands but they appear inside a bash code block in the Details section, not the Verification Steps section. The Verification Steps section itself only lists the same code block. The section is technically present but the automation steps are partly embedded in Details, making the boundary between 'how to verify' and 'what to look for' unclear.",
+      "fix": "Move the 6 grep commands from Details into Verification Steps → Automated as the primary checklist. The Details can cross-reference them but the authoritative steps belong in Verification Steps."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 7
+  }
+}

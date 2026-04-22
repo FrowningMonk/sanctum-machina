@@ -1,0 +1,106 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 6,
+    "critical": 0,
+    "major": 0,
+    "minor": 5,
+    "info": 1
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "id": "T17-S1",
+      "category": "A01: Broken Access Control (path traversal / containment)",
+      "title": "writeAttachmentStaging containment check is tautological — filesDir derived from attacker-controlled input",
+      "description": "In DefaultChatRepository.writeAttachmentStaging (DefaultChatRepository.kt:144-164), `filesDir` is derived from the caller-supplied `stagingDir` via `attachmentsRootFor(stagingDir).parentFile`, and then `requireInsideAttachmentsRoot(stagingDir, filesDir)` is invoked. Because the root against which containment is checked is itself a function of the candidate path, the check cannot reject a malicious stagingDir that lives outside the real app `filesDir/attachments/`. For any `stagingDir = /anywhere/attachments/foo`, `parent.name == \"attachments\"` passes `attachmentsRootFor` and `requireInsideAttachmentsRoot` trivially passes because it normalises both sides against the same derived parent. This is a direct deviation from the T4-S1 pattern in `commitDraftChat`, where `filesDir` is an independent parameter that acts as the trust anchor.\n\nImpact today: non-exploitable — the only caller is the Draft-mode ChatViewModel (ChatViewModel.kt:531-540), which always builds `File(context.filesDir, \"attachments/.staging-{uuid}\")`. But the KDoc at DefaultChatRepository.kt:148-154 explicitly claims parity with `commitDraftChat`'s containment guarantee, and that claim is false. A future caller that takes a stagingDir from any less-trusted source (test harness, plugin, IPC, deep-link) would silently lose the containment property.\n\nAlso note `attachmentsRootFor` (DefaultChatRepository.kt:222-231) uses raw `File.name` (not canonical), so a stagingDir like `/app/attachments/../../etc/.staging-x` would fail the `parent.name != ATTACHMENTS_DIR` check only because its non-canonical parent name is `..`, not `attachments`. Canonicalisation happens only inside `requireInsideAttachmentsRoot`, which as noted operates on the derived root.",
+      "location": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt:144-164, 222-241",
+      "impact": "Defense-in-depth / API-contract gap. Internal-API-only today, so not an active vulnerability, but the KDoc's claim of containment parity with `commitDraftChat` does not hold. A future caller may assume the guarantee exists and introduce a real path traversal.",
+      "recommendation": "Either (a) add an explicit `filesDir: File` parameter to `writeAttachmentStaging` and validate `stagingDir` against it using the same independent anchor as `commitDraftChat`, or (b) fix the KDoc to say the check is a structural sanity check (parent is named `attachments/`), not a trust boundary — and document that the trust boundary lives in the single caller (`ChatViewModel.ensureDraftStagingDir`). Option (a) is strictly safer and matches the existing `savePersistentAttachment` signature.",
+      "cwe": "CWE-22 (Path Traversal) / CWE-20 (Improper Input Validation)"
+    },
+    {
+      "severity": "minor",
+      "id": "T17-S2",
+      "category": "A04: Insecure Design (race condition)",
+      "title": "Filename collision race in savePersistentAttachment via listFiles().size",
+      "description": "`nextAttachmentFilename` (DefaultChatRepository.kt:209-220) derives the next index from `dir.listFiles()?.size`. Two concurrent `savePersistentAttachment` calls on the same chatId — even of different types — will read the same count, produce the same N, and clobber each other's file if they share a prefix.\n\nIn today's code the call sites are: (1) `runInferencePersistent` sequentially writes at most one image AND at most one audio per Send, and Send is blocked while `isGenerating=true`, so concurrent writes do not occur. (2) `commitDraftChat` renames the entire staging dir, not per-file writes. (3) Test seams.\n\nBut the guard that prevents the race is the external Send-gate, not the function itself. A future caller that invokes `savePersistentAttachment` in parallel (e.g., multi-image send MVP++, or a background retry path) would produce silent overwrite. Additionally, `nextAttachmentFilename` uses total `listFiles().size`, not count-by-prefix — after `img_0.png` + `audio_0.wav` already exist, the next image write returns `img_2.png` (skipping index 1). This is a correctness smell, not a security issue, but amplifies the collision surface if only images are concurrent (two parallel image writes when an audio exists both pick `_2`).",
+      "location": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt:209-220, 166-183",
+      "impact": "No active exploit today because call sites are sequential under the Send-gate. Future-change risk: silent attachment overwrite → the MessageEntity row points at a file whose bytes now belong to a different message. Data integrity violation.",
+      "recommendation": "Replace count-based naming with either (a) a per-prefix count + retry loop with `File.createNewFile()` as the mutual-exclusion primitive, or (b) UUID/nanoTime filenames (`img_${UUID.randomUUID()}.png`) — the tech-spec Edge-cases note already flags nanoTime as a simple collision-free solution. If predictability for logs is the priority, wrap `savePersistentAttachment` per-chatId in a `Mutex` cached by chatId.",
+      "cwe": "CWE-362 (Race Condition) / CWE-377 (Insecure Temporary File)"
+    },
+    {
+      "severity": "minor",
+      "id": "T17-S3",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "Partial-write cleanup ignores File.delete() return value",
+      "description": "`writeAttachmentPayload` (DefaultChatRepository.kt:191-207) catches any throwable from `Bitmap.compress` / `pcmToWav.writeBytes`, calls `target.delete()`, and rethrows. The return value of `delete()` is discarded. If the delete fails (rare but possible: another process holds a handle, or the FS reports EBUSY on the just-created file), a zero-byte / half-written file remains on disk. The next `nextAttachmentFilename` call then sees `listFiles().size == N+1` and picks N+1 — so no collision with the stub — but the zero-byte stub persists silently.\n\nFor the staging path the stub is ultimately swept by `StartupHousekeeper.cleanupOrphanStagingDirs` on the next cold start (Task 6), so the impact is bounded. For `savePersistentAttachment` the stub survives until the whole chat is deleted. No row ever references the stub, so there is no data-integrity or privacy consequence, but the failure is completely silent (no log line).",
+      "location": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt:201-206",
+      "impact": "Silent disk-orphan accumulation on repeated write failure. Observability gap: an operator reading logs after a user reports \"my attachments fail\" sees only the original IOException, not the fact that cleanup failed.",
+      "recommendation": "Log a warning when `target.delete()` returns false and the file still exists:\n```kotlin\n} catch (t: Throwable) {\n  if (target.exists() && !target.delete()) {\n    errorLog.e(\"attachment-save\",\n      \"failed to clean partial attachment: ${target.absolutePath}\")\n  }\n  throw t\n}\n```\nNote: `errorLog.e` is suspending; either make `writeAttachmentPayload` `suspend` or buffer the cleanup failure and log it from the outer `suspend` function.",
+      "cwe": "CWE-459 (Incomplete Cleanup) / CWE-778 (Insufficient Logging)"
+    },
+    {
+      "severity": "minor",
+      "id": "T17-S4",
+      "category": "A04: Insecure Design (privacy — unexpected data retention)",
+      "title": "Removed-in-Draft attachment can be persisted to the final chat dir if remove races the staging write",
+      "description": "Flow: user calls `addImageBitmap(bmp)` → `_attachments` is updated with `stagedFilename = null`, and `stageDraftAttachmentIfNeeded` launches a coroutine that calls `writeAttachmentStaging`. Before the coroutine completes, the user calls `removeAttachment(0)`. In `removeAttachment` (ChatViewModel.kt:437-447), the attachment is removed from `_attachments`; `deleteStagedFileIfAny` then reads the removed attachment's `stagedFilename` — which is still `null` at this instant — and returns early (ChatViewModel.kt:519). The staging write then completes and writes the file to disk. `_attachments` no longer references it, so `commitDraft`'s `firstNotNullOfOrNull { ... stagedFilename }` will never pick it up, and the `firstMessage.imagePath` will not reference the orphan file. BUT: when `commitDraft` succeeds, `chatRepository.commitDraftChat` renames the entire staging directory to `filesDir/attachments/{chatId}/`. The orphan image file is moved into the persistent chat directory along with the legitimate ones.\n\nConsequence: a photo the user explicitly chose to delete before sending is silently persisted to long-term storage, inside the persistent chat folder. It is unreferenced by any Room row (and therefore invisible in the UI and unrecoverable by the user), but its bytes live on disk until the whole chat is deleted (`deleteChat` deletes the dir recursively). In a forensic / device-seizure / shared-device scenario, this is a privacy surprise. The task-17 Edge-cases section at tasks/17.md:200 explicitly acknowledges this race (\"последний write выиграет, файл может остаться\") but defers the fix to startup sweep — however, the startup sweep only targets `.staging-*` dirs, not orphans inside `attachments/{chatId}/`.\n\nNote: image bytes have already been decoded in memory by Photo Picker at addImage time — removing from UI alone was never a guarantee of non-persistence (the RAM copy existed). But the on-disk persistence after explicit remove IS a new behaviour introduced by Task 17.",
+      "location": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt:437-447, 513-529, 472-511; DefaultChatRepository.kt:125-132",
+      "impact": "Privacy — user expectation of \"I removed this before sending\" is violated: the image is written to persistent storage under the chat directory. Within app-private storage (not world-readable), but still contradicts explicit user intent. Could surface in backup/export features built later (Phase 2.5 log export, any future chat-export).",
+      "recommendation": "Two complementary fixes:\n1. In `removeAttachment`, if the removed attachment has `stagedFilename == null`, record its `id` in a `removedBeforeStaged: MutableSet<Long>` and have `stageDraftAttachmentIfNeeded` check that set in its `onSuccess` branch — if present, `File(dir, filename).delete()` immediately and skip the `_attachments` update.\n2. As a fallback, in `commitDraftChat` (or just before the rename), prune any file in the staging dir whose filename is not in `listOf(stagedImageFilename, stagedAudioFilename)`. That is a whitelist rename rather than a bulk rename.\n\nOption (1) is cheap and local; option (2) is defence-in-depth.",
+      "cwe": "CWE-212 (Improper Removal of Sensitive Information) / CWE-359 (Exposure of Private Personal Information)"
+    },
+    {
+      "severity": "minor",
+      "id": "T17-S5",
+      "category": "A04: Insecure Design (robustness)",
+      "title": "nextAttachmentFilename counts all files, not per-prefix — interacts with mixed-type chats",
+      "description": "`nextAttachmentFilename` (DefaultChatRepository.kt:209-220) returns index = `dir.listFiles()?.size` regardless of prefix. So after two messages — one with an image (`img_0.png`) and one with audio (`audio_0.wav`) — a third message with an image writes `img_2.png`, skipping index 1. The filename space is non-dense per type. Combined with T17-S2 this expands the race window (two concurrent images with an existing audio both pick the same N=2).\n\nAlso: if a partial-write stub (see T17-S3) survives, count is inflated further.\n\nNot directly exploitable, but a code smell that makes the race in T17-S2 easier to trigger and makes log/path reasoning harder.",
+      "location": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt:209-220",
+      "impact": "Correctness / observability. Increases the race-collision surface flagged in T17-S2.",
+      "recommendation": "Count by matching prefix: `val count = dir.listFiles { _, name -> name.startsWith(\"${prefix}_\") }?.size ?: 0`. Or switch to UUID/nanoTime naming as recommended in T17-S2.",
+      "cwe": "CWE-1188 (Initialization of a Resource with an Insecure Default)"
+    },
+    {
+      "severity": "info",
+      "id": "T17-I1",
+      "category": "A04: Insecure Design (interaction with known debt T4-S6)",
+      "title": "Task 17 does not widen T4-S6 orphan-dir window, but introduces a new orphan class covered by existing sweep",
+      "description": "Task 17 adds a new orphan class: `.staging-{uuid}/` directories created by `ensureDraftStagingDir` that survive a process kill before `commitDraft`. These are swept on next cold start by `StartupHousekeeper.cleanupOrphanStagingDirs` (StartupHousekeeper.kt:80-93), which filters on `name.startsWith(\".staging-\")` — consistent with the VM's naming scheme. No gap.\n\nT4-S6 (kill between `rename(2)` and SQLite WAL-commit leaving an orphan `attachments/{chatId}/` with no chat-row) is unchanged by Task 17 and still open as planned.\n\nMinor note: on `commitDraftChat` transaction-commit failure AFTER a successful rename (DefaultChatRepository.kt:125-132, 135-141), the outer catch calls `stagingDir.deleteRecursively()` — which is a no-op because the old path no longer exists. The renamed dir at `attachments/{chatId}/` becomes a T4-S6-style orphan. This is the documented behaviour, not a regression.\n\nAlso observed: `attachment-save` is a new error-log component introduced by Task 17 (DefaultChatRepository.kt uses `history-write`; ChatViewModel uses `attachment-save` for writeAttachmentStaging failure, removeAttachment delete failure, and savePersistentAttachment failure). This is consistent with `patterns.md § Error logging conventions` one-to-one component↔failure-mode rule. Log messages contain only the attachment's process-local `id` and chatId — no PII.",
+      "location": "app/src/main/kotlin/app/sanctum/machina/engine/StartupHousekeeper.kt:80-93; DefaultChatRepository.kt:135-141; ChatViewModel.kt:502-506, 522-527, 786-792",
+      "impact": "Informational. No action required for Task 17.",
+      "recommendation": "Document the staging-orphan → startup-sweep contract in decisions.md Task 17 entry so future changes to either side (staging prefix, sweep filter) stay in sync. Consider extracting `\".staging-\"` into a single `const val` shared between `ChatViewModel.ensureDraftStagingDir` (currently inlines the literal) and `StartupHousekeeper.STAGING_PREFIX`.",
+      "cwe": null
+    }
+  ],
+  "notes": {
+    "existing_debt_touched": [
+      {
+        "id": "T4-S6",
+        "status": "unchanged",
+        "detail": "Kill-window between rename(2) and SQLite WAL-commit still leaves dir-orphans. Task 17 does not alter the window; the final rename path (staging-dir → attachments/{chatId}/) is folded into the same Room transaction as the INSERTs, exactly as Task 4 established."
+      }
+    ],
+    "new_debt_introduced": [
+      {
+        "id": "T17-S1",
+        "detail": "writeAttachmentStaging's self-referential containment check — see finding. Non-exploitable today; fix recommended before Task 17's API leaks to any non-VM caller."
+      },
+      {
+        "id": "T17-S4",
+        "detail": "Remove-before-staging-write race persists unreferenced image bytes into the final chat dir. Deferred fix acknowledged in tasks/17.md Edge-cases but startup sweep does not cover this path."
+      }
+    ],
+    "checked_and_clear": [
+      "No hardcoded secrets in the diff.",
+      "No user-controlled filenames or shell paths — filenames are `img_{N}.png` / `audio_{N}.wav`, N is int from listFiles.size.",
+      "PNG via Bitmap.compress (lossless, trusted Android codec) and WAV via in-house pcmToWav (ByteArray blob) — no external deserialisation surface.",
+      "Equals/hashCode change on Attachment.Audio (adds stagedFilename to the value tuple) does not introduce a send-gate bypass: isStagingPending() checks the instance's field, not equality.",
+      "Persistent-mode hard-gate on savePersistentAttachment failure correctly prevents USER row insert and inference start — mirror of the USER-persist hard-gate from security-auditor-2 s4.",
+      "Draft commit rollback: firstMessage.imagePath/audioPath are rewritten to the final chat path inside the Room transaction; on rollback the row is not inserted, and the outer catch removes the staging dir — row+disk state stays consistent.",
+      "Logging components match patterns.md: `attachment-save` for new paths, `history-write` for commitDraftChat failure. Log payloads carry only int/long ids, no PII."
+    ]
+  }
+}

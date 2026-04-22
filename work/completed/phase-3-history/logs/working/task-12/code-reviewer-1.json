@@ -1,0 +1,60 @@
+{
+  "status": "changes_required",
+  "summary": "The Task 12 docs sync is largely accurate — ErrorLog whitelist (14 components), Model lifecycle rewrite, CancellationException → Idle reset, activeModelName projecting HF modelId, chats.project_id nullable with no FK in v1, and the single-engine invariant all match the code exactly. Two substantive factual mismatches survive: (1) architecture.md's SanctumApplication.kt inline comment attributes the Room corruption handler installation to SanctumApplication, but it actually lives in di/AppModule.kt's provideSanctumDatabase provider; SanctumApplication.kt does not reference AppCorruptionState or rename the db. (2) architecture.md's chats Data Model block claims title is 'TEXT, not null' while ChatEntity.kt declares `val title: String? = null` (nullable, with kotlin default). Minor: the commit message claims chat/{modelName} was 'removed' from the NavHost, but the route is still registered as a tombstone that redirects to home — the Project Structure tree omits it, which is defensible as a production-route summary but inconsistent with the code.",
+  "criticalIssues": [
+    {
+      "file": ".claude/skills/project-knowledge/references/architecture.md",
+      "line": 127,
+      "severity": "critical",
+      "category": "cross-file-consistency",
+      "issue": "The SanctumApplication.kt tree comment claims it 'installs Room corruption handler that flips AppCorruptionState.corruptionOccurred and renames the db to sanctum.db.corrupt_{ts}'. SanctumApplication.kt does no such thing — it only installs CrashHandler, assigns DefaultDownloadRepository.mainActivityFqn, calls warmupCoordinator.warmupDefault(), and launches settingsMigrationHelper.migrateIfNeeded() + startupHousekeeper.run(). The corruption handler is actually in app/src/main/kotlin/app/sanctum/machina/di/AppModule.kt's provideSanctumDatabase provider (lines 56-100), which is where the try/catch around Room.databaseBuilder.build() + openHelper.writableDatabase, the rename to sanctum.db.corrupt_{ts}, the sidecar file deletion, and appCorruptionState.corruptionOccurred = true all live.",
+      "impact": "Future maintainers searching SanctumApplication.kt for the corruption-recovery logic per this doc will find nothing. The doc misdirects anyone trying to understand the Phase-3 AC-D5 / Decision 6 wiring. Since project-knowledge is the authoritative architecture reference and Task 12's whole purpose was to make it match reality, this is exactly the kind of stale claim the task was supposed to eliminate.",
+      "recommendation": "Move the corruption-handler bullet out of the SanctumApplication.kt comment and into a new line under `app/.../di/AppModule.kt` (currently not in the tree). Either add an AppModule.kt entry or, more compactly, append to the `SanctumApplication.kt` comment something like '— Room corruption recovery lives in `di/AppModule.kt::provideSanctumDatabase`, not here'. Consider also adding a di/ subtree entry to match the architecture.md claim in the commit message that di/ hosts 'app-level Hilt modules'."
+    },
+    {
+      "file": ".claude/skills/project-knowledge/references/architecture.md",
+      "line": 238,
+      "severity": "critical",
+      "category": "cross-file-consistency",
+      "issue": "The chats Data Model block declares `title` (TEXT, **not null** — auto-generated from first message, user-renameable). The actual ChatEntity.kt field is `val title: String? = null` (nullable String with default) and the column has no `@ColumnInfo(defaultValue = ...)` constraint — Room will generate `title TEXT` (nullable by default). The previous version of the doc correctly stated 'nullable — auto-generated from first message if null'; the edit flipped it to 'not null' while simultaneously adding is_manually_titled, but the runtime schema is still nullable.",
+      "impact": "The data-model section is the canonical schema contract for Phase-4 migration planning. A downstream reader writing a migration that assumes NOT NULL on chats.title would be wrong — inserts from legacy code paths (or Phase-4 imports) could set title=null, and any query that does `chats.title!!` in Kotlin based on this doc would NPE.",
+      "recommendation": "Revert `title` to `(TEXT, nullable — auto-generated from first message, user-renameable; stays null until first commit/auto-rename)` OR change the ChatEntity.title declaration to non-null with a defaultValue if the intent really is NOT NULL. Given is_manually_titled='0' already distinguishes auto from user-typed, nullable is the more defensible runtime contract."
+    }
+  ],
+  "suggestions": [
+    {
+      "file": ".claude/skills/project-knowledge/references/architecture.md",
+      "line": 118,
+      "severity": "minor",
+      "category": "cross-file-consistency",
+      "suggestion": "The NavHost comment lists `home / chat/quick?modelId={id} / chat/draft / chat/{chatId} (Long) / model_manager / about` — the actual SanctumApp.kt NavHost also registers a deprecated `chat/{modelName}` tombstone route (SanctumApp.kt:150-159) that redirects to home. The commit message claims the old route was 'removed'; in reality it's still registered, deliberately, to swallow stale deep links. Either the doc should mention '(+ chat/{modelName} tombstone that redirects to home)' or the tombstone should actually be removed from SanctumApp.kt if it is no longer needed.",
+      "benefit": "Keeps the doc's NavHost enumeration complete and prevents a future reviewer from thinking the tombstone in SanctumApp.kt is dead code that contradicts the architecture doc.",
+      "optional": true
+    },
+    {
+      "file": ".claude/skills/project-knowledge/references/patterns.md",
+      "line": 18,
+      "severity": "minor",
+      "category": "cross-file-consistency",
+      "suggestion": "The whitelist Phase-origin breakdown attributes `settings-io` to Phase 2.5 and `camera`/`audio`/`attachment-decode` to Phase 2, but ErrorLog.kt's own KDoc (lines 25-26) groups all four as Phase 2 additions per tech-spec D27. Either the ErrorLog.kt comment should be corrected to reflect the 2.5 vs 2 split, or patterns.md should match the ErrorLog.kt phase attribution. The ALLOWED_COMPONENTS block in code uses a single '// Phase 2 (D27)' header for all four.",
+      "benefit": "Eliminates a small contradiction between the code's inline phase attribution and the patterns.md narrative. Pick one source of truth.",
+      "optional": true
+    },
+    {
+      "file": ".claude/skills/project-knowledge/references/architecture.md",
+      "line": 125,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The SanctumApplication.kt comment says 'StartupHousekeeper coroutines: filesDir/quick/ purge, orphan .staging-* cleanup, chatRepository.sweepZombieChats() — each wrapped in try/catch + ErrorLog.e'. StartupHousekeeper.run() is a single sequential suspend function launched in one coroutine; each internal method wraps its work in try/catch. The plural 'coroutines' slightly misrepresents the structure. Consider 'StartupHousekeeper.run(): filesDir/quick/ purge, orphan .staging-* cleanup, chatRepository.sweepZombieChats — each step wrapped in try/catch + ErrorLog.e'.",
+      "benefit": "More accurate structural description; no effect on correctness but avoids implying parallel dispatch.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "criticalIssuesCount": 2,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 3,
+    "testCoverageAssessment": "adequate"
+  }
+}

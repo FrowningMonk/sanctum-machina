@@ -1,0 +1,60 @@
+{
+  "verdict": "pass_with_warnings",
+  "findings": [
+    {
+      "check": "2. Frontmatter — branch field",
+      "location": "frontmatter",
+      "issue": "branch: phase/3-history. The generic template specifies branch: dev, but this project uses phase/N-name branch convention (per patterns.md git workflow). The value is factually correct for the current working branch. This is a deliberate project-specific deviation from the generic template default.",
+      "severity": "minor"
+    },
+    {
+      "check": "8b. Task Brevity — Task 9 description detail level",
+      "location": "Task 9: Drawer UI",
+      "issue": "Description is 5 sentences but contains implementation-level specifics: exact dialog text strings ('Нет сохранённых чатов.', 'Модель недоступна'), specific field name (is_manually_titled), exact char limit (60-char). These are borderline implementation details that belong in the task file during decomposition rather than in the tech-spec scope description.",
+      "severity": "minor"
+    },
+    {
+      "check": "8b. Task Brevity — Task 10 description detail level",
+      "location": "Task 10: ChatScreen + HomeScreen updates",
+      "issue": "Description contains a detailed state machine enumeration with 4 labeled branches (a, b, c, d) and specific UI text strings. While this is scope definition for a UI task, the level of implementation detail (specific spinner text 'Модель перезагружается…', specific icon references) is more appropriate for the decomposed task file than the tech-spec.",
+      "severity": "minor"
+    },
+    {
+      "check": "6. No step-by-step HOW in task descriptions — Task 6",
+      "location": "Task 6: SanctumApplication rework",
+      "issue": "Description says 'Wrap Room.databaseBuilder.build() (in AppModule) with corruption handler' — specifying that the implementation goes into AppModule (not SanctumApplication) is HOW, not WHAT. The WHAT is 'add corruption handler'; WHERE it lives is an implementation decision that belongs in the task file.",
+      "severity": "minor"
+    },
+    {
+      "check": "3. Every Decision references a user-spec requirement — Decision 5",
+      "location": "Decisions — Decision 5",
+      "issue": "Decision 5 references 'code-research J2' as one of three references. Code-research is an internal artifact, not a user-spec requirement (US-* or AC-*). The other references (AC-E6, user-spec Risk #1) are valid. The code-research reference is acceptable as supplementary context but should not be the sole reference. In this case it is not — AC-E6 and user-spec Risk #1 cover the requirement linkage adequately. Informational only.",
+      "severity": "minor"
+    },
+    {
+      "check": "10. Reviewer sets match catalog defaults — test-reviewer vs test-master",
+      "location": "Tasks 1, 2, 4, 5, 6, 8 — Reviewers field",
+      "issue": "Implementation tasks use 'test-reviewer' in their Reviewers fields. The skills catalog provided in the prompt lists 'test-master' as the skill name, while 'test-reviewer' is the reviewer agent name (confirmed by presence of test-reviewer.md in .claude/agents/). These are distinct: test-master is the execution skill; test-reviewer is the review agent. The usage is correct — reviewer fields should reference reviewer agents, not execution skills. No action needed; this is a clarifying note.",
+      "severity": "minor"
+    },
+    {
+      "check": "4. Implementation tasks — Task 4 missing Files to modify",
+      "location": "Task 4: ChatRepository",
+      "issue": "Task 4 has no 'Files to modify' field — only 'Files to create' and 'Files to read'. This is acceptable because the task creates new files from scratch and does not modify existing files. However, for completeness and template compliance, an explicit 'Files to modify: none' or the field could be omitted with a note. No action required if the convention is that the field may be absent when only new files are created.",
+      "severity": "minor"
+    },
+    {
+      "check": "2. Structure — Agent Verification Plan subsection naming",
+      "location": "## Agent Verification Plan",
+      "issue": "The template requires subsections '### Verification approach' and '### Tools required'. The tech-spec has '### Verification approach', '### Verification steps' (table), and '### Tools required'. The extra '### Verification steps' subsection is an addition not in the template but does not violate it — the required subsections are present. Pass.",
+      "severity": "minor"
+    }
+  ],
+  "task_count": {
+    "implementation": 12,
+    "audit": 3,
+    "final": 1,
+    "total": 16
+  },
+  "notes": "Tech-spec for phase-3-history is well-structured and passes all critical checks. All required sections are present and non-empty. Frontmatter is correct for project conventions (branch deviation from generic template is intentional). All 10 decisions reference user-spec requirements (AC-* or US-* or user-spec Risk #). Wave structure is correct: Wave 1–6 for implementation (12 tasks, under the 15-task limit), Audit Wave with 3 tasks (code-reviewing, security-auditor, test-master, all Reviewers: none), Final Wave with pre-deploy-qa (Reviewers: none). No Deploy or Post-deploy wave (correct for mobile app). No wave file conflicts detected — same-wave tasks modify disjoint files. No AC or TDD anchors found in task descriptions. Skills used are all from the approved catalog. Reviewer agents (code-reviewer, security-auditor, test-reviewer) all have corresponding .md files in .claude/agents/. The 8 findings are all minor: 3 concern task description detail level (borderline but not violating), 1 concerns a HOW detail in Task 6 description, and the rest are clarifying notes. No critical or major findings."
+}

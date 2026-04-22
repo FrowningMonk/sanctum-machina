@@ -17,6 +17,8 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
         buildConfigField(
             "String",
             "MAIN_ACTIVITY_CLASS_NAME",
@@ -42,6 +44,10 @@ android {
     testOptions {
         unitTests.isIncludeAndroidResources = true
     }
+}
+
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencies {
@@ -73,10 +79,28 @@ dependencies {
 
     implementation(libs.compose.richtext.commonmark)
     implementation(libs.compose.richtext.ui.material3)
+    implementation(libs.androidx.compose.ui.text.google.fonts)
+
+    implementation(libs.room.runtime)
+    implementation(libs.room.ktx)
+    ksp(libs.room.compiler)
+
+    // Needed by SettingsMigrationHelper for atomic DataStore<AppSettings>
+    // updateData — :core-settings exposes DataStore only as `implementation`,
+    // so :app must depend on it directly.
+    implementation(libs.androidx.datastore)
 
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.litertlm)
+    testImplementation(libs.androidx.datastore)
+
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.kotlinx.coroutines.test)
+    androidTestImplementation(libs.room.testing)
 }

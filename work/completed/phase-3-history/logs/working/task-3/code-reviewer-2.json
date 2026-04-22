@@ -1,0 +1,41 @@
+{
+  "status": "approved",
+  "summary": "All four round-1 findings are properly addressed. The KDoc adjacency for buildSystemInstruction is restored; deriveActiveModelName + KDoc moved below; Task-3/Task-10 task-number references dropped. Test 6 is now a real Robolectric-driven wiring test that exercises the production override against the @VisibleForTesting _models accessor with a UUID probe modelId and a writer loop that defeats the init-block allowlist-scan race. The override comment is reduced to a single pointer at the helper KDoc + interface KDoc, and the tautological fixture-invariant assertion is deleted. Cross-file consistency verified: NoOpLlmModelHelper and NoOpDownloadRepository implement the current interface signatures (litertlm Contents/ToolProvider, CleanUpListener, ResultListener) exactly; AllowlistLoader and ErrorLog are constructible from a Robolectric ApplicationContext; Model constructor positional args match. Robolectric and androidx.test.core are already in core-runtime/build.gradle.kts as testImplementation, so the only new test-side imports are import-level. No new critical or major concerns surfaced from the @VisibleForTesting opening of _models or the Robolectric construction.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/ModelRegistryActiveModelTest.kt",
+      "line": 263,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "`assertNotSame(registry.models as Any, registry.activeModelName as Any)` casts both sides to Any. JUnit 4's `assertNotSame(Object, Object)` accepts any two references — both `models: StateFlow<List<ModelEntry>>` and `activeModelName: StateFlow<String?>` are already non-null reference types and resolve fine. The casts add visual noise without changing semantics. Drop the `as Any` casts: `assertNotSame(registry.models, registry.activeModelName)`.",
+      "benefit": "Removes unneeded casts; reads as plain referential-distinctness check.",
+      "optional": true
+    },
+    {
+      "file": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/ModelRegistryActiveModelTest.kt",
+      "line": 217,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "The wiring test constructs a real `DefaultModelRegistry` whose private `scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)` is never cancelled. The init-block coroutine plus `stateIn(scope, Eagerly, null)` keep running on `Dispatchers.Default` after the test method returns and survive across class-level Robolectric setup until JVM teardown. For a single test this is harmless, but if Phase-3 grows more wiring tests in this file each one will leak another scope + Eagerly subscription. Two cheap mitigations: (a) expose `scope` as `@VisibleForTesting internal val scope` and cancel it in an `@After` method, or (b) document the intentional leak in the test KDoc with a note that the suite owns at most one registry instance. Today the leak is bounded; flag it now so it does not metastasise.",
+      "benefit": "Prevents accumulating background coroutines as wiring-test count grows in subsequent Phase-3 tasks.",
+      "optional": true
+    },
+    {
+      "file": "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt",
+      "line": 113,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "`@VisibleForTesting internal val _models` keeps the underscore-private naming convention but is now writable (`.value = ...`) from any same-module call site, not just tests. `@VisibleForTesting` is a lint annotation, not a compiler enforcement — it warns but does not block. If a future internal helper inside `:core-runtime` mutates `_models` outside `lifecycleMutex` it will silently break the single-engine invariant. Two options to harden: (1) keep `_models` `private` and instead expose a `@VisibleForTesting internal fun overrideModelsForTest(list: List<ModelEntry>)` — explicit method name signals test-only usage; (2) leave as-is and rely on the lint warning. Either is defensible; option 1 makes future misuse easier to grep for.",
+      "benefit": "Makes test-only mutation surface explicit and greppable; avoids accidental same-module misuse of the underscore-private field.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 3,
+    "testCoverageAssessment": "adequate"
+  }
+}

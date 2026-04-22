@@ -1,0 +1,173 @@
+{
+  "validator": "task-validator",
+  "batch": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+  "mode": "cross-task-iter2",
+  "iteration": "cross-task-iter2",
+  "status": "approved",
+  "fix_verification": {
+    "fix1_task2_observe_methods": {
+      "target": "observeDefaultModelId(): Flow<String> and observeLastUsedModelId(): Flow<String> added to AppSettingsRepository",
+      "status": "CONFIRMED",
+      "evidence": [
+        "Task 2 Description explicitly describes both Flow<String> methods as required by Task 11 for reactive star indicator",
+        "Task 2 What-to-do step 2 lists both methods in the interface extension: 'fun observeDefaultModelId(): Flow<String>' and 'fun observeLastUsedModelId(): Flow<String>'",
+        "Task 2 AC line: 'observeDefaultModelId(): Flow<String> and observeLastUsedModelId(): Flow<String> are non-suspend, backed by dataStore.data.map { ... } with a catch { e: IOException -> ... } operator on the flow'",
+        "Task 2 TDD Anchor includes 3 tests: observeDefaultModelId_emitsCurrentValue, observeLastUsedModelId_emitsCurrentValue, observeDefaultModelId_emitsEmptyString_whenUnset",
+        "Task 2 Details/DefaultAppSettingsRepository section specifies the flow implementation pattern with catch operator"
+      ]
+    },
+    "fix2_task3_wave_depends_on_modelid": {
+      "target": "Task 3 wave=2, depends_on=[2], activeModelName emits model.modelId not model.name",
+      "status": "CONFIRMED",
+      "evidence": [
+        "Task 3 frontmatter: wave: 2, depends_on: [2] — correctly set",
+        "Task 3 Description: 'emits the model.modelId (the stable HF id) ... not model.name (the display name). This distinction is critical'",
+        "Task 3 TDD Anchor test activeModelName_emitsModelIdWhenModelBecomesReady: 'equals that entry's model.modelId (the stable HF id, NOT model.name). Example: if model.modelId == \"litert-community/gemma-4-E4B-it-litert-lm\" and model.name == \"Gemma 4 E4B\", the emitted value must be \"litert-community/gemma-4-E4B-it-litert-lm\"'",
+        "Task 3 AC: 'activeModelName emits the model.modelId (stable HF id, not display name) of the currently Ready model'",
+        "Task 3 Details/DefaultModelRegistry.kt section: 'Use _models.map { list -> list.firstOrNull { it.initStatus === ModelInitStatus.Ready }?.model?.modelId } ... Note: .model?.modelId — not .model?.name'",
+        "Task 3 Implementation hints: 'Use model.modelId, not model.name. ... Emitting model.name instead would silently break the chat.model_id == activeModelName.value comparison'"
+      ]
+    },
+    "fix3_task5_isWarmupInProgress": {
+      "target": "isWarmupInProgress: StateFlow<Boolean> added to WarmupCoordinator spec",
+      "status": "CONFIRMED",
+      "evidence": [
+        "Task 5 What-to-do step 4: 'Add isWarmupInProgress: StateFlow<Boolean> as a public property backed by a private MutableStateFlow<Boolean> initialised to false. Set it to true when a warmup Job is launched and back to false in a finally {} block'",
+        "Task 5 AC: '[ ] isWarmupInProgress: StateFlow<Boolean> is true while a warmup coroutine is active and false when idle, completed, or cancelled — transitions via a finally {} block so cancellation always resets the flag'",
+        "Task 5 TDD Anchor: 3 dedicated tests — isWarmupInProgress_emitsTrue_duringWarmup, isWarmupInProgress_emitsFalse_afterCompletion, isWarmupInProgress_emitsFalse_afterCancellation",
+        "Task 5 Details/WarmupCoordinator.kt section: 'isWarmupInProgress: StateFlow<Boolean> is backed by private val _isWarmupInProgress = MutableStateFlow(false). Set _isWarmupInProgress.value = true immediately before launching ... wrap the coroutine body in try { … } finally { _isWarmupInProgress.value = false }. Task 10 (ChatScreen TopAppBar) depends on this flow'",
+        "Round-1 major finding about missing isWarmupInProgress: fully resolved"
+      ]
+    },
+    "fix4_task13_modelentry_predicate": {
+      "target": "ModelEntry.isDownloaded replaced with correct predicate entry.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED",
+      "status": "CONFIRMED",
+      "evidence": [
+        "Task 5 What-to-do step 5: 'collect registry.models, for each emission check if any ModelEntry has entry.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED'",
+        "Task 5 Details/WarmupCoordinator.kt: 'For AC-F3: check entry.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED — ModelEntry does not have an isDownloaded field; the download state is represented by entry.downloadStatus: ModelDownloadStatus'",
+        "Task 13 Focus area 1 audit checklist: 'Verify Task 4 added AC-F3 observer in WarmupCoordinator: collects registry.models, detects first entry where entry.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED'",
+        "Task 9 Description and TDD Anchor: consistently use entry.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED throughout",
+        "Task 7 Details/HomeViewModel.kt: uses entry.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED predicate",
+        "No occurrence of ModelEntry.isDownloaded (non-existent field) found in any task after the fix"
+      ]
+    },
+    "fix5_task15_depends_on_scope": {
+      "target": "Task 15 depends_on expanded to [1,2,3,4,5,6,7,8,9,10,11,12]; test file scope expanded to 12 files",
+      "status": "CONFIRMED",
+      "evidence": [
+        "Task 15 frontmatter: depends_on: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] — Tasks 9, 10, 11 now included",
+        "Task 15 Description: 'All twelve test files created in this feature are read and analyzed holistically'",
+        "Task 15 Context Files explicitly lists all 12 test files including DrawerViewModelTest.kt (T9), ChatTopAppBarStateTest.kt (T10), ModelManagerViewModelTest.kt (T11)",
+        "Task 15 Details audit scope section covers all 12 files with per-file audit criteria",
+        "Wave ordering: Task 15 wave=9, max wave of depends_on = wave(12)=8 < 9 — still valid",
+        "Round-1 minor finding about missing T9/T10/T11 in scope: fully resolved"
+      ]
+    }
+  },
+  "dependency_graph_check": {
+    "cycles_found": false,
+    "wave_ordering_violations": [],
+    "full_graph": [
+      {"task": 0, "wave": 1, "depends_on": [], "check": "PASS — no deps"},
+      {"task": 1, "wave": 1, "depends_on": [], "check": "PASS — no deps"},
+      {"task": 2, "wave": 1, "depends_on": [], "check": "PASS — no deps"},
+      {"task": 3, "wave": 2, "depends_on": [2], "check": "PASS — wave(2)=1 < 2"},
+      {"task": 4, "wave": 2, "depends_on": [1, 2], "check": "PASS — max_wave(1,2)=1 < 2"},
+      {"task": 5, "wave": 3, "depends_on": [1, 2, 3, 4], "check": "PASS — max_wave(1,2,3,4)=2 < 3"},
+      {"task": 6, "wave": 4, "depends_on": [4, 5], "check": "PASS — max_wave(4,5)=3 < 4"},
+      {"task": 7, "wave": 5, "depends_on": [3, 6], "check": "PASS — max_wave(3,6)=4 < 5"},
+      {"task": 8, "wave": 6, "depends_on": [1, 4, 5, 6, 7], "check": "PASS — max_wave(1,4,5,6,7)=5 < 6"},
+      {"task": 9, "wave": 7, "depends_on": [4, 7, 8], "check": "PASS — max_wave(4,7,8)=6 < 7"},
+      {"task": 10, "wave": 7, "depends_on": [5, 6, 7, 8], "check": "PASS — max_wave(5,6,7,8)=6 < 7"},
+      {"task": 11, "wave": 7, "depends_on": [2, 7, 8], "check": "PASS — max_wave(2,7,8)=6 < 7"},
+      {"task": 12, "wave": 8, "depends_on": [9, 10, 11], "check": "PASS — max_wave(9,10,11)=7 < 8"},
+      {"task": 13, "wave": 9, "depends_on": [12], "check": "PASS — wave(12)=8 < 9"},
+      {"task": 14, "wave": 9, "depends_on": [12], "check": "PASS — wave(12)=8 < 9"},
+      {"task": 15, "wave": 9, "depends_on": [1,2,3,4,5,6,7,8,9,10,11,12], "check": "PASS — max_wave(...)=8 < 9"},
+      {"task": 16, "wave": 10, "depends_on": [13, 14, 15], "check": "PASS — max_wave(13,14,15)=9 < 10"}
+    ],
+    "notes": "All 17 tasks pass wave-ordering constraint. No cycles possible: all edges point strictly from lower wave to higher wave. The graph is a valid DAG."
+  },
+  "shared_resources_check": {
+    "SanctumDatabase": {
+      "owner_task": 5,
+      "extended_by": 6,
+      "status": "PASS",
+      "consumers_with_depends_on": {
+        "T6_depends_T5": true,
+        "T8_depends_T5": true,
+        "T9_depends_T8_indirect_T5": "transitive — minor open finding from round 1",
+        "T10_depends_T5": true
+      }
+    },
+    "WarmupCoordinator": {
+      "owner_task": 5,
+      "isWarmupInProgress_defined_in_T5": true,
+      "status": "PASS — round-1 major finding resolved",
+      "consumers_with_depends_on": {
+        "T6_depends_T5": true,
+        "T8_depends_T5": true,
+        "T10_depends_T5": true
+      }
+    },
+    "ModelRegistry": {
+      "owner_task": "CoreRuntimeModule (pre-existing)",
+      "extended_by": 3,
+      "status": "PASS",
+      "consumers_with_depends_on": {
+        "T5_depends_T3": true,
+        "T7_depends_T3": true
+      }
+    },
+    "AppSettingsRepository": {
+      "owner_task": "CoreSettingsModule (pre-existing)",
+      "extended_by": 2,
+      "observe_methods_added": true,
+      "status": "PASS — round-1 issue resolved",
+      "consumers_with_depends_on": {
+        "T5_depends_T2": true,
+        "T11_depends_T2": true
+      }
+    }
+  },
+  "open_findings_from_round1": {
+    "note": "The following minor findings from round 1 were NOT in the fix scope and remain open. They do not affect approval status (no critical findings).",
+    "findings": [
+      {
+        "task": 9,
+        "issue": "depends_on missing T0 (SanctumColors.accent token usage) and T5/T6 (direct AppModule dependency)",
+        "status": "OPEN — minor, transitive ordering is correct"
+      },
+      {
+        "task": 7,
+        "issue": "depends_on missing T0 (SmSigil, SanctumTheme used in HomeScreen)",
+        "status": "OPEN — minor, wave ordering is correct (T0 wave 1, T7 wave 5)"
+      },
+      {
+        "task": 10,
+        "issue": "depends_on missing T0 (SanctumIncognitoTheme, SanctumIcons.EyeOff)",
+        "status": "OPEN — minor, wave ordering is correct (T0 wave 1, T10 wave 7)"
+      },
+      {
+        "task": 12,
+        "issue": "code-reviewer paired with documentation-writing skill — minor convention mismatch",
+        "status": "OPEN — cosmetic, no impact"
+      },
+      {
+        "task": 6,
+        "issue": "SanctumDatabase provision logic split between T5 and T6 — tech-spec Shared Resources table does not reflect co-ownership",
+        "status": "OPEN — documentation note, no structural impact"
+      }
+    ]
+  },
+  "findings": [],
+  "stats": {
+    "tasks_checked": 17,
+    "fixes_verified": 5,
+    "fixes_confirmed": 5,
+    "new_critical_findings": 0,
+    "new_major_findings": 0,
+    "new_minor_findings": 0,
+    "open_minor_from_round1": 5
+  }
+}

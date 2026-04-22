@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.sanctum.machina.core.registry.ModelEntry
 import app.sanctum.machina.core.registry.ModelRegistry
+import app.sanctum.machina.core.settings.AppSettingsRepository
 import app.sanctum.machina.crash.CrashState
 import app.sanctum.machina.logexport.ExportSource
 import app.sanctum.machina.logexport.LogExportManager
@@ -13,13 +14,19 @@ import java.io.IOException
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 sealed interface NavEvent {
-    data class OpenChat(val modelName: String) : NavEvent
+    /** Tap on "Загрузить" → open quick chat seeded with this model (AC-F4). */
+    data class OpenQuickChat(val modelId: String) : NavEvent
+
+    /** Emitted by [ModelManagerViewModel.setDefaultModel] after the setting is persisted (AC-F7). */
+    data class ShowSnackbar(val message: String) : NavEvent
 }
 
 @HiltViewModel
@@ -29,6 +36,7 @@ constructor(
     private val registry: ModelRegistry,
     private val crashState: CrashState,
     private val logExportManager: LogExportManager,
+    private val appSettings: AppSettingsRepository,
 ) : ViewModel() {
 
     val models: StateFlow<List<ModelEntry>> = registry.models
@@ -42,6 +50,16 @@ constructor(
      * `CrashState.refresh()` under the hood.
      */
     val hasUnresolvedCrash: StateFlow<Boolean> = crashState.hasUnresolvedCrash
+
+    /**
+     * Stable HF [app.sanctum.machina.core.data.Model.modelId] currently marked as the user's
+     * default, or `""` when unset (DataStore's proto3 default for `default_model_id`). Drives the
+     * ⭐ leading indicator in the model list and the visibility of the "Сделать по умолчанию"
+     * overflow item (AC-F7). `WhileSubscribed(5_000)` per patterns.md.
+     */
+    val defaultModelId: StateFlow<String> =
+        appSettings.observeDefaultModelId()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), "")
 
     private val _navEvents = MutableSharedFlow<NavEvent>(extraBufferCapacity = 1)
     val navEvents: SharedFlow<NavEvent> = _navEvents.asSharedFlow()
@@ -58,8 +76,19 @@ constructor(
         registry.cancelDownload(modelName)
     }
 
-    fun onLoad(modelName: String) {
-        viewModelScope.launch { _navEvents.emit(NavEvent.OpenChat(modelName)) }
+    fun onLoad(modelId: String) {
+        viewModelScope.launch { _navEvents.emit(NavEvent.OpenQuickChat(modelId)) }
+    }
+
+    /**
+     * Persist [modelId] as the user's default and surface a Snackbar with the display [modelName].
+     * Called by the overflow menu "Сделать по умолчанию" item (AC-F7, US-8 item 7).
+     */
+    fun setDefaultModel(modelId: String, modelName: String) {
+        viewModelScope.launch {
+            appSettings.setDefaultModelId(modelId)
+            _navEvents.emit(NavEvent.ShowSnackbar("Модель по умолчанию: $modelName"))
+        }
     }
 
     /** Re-read `crash.log` + `crash.log.dismissed` from disk (Decision 6). */

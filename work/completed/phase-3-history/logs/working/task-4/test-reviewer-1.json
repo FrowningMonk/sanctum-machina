@@ -1,0 +1,86 @@
+{
+  "verdict": "APPROVED_WITH_SUGGESTIONS",
+  "summary": "All 18 TDD-anchor cases (10 AutoTitleGenerator + 8 ChatRepository) are present, named per spec, and assert real behavior (no tautologies). Atomicity rollback in renameFailsAfterRoomInsert verifies both the deleteById call AND resulting fake-state emptiness — strong. Main caveats: ioExceptionOnStagingWrite models the AC via a precondition path (stagingDir.isDirectory == false) rather than a mid-write IOException, transactionRunner is a no-op so an in-transaction failure path is uncovered, and several non-anchor methods (updateChatLastMessage, updateChatTitle, savePersistentMessage, stagingDir==null happy path) have no coverage. None blocks the PR; all are suggestions for follow-up tightening.",
+  "findings": [
+    {
+      "severity": "minor",
+      "id": "T4-T1",
+      "file": "app/src/test/kotlin/app/sanctum/machina/data/ChatRepositoryTest.kt",
+      "line": 91,
+      "issue": "commitDraftChat_ioExceptionOnStagingWrite triggers IOException via the `stagingDir.isDirectory == false` precheck (a missing directory). This faithfully exercises AC-A4 'Room untouched on pre-INSERT IOException' for the missing-staging case, but does not cover the more realistic failure mode where staging exists but a file write inside it fails, or where the staging dir was created and then disappeared between caller and repo. The current test passes even if the precheck is the ONLY guard — it cannot detect a regression where Room INSERT happens despite a real I/O failure during attachment writes performed by the caller.",
+      "suggestion": "Either (a) accept the current scope and add a comment that the repo trusts the caller to surface staging-write IOExceptions before invoking commitDraftChat (the implementation does not perform staging writes itself), or (b) add a second test that simulates a 'staging dir exists, but unreadable/empty in a way that violates an invariant' to lock down behaviour — e.g., pass a regular file as `stagingDir` (currently caught by !isDirectory but document intent). Minimum: rename the test to commitDraftChat_missingStagingDir_throwsBeforeInsert to make the scope explicit."
+    },
+    {
+      "severity": "minor",
+      "id": "T4-T2",
+      "file": "app/src/test/kotlin/app/sanctum/machina/data/ChatRepositoryTest.kt",
+      "line": 222,
+      "issue": "transactionRunner = { block -> block() } is a no-op stub — it does NOT simulate Room's @Transaction rollback semantics. As a result there is no test covering 'messageDao.insert throws inside the transaction → chat row is also rolled back'. AC-A6 (atomic Room INSERT) relies on Room's transaction; a regression that, e.g., moves messageDao.insert outside the transactionRunner block or wraps it in try/catch would not be caught.",
+      "suggestion": "Add a test commitDraftChat_messageInsertFails_chatRollbackToo that injects a FakeMessageDao whose insert() throws, plus a transactionRunner that mimics rollback (e.g., catches throw and clears any chatDao writes performed inside the block, or asserts that chatDao.insertCalls increments but byId remains empty after the throw). Even a simple `{ block -> try { block() } catch (t: Throwable) { /* mark rolled back */ throw t } }` plus assertion that messageDao threw and the test recognises the boundary makes the contract explicit."
+    },
+    {
+      "severity": "minor",
+      "id": "T4-T3",
+      "file": "app/src/test/kotlin/app/sanctum/machina/data/ChatRepositoryTest.kt",
+      "line": 229,
+      "issue": "ioDispatcher = UnconfinedTestDispatcher() means withContext(ioDispatcher) does not actually thread-hop in tests. AC-A1 ('all File I/O on Dispatchers.IO, never Main') is therefore not asserted by any test — a regression that drops withContext(ioDispatcher) from any method would not fail the suite.",
+      "suggestion": "Add one focused test commitDraftChat_runsOnInjectedDispatcher that injects a TestDispatcher with a unique name (or wraps the dispatcher to record `currentCoroutineContext()[CoroutineName]` / thread observed inside chatDao.insert) and asserts that the dispatcher was switched. Alternative: pass an UnconfinedTestDispatcher wrapped to count dispatch calls and assert >= 1. This is a low-cost guard for an architectural invariant and worth adding once for the whole class."
+    },
+    {
+      "severity": "minor",
+      "id": "T4-T4",
+      "file": "app/src/test/kotlin/app/sanctum/machina/data/ChatRepositoryTest.kt",
+      "line": 136,
+      "issue": "deleteChat_callsRoomAndDeletesFiles verifies deleteById was called and the on-disk dir is gone, but does not verify CASCADE removal of the chat's messages. Because FakeChatDao.deleteById does not cascade and FakeMessageDao has no FK awareness, this gap is invisible — a test asserting messageDao.byChat[chatId] is empty would also pass trivially. The CASCADE behaviour is genuinely covered by Task 1 instrumented MessageDaoTest, so this is documentation more than a coverage hole.",
+      "suggestion": "Add a one-line comment in the test body: `// CASCADE removal of messages is verified by MessageDaoTest (Task 1) — fakes do not model FK CASCADE`. No code change required."
+    },
+    {
+      "severity": "minor",
+      "id": "T4-T5",
+      "file": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt",
+      "line": 122,
+      "issue": "updateChatTitle and updateChatLastMessage have no unit tests. updateChatTitle has non-trivial logic (boolean → Int 1/0 mapping for isManuallyTitled, getById-null short-circuit) that a regression could silently break. Task 4 anchors didn't require these, but they are part of the public ChatRepository surface used by Task 9 (DrawerViewModel).",
+      "suggestion": "Add two tests: updateChatTitle_existingChat_persistsTitleAndManualFlag (verify chat row in fake updated with title=X and isManuallyTitled=1 when boolean is true, =0 when false) and updateChatTitle_unknownChatId_noOp (assert chatDao.byId unchanged, no exception). Same pattern for updateChatLastMessage_existingChat_updatesLastMessageAt and _unknownId_noOp. ~30 lines total."
+    },
+    {
+      "severity": "minor",
+      "id": "T4-T6",
+      "file": "app/src/main/kotlin/app/sanctum/machina/data/DefaultChatRepository.kt",
+      "line": 90,
+      "issue": "commitDraftChat_happyPath always passes a non-null stagingDir. The stagingDir == null branch (no-attachment chats — a normal case for text-only first messages) is never exercised. A regression that, e.g., NPEs on null stagingDir or accidentally creates a 'null' dir under attachments would not be caught.",
+      "suggestion": "Add commitDraftChat_nullStagingDir_skipsRenameAndSucceeds: pass stagingDir = null, assert chatId > 0, chat row present, no directory created under attachmentsRoot, no rename invocation (record rename calls in the seam if needed)."
+    },
+    {
+      "severity": "minor",
+      "id": "T4-T7",
+      "file": "app/src/test/kotlin/app/sanctum/machina/data/AutoTitleGeneratorTest.kt",
+      "line": 52,
+      "issue": "nullText_fallback computes the expected string using the same Locale.getDefault() and same SimpleDateFormat pattern as the implementation, so the equality assertion is partially circular — if the implementation switched to Locale.US or a different pattern, this assertion alone would still hold IF the test JVM's default locale matched. The companion regex assertion (`Чат от \\d{2}\\.\\d{2} \\d{2}:\\d{2}`) does pin the format though, so the litmus test passes overall. Worth flagging that the equality line itself is weaker than it looks.",
+      "suggestion": "Either drop the assertEquals line (the regex assertion already locks the contract), or replace the SimpleDateFormat-derived expected string with a hardcoded string for a known epoch + fixed locale (e.g., set TimeZone to UTC in @Before, then for createdAt = 1_700_000_000_000L the expected is a known constant). Hardcoding makes the test a true behaviour spec rather than a re-derivation."
+    },
+    {
+      "severity": "nit",
+      "id": "T4-T8",
+      "file": "app/src/test/kotlin/app/sanctum/machina/data/ChatRepositoryTest.kt",
+      "line": 47,
+      "issue": "@Before only deletes the errorLog directory, not other potential state in context.filesDir. If a future test writes anywhere else under filesDir, JVM-shared Robolectric context can leak state across tests. attachmentsRoot lives under tempFolder so is correctly isolated, but the convention is fragile.",
+      "suggestion": "Either (a) add a comment 'Other filesDir state is not used by this suite — repository writes go through tempFolder', or (b) deleteRecursively the entire context.filesDir in @Before and recreate just the dirs the suite needs. (a) is sufficient given current scope."
+    },
+    {
+      "severity": "nit",
+      "id": "T4-T9",
+      "file": "app/src/test/kotlin/app/sanctum/machina/data/ChatRepositoryTest.kt",
+      "line": 111,
+      "issue": "renameFailsAfterRoomInsert does not assert that messageDao.insertCalls == 1 before the rollback. Currently it only checks chatDao.insertCalls — a regression where messageDao.insert was skipped entirely (and rename then 'fails' against an empty staging) would still pass.",
+      "suggestion": "Add `assertEquals(\"message insert was attempted\", 1, messageDao.insertCalls)` immediately after the chatDao insert assertion. One line."
+    },
+    {
+      "severity": "nit",
+      "id": "T4-T10",
+      "file": "app/src/test/kotlin/app/sanctum/machina/data/ChatRepositoryTest.kt",
+      "line": 154,
+      "issue": "sweepZombieChats_zeroMessagesMissingDir_deleted asserts the ErrorLog file contains '[history-write]' and 'zombie' substrings — this is a structure check, not a behaviour check on the message content. Sufficient for component-tag verification, but a regression that logs 'zombie' but with the wrong chat id (e.g., always logs id=0) would not be caught.",
+      "suggestion": "Tighten the assertion to also check the chat id appears: `assertTrue(log.any { it.contains(\"[history-write]\") && it.contains(\"zombie\") && it.contains(\"id=$zombieId\") })`. One small change, stronger contract."
+    }
+  ]
+}

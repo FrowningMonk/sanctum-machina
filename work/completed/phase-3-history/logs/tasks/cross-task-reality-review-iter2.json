@@ -1,0 +1,142 @@
+{
+  "validator": "reality-checker",
+  "batch": "cross-task-iter2",
+  "iteration": "cross-task-iter2",
+  "status": "approved",
+  "focus": "Verify fixes from round 1 cross-task review; full dependency graph re-check",
+  "fixes_verified": [
+    {
+      "original_finding": "critical — Task 5 missing isWarmupInProgress: StateFlow<Boolean>",
+      "status": "FIXED",
+      "evidence": "Task 5 step 4 adds the StateFlow; TDD Anchor has 3 new tests (emitsTrue_duringWarmup, emitsFalse_afterCompletion, emitsFalse_afterCancellation); AC criterion explicitly lists it; Details section describes the finally{} reset mechanism."
+    },
+    {
+      "original_finding": "critical — Task 2 missing observeDefaultModelId(): Flow<String>",
+      "status": "FIXED",
+      "evidence": "Task 2 step 2 now lists 'fun observeDefaultModelId(): Flow<String>' and 'fun observeLastUsedModelId(): Flow<String>' as interface methods. Description explicitly states 'Task 11 depends on observeDefaultModelId() to reactively drive the star indicator'. AC criterion confirms both observe* methods are non-suspend with Flow<String> return type. Three new TDD tests cover the flow behavior."
+    },
+    {
+      "original_finding": "minor — Task 3 emitting model.name instead of model.modelId",
+      "status": "FIXED",
+      "evidence": "Task 3 description now explicitly states 'emits the model.modelId (the stable HF id)'. Naming note added: 'the StateFlow is named activeModelName to match tech-spec Decision 7... However, its value is model.modelId — not model.name'. TDD test activeModelName_emitsModelIdWhenModelBecomesReady validates modelId not display name. Implementation hint: 'Use model.modelId, not model.name'."
+    },
+    {
+      "original_finding": "minor — Task 3 wave:1, no dependency on Task 2",
+      "status": "FIXED",
+      "evidence": "Task 3 YAML header: depends_on: [2], wave: 2. Correctly placed after Task 2 which provides Model.modelId field."
+    },
+    {
+      "original_finding": "major — Task 13 references ModelEntry.isDownloaded (hallucinated field)",
+      "status": "FIXED",
+      "evidence": "Task 13 focus area 1 now reads 'detects first entry where entry.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED (existing field on ModelEntry)'. Field name ModelEntry.isDownloaded no longer appears in Task 13."
+    },
+    {
+      "original_finding": "major — Task 15 audit scope missing Tasks 9, 10, 11 tests",
+      "status": "FIXED",
+      "evidence": "Task 15 depends_on now includes [1,2,3,4,5,6,7,8,9,10,11,12]. Context Files section lists DrawerViewModelTest.kt, ChatTopAppBarStateTest.kt, ModelManagerViewModelTest.kt. Audit scope descriptions for all three test files added under 'DrawerViewModelTest', 'ChatTopAppBarStateTest', 'ModelManagerViewModelTest' sections."
+    }
+  ],
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "cross-task-integration",
+      "task": 8,
+      "issue": "Task 8 depends_on:[1,4,5,6,7] but uses registry.activeModelName (added by Task 3) directly in Quick/Draft mode implementation. Task 3 is not in depends_on. The dependency is satisfied transitively: Task 8 → Task 7 → Task 3. Wave ordering (Task 3 wave:2 < Task 7 wave:5 < Task 8 wave:6) guarantees Task 3 completes before Task 8 starts. No execution risk. However, the implicit transitive dependency is undeclared.",
+      "fix": "Consider adding Task 3 to Task 8 depends_on for explicitness. Not blocking — wave ordering guarantees correctness."
+    },
+    {
+      "severity": "minor",
+      "category": "cross-task-integration",
+      "task": 9,
+      "issue": "Tasks 9 and 11 both modify SanctumApp.kt in the same wave (wave:7) with no declared inter-dependency. Task 9 step 3 connects DrawerContent to ModalNavigationDrawer in SanctumApp.kt. Task 11 step 4 updates the onLoad handler in ModelManagerScreen composable block in SanctumApp.kt. If executed concurrently, this creates a merge conflict on the same file. Task 10 was confirmed NOT to modify SanctumApp.kt (it modifies ChatScreen.kt and HomeScreen.kt only — the original round 1 finding about Task 10 touching SanctumApp.kt was overstated).",
+      "fix": "Execute Tasks 9 and 11 sequentially within wave 7. They target different sections of SanctumApp.kt (DrawerContent wiring vs ModelManagerScreen nav handler) so manual merge is straightforward, but concurrent execution is risky. Documented in round 1 — no additional action needed beyond awareness."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 6,
+      "issue": "Task 6 TDD Anchor specifies 'AppModule().provideDatabase(context, appCorruptionState, errorLog)' for the instrumented corruption test. If AppModule follows the 'abstract class + companion object @Provides' Hilt pattern (as instructed in Task 5 Details), it cannot be instantiated directly with AppModule(). The test would need to access the companion object method or use a test Hilt component. Round 1 flagged this as major; it remains unfixed but was not in the iter2 fix list. The task text does not resolve this ambiguity.",
+      "fix": "Clarify in Task 6 that the corruption test should call AppModule.Companion.provideDatabase(...) or extract the DB-building logic into a top-level testable function. Not a blocker for the task spec itself — the implementer must resolve the instantiation approach."
+    }
+  ],
+  "dependency_graph_verification": {
+    "wave_1_independent": {
+      "tasks": [0, 1, 2],
+      "status": "PASS — all have depends_on:[]"
+    },
+    "wave_2_depends_on_wave1": {
+      "task_3": "PASS — depends_on:[2], wave:2",
+      "task_4": "PASS — depends_on:[1,2], wave:2",
+      "parallel_safe": "PASS — Tasks 3 and 4 do not modify the same files"
+    },
+    "wave_3_depends_on_wave2": {
+      "task_5": "PASS — depends_on:[1,2,3,4], wave:3. Correctly after both wave-2 tasks."
+    },
+    "wave_4_depends_on_wave3": {
+      "task_6": "PASS — depends_on:[4,5], wave:4. Correctly after Task 5 (wave:3)."
+    },
+    "wave_5_depends_on_wave4": {
+      "task_7": "PASS — depends_on:[3,6], wave:5. Task 3 (wave:2) and Task 6 (wave:4) both completed."
+    },
+    "wave_6_depends_on_wave5": {
+      "task_8": "PASS — depends_on:[1,4,5,6,7], wave:6. All predecessors in earlier waves."
+    },
+    "wave_7_parallel": {
+      "task_9": "PASS — depends_on:[4,7,8]",
+      "task_10": "PASS — depends_on:[5,6,7,8]. isWarmupInProgress from Task 5 now present.",
+      "task_11": "PASS — depends_on:[2,7,8]. observeDefaultModelId() from Task 2 now present.",
+      "shared_file_risk": "MINOR — Tasks 9 and 11 both modify SanctumApp.kt; Task 10 does NOT. Requires sequential execution of 9 and 11."
+    },
+    "wave_8_docs": {
+      "task_12": "PASS — depends_on:[9,10,11], wave:8"
+    },
+    "wave_9_audit": {
+      "task_13": "PASS — depends_on:[12], wave:9",
+      "task_14": "PASS — depends_on:[12], wave:9",
+      "task_15": "PASS — depends_on:[1,2,3,4,5,6,7,8,9,10,11,12], wave:9. Expanded scope verified."
+    },
+    "wave_10_qa": {
+      "task_16": "PASS — depends_on:[13,14,15], wave:10"
+    },
+    "no_cycles": "PASS — dependency graph is strictly acyclic",
+    "wave_ordering_violations": "NONE"
+  },
+  "shared_resource_verification": {
+    "SanctumDatabase": {
+      "owner": "Task 5 (AppModule @Singleton @Provides)",
+      "consumers": ["Task 4 (ChatRepository via DAOs)", "Task 5 (provides DAOs)", "Task 6 (adds corruption handler to AppModule)"],
+      "duplicate_init": "NONE",
+      "verdict": "PASS"
+    },
+    "WarmupCoordinator": {
+      "owner": "Task 5 (@Singleton @Inject constructor)",
+      "consumers": ["Task 6 (warmupDefault)", "Task 8 (cancelAndRestart)", "Task 10 (isWarmupInProgress — NOW defined in Task 5)"],
+      "isWarmupInProgress_present": true,
+      "verdict": "PASS — isWarmupInProgress fix verified"
+    },
+    "AppSettingsRepository": {
+      "owner": "CoreSettingsModule (pre-existing)",
+      "new_methods_added_by": "Task 2",
+      "observeDefaultModelId_present": true,
+      "observeLastUsedModelId_present": true,
+      "consumer_task_11": "PASS — Task 11 correctly uses observeDefaultModelId() now declared in Task 2",
+      "verdict": "PASS — observeDefaultModelId() fix verified"
+    },
+    "ModelRegistry_activeModelName": {
+      "owner": "Task 3 (adds activeModelName: StateFlow<String?> emitting model.modelId)",
+      "emits_modelId_not_name": true,
+      "consumers": ["Task 7 (HomeViewModel)", "Task 8 (ChatViewModel Quick/Draft modes)", "Task 9 (DrawerViewModel indirect)", "Task 10 (TopAppBar state machine)"],
+      "verdict": "PASS — emits model.modelId confirmed, wave:2 depends_on:[2] confirmed"
+    }
+  },
+  "stats": {
+    "tasks_checked": 17,
+    "claims_verified": 52,
+    "issues_found": 3,
+    "critical": 0,
+    "major": 0,
+    "minor": 3,
+    "fixes_from_round1_verified": 6,
+    "fixes_from_round1_failed": 0
+  }
+}

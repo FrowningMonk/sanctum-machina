@@ -1,0 +1,99 @@
+{
+  "reviewer": "code-reviewer",
+  "round": 2,
+  "task": "phase-3-history/task-1",
+  "commit_reviewed": "fa3b7e1",
+  "baseline_commit": "b9f47f1",
+  "verdict": "APPROVED",
+  "status": "approved",
+  "summary": "Round-1 major finding T1-M1 is fully resolved. ForeignKeysOnOpenCallback was widened from private to internal val, all three androidTest @Before blocks now explicitly attach it to their inMemoryDatabaseBuilder, and a new foreignKeysPragmaIsOn test reads PRAGMA foreign_keys directly and asserts it equals 1 — together this closes the bypass path the round-1 report identified. The new tests (insertAndGetByIdPreservesProjectIdValue, nullableFieldsRoundTrip, observeByChatFiltersByChatId) add meaningful coverage for Decision 1's nullable project_id, MessageEntity nullable fields, and the observeByChat WHERE-clause. The rewritten observeAllEmitsOnInsert uses a live MutableSharedFlow collector so the test would now fail if Room invalidation regressed. No new blocking or major issues introduced. One small nit on a 50 ms delay() inside observeAllEmitsOnInsert; not worth a dedicated fix.",
+  "metrics": {
+    "filesReviewed": 4,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 0,
+    "nitIssuesCount": 1,
+    "testCoverageAssessment": "adequate"
+  },
+  "criticalIssues": [],
+  "findings": [
+    {
+      "id": "T1-R2-NT1",
+      "severity": "nit",
+      "category": "testing",
+      "file": "app/src/androidTest/kotlin/app/sanctum/machina/data/dao/ChatDaoTest.kt",
+      "line": 142,
+      "issue": "observeAllEmitsOnInsert relies on a delay(50L) before the triggering insert to let the collector 'resubscribe for the next emission'. In practice the test is protected by withTimeout(5_000L) on the post-insert await, and MutableSharedFlow was declared with extraBufferCapacity = 16 so a missed emission would still be buffered — which means the sleep is load-bearing only as a race softener against the launch(Dispatchers.IO) scheduling latency, not for correctness.",
+      "impact": "None today — the test passes deterministically on the current runner. Magic sleep durations tend to bite when CI is slow or when the test is copied as a template for future DAO tests.",
+      "recommendation": "Optional polish: replace the delay(50L) + .first { it.isNotEmpty() } pattern with a CompletableDeferred-based latch, or drop the sleep entirely and rely on the buffered SharedFlow + withTimeout to absorb scheduling jitter. Deferrable; keep the fix small if tackled."
+    }
+  ],
+  "resolved_from_round_1": [
+    {
+      "id": "T1-M1",
+      "status": "RESOLVED",
+      "evidence": [
+        "app/src/main/kotlin/app/sanctum/machina/data/SanctumDatabase.kt:38 — ForeignKeysOnOpenCallback is now 'internal val' (was 'private val').",
+        "app/src/androidTest/kotlin/app/sanctum/machina/data/SanctumDatabaseTest.kt:27 — .addCallback(SanctumDatabase.ForeignKeysOnOpenCallback) attached to inMemoryDatabaseBuilder.",
+        "app/src/androidTest/kotlin/app/sanctum/machina/data/dao/ChatDaoTest.kt:36 — same callback attached.",
+        "app/src/androidTest/kotlin/app/sanctum/machina/data/dao/MessageDaoTest.kt:30 — same callback attached.",
+        "app/src/androidTest/kotlin/app/sanctum/machina/data/SanctumDatabaseTest.kt:42-51 — new foreignKeysPragmaIsOn test asserts PRAGMA foreign_keys == 1 by querying sqlite directly; independent belt-and-braces proof the callback ran. foreignKeyEnforcementEnabled and onDeleteCascadeRemovesMessages now run against the same production callback object, so a regression removing the callback wiring would be caught by the PRAGMA assertion at minimum."
+      ]
+    },
+    {
+      "id": "T1-N1",
+      "status": "PARTIALLY_ADDRESSED",
+      "note": "Visibility widened to internal as suggested (the minimal fix variant). Converting the anonymous Callback subclass to a Kotlin 'object ForeignKeysOnOpenCallback : Callback()' was cosmetic; left as-is. No action needed."
+    },
+    {
+      "id": "T1-N2",
+      "status": "DEFERRED",
+      "note": "Kotlin/kotlin-reflect version drift is unrelated to Task 1; correctly not touched by the round-1 fix. Track as tech debt for a catalog-hygiene pass."
+    },
+    {
+      "id": "T1-N3",
+      "status": "DEFERRED",
+      "note": "Index auto-naming vs tech-spec SQL sketch names — stylistic; schema JSON is authoritative. No action."
+    },
+    {
+      "id": "T1-N4",
+      "status": "DEFERRED",
+      "note": "DATABASE_NAME constant unused in this commit — Task 6 (SanctumApplication/AppModule) is the expected consumer. No action for Task 1."
+    },
+    {
+      "id": "T1-NT1",
+      "status": "DEFERRED",
+      "note": "Single-letter test fixture labels — readability nit, correctly untouched."
+    },
+    {
+      "id": "T1-NT2",
+      "status": "DEFERRED",
+      "note": "observeAllEmitsOnInsert was rewritten (see T1-M1 evidence) and is now genuinely distinct from observeAllEmitsSortedByLastMessageDesc — it proves re-emission on insert via a live collector, not just repeated .first() calls. The overlap concern from round 1 is gone."
+    },
+    {
+      "id": "T1-NT3",
+      "status": "DEFERRED",
+      "note": "readTableNames() and two 'absent-table' tests — cosmetic. No action."
+    }
+  ],
+  "new_code_assessment": {
+    "SanctumDatabase.kt_visibility_change": "Clean. 'internal val' is the minimal, idiomatic widening; matches the round-1 recommendation. No test-only API leaked to main module consumers beyond Room's Callback contract.",
+    "foreignKeysPragmaIsOn_test": "Clean. Uses .use { cursor } for lifecycle, asserts with a clear failure message, queries PRAGMA directly. Independent of messageDao insert behaviour — catches a regression where the callback is registered but the PRAGMA is set on the wrong connection.",
+    "insertAndGetByIdPreservesProjectIdValue": "Clean. Minimal fixture (projectId = 42L), round-trips through insert + getById, guards Decision 1 (nullable project_id without FK).",
+    "nullableFieldsRoundTrip": "Clean. Covers thinkingText, imagePath, audioPath, tokenCount in one insert/read — previously uncovered nullable columns on MessageEntity.",
+    "observeByChatFiltersByChatId": "Clean. Two-chat fixture proves the WHERE chat_id = :chatId clause actually filters; a missing WHERE would previously have been invisible.",
+    "observeAllEmitsOnInsert_rewrite": "Good in intent, minor style nit in execution (see T1-R2-NT1). The MutableSharedFlow(replay = 0, extraBufferCapacity = 16) + withTimeout pattern is correct; the delay(50L) is not strictly needed and is the one piece of magic in an otherwise tight test."
+  },
+  "acceptance_criteria_check": {
+    "schema_matches_data_models": "PASS (unchanged from round 1).",
+    "decision_1_compliance": "PASS + strengthened — insertAndGetByIdPreservesProjectIdValue now explicitly exercises a non-null project_id value.",
+    "suspend_or_flow_dao_only": "PASS (unchanged).",
+    "ksp_schema_export_wired": "PASS (unchanged).",
+    "gradle_catalog_entries": "PASS (unchanged).",
+    "scope_discipline_no_feature_creep": "PASS — round-1 fix did not introduce repository, module, or coordinator code; strictly test + visibility adjustment.",
+    "fk_enforcement_verified_by_test": "PASS — production ForeignKeysOnOpenCallback is now the exact object registered on the test builders; foreignKeysPragmaIsOn is an independent proof that PRAGMA foreign_keys resolves to 1 on the test connection; foreignKeyEnforcementEnabled and onDeleteCascadeRemovesMessages therefore validate the production contract, not runtime-default coincidence."
+  },
+  "required_changes": [],
+  "recommended_changes": [],
+  "verdict_rationale": "T1-M1 is resolved with a tight, targeted fix: minimum-possible visibility change on the main module, three test @Before updates, and one new PRAGMA-reading test that provides an independent regression guard. The supplementary new tests (insertAndGetByIdPreservesProjectIdValue, nullableFieldsRoundTrip, observeByChatFiltersByChatId, rewritten observeAllEmitsOnInsert) add real coverage without scope creep. Remaining round-1 items were correctly classified as deferrable minors/nits and did not need to be picked up. Only a single nit on a 50 ms delay() in one test — not worth blocking on. Task 1 is ready to finalize."
+}

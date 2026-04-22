@@ -1,0 +1,61 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 5,
+    "critical": 0,
+    "major": 0,
+    "minor": 5
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring Failures",
+      "title": "Rename return value ignored — log line and corruption flag may diverge from filesystem state",
+      "description": "AppModule.provideSanctumDatabase calls `dbFile.renameTo(target)` without checking the boolean return value. java.io.File.renameTo can fail silently on Android (e.g. target already exists, filesystem quota, concurrent handle held open, or the database parent dir happens to be read-only after a system update). When the rename returns false, the code still proceeds to delete the -journal / -wal / -shm sidecars, sets `appCorruptionState.corruptionOccurred = true`, and writes `ErrorLog.e(\"history-read\", \"db open failed — renamed to $corruptName\", cause)` — even though no rename actually occurred. The next `buildSanctumDatabase(context)` call then opens a handle against the still-corrupt sanctum.db, which will throw at the first write and crash via CrashHandler. From a security-logging perspective: the error log entry asserts a filesystem state (\"renamed to …\") that is not guaranteed to be true. Audit integrity is weakened and incident triage is misled (engineer searches the device for `sanctum.db.corrupt_*` and finds none).",
+      "location": "app/src/main/kotlin/app/sanctum/machina/di/AppModule.kt:73",
+      "impact": "Low-severity audit-log integrity issue: the persisted error record may describe a filesystem mutation that never happened, which complicates forensic analysis of corruption incidents. Also creates a harder-to-diagnose secondary crash path in the fresh-build branch. Not exploitable by an attacker; affects operational/incident observability.",
+      "recommendation": "Capture the rename outcome and branch the log message accordingly. Example:\n\n```kotlin\nval renamed = dbFile.renameTo(target)\nif (!renamed) {\n    // Rename failed; the sidecars and fresh build will still be attempted,\n    // but record the true filesystem state so triage is not misled.\n    runBlocking {\n        errorLog.e(LOG_COMPONENT, \"db open failed — rename to $corruptName FAILED\", cause)\n    }\n} else {\n    runBlocking {\n        errorLog.e(LOG_COMPONENT, \"db open failed — renamed to $corruptName\", cause)\n    }\n}\n```\n\nConsider also deleting the corrupt `sanctum.db` as a last-resort fallback when rename fails, so the subsequent `buildSanctumDatabase` call is not guaranteed to re-hit the same corruption.",
+      "cwe": "CWE-778"
+    },
+    {
+      "severity": "minor",
+      "category": "A04: Insecure Design",
+      "title": "StartupHousekeeper recursive delete follows symlinks — defence-in-depth gap if the app-private directory is ever compromised",
+      "description": "`StartupHousekeeper.cleanupOrphanStagingDirs` enumerates `filesDir/attachments/` with `listFiles { _, name -> name.startsWith(\".staging-\") }` and passes each entry to `File.deleteRecursively()` (kotlin.io). `deleteRecursively` performs a depth-first walk via `java.io.File.listFiles()`, which does NOT detect symlinks and will traverse into the symlink target — deleting files outside `filesDir/attachments/`. The attacker model here is narrow: `filesDir` is app-private (0700) on modern Android, so planting a symlink requires either another bug in the app (path-traversal during attachment staging) or a rooted device. The filename itself comes from the directory entry and callers do not control it directly, so the filter is safe against name-injection. However, kotlin.io.FileTreeWalk does not offer `NOFOLLOW_LINKS` and Android's ART does not enforce it either. This is a classic symlink-following recursive-delete pattern flagged by MOBILE-01 in the OWASP MASVS hardening checklist.",
+      "location": "app/src/main/kotlin/app/sanctum/machina/engine/StartupHousekeeper.kt:46-49, 76-89",
+      "impact": "In isolation there is no path for an unprivileged local attacker to plant a symlink inside `filesDir/attachments/`. The concrete risk appears only if a future attachment-staging bug ever lets user-controlled input influence a filename or directory path under `attachments/`. The blast radius would then include any file or directory the app process can write to (shared prefs, DataStore files, external storage mounted at a known path). Treat as defence-in-depth, not as an active exploit.",
+      "recommendation": "Before recursing, verify the entry is a regular directory and not a symlink. On API 26+ this is available via java.nio.file:\n\n```kotlin\nimport java.nio.file.Files\nimport java.nio.file.LinkOption\n\nprivate fun safeDelete(dir: File) {\n    val path = dir.toPath()\n    if (Files.isSymbolicLink(path) || !Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {\n        // Refuse to recurse into a symlink; unlink the link itself only.\n        Files.deleteIfExists(path)\n        return\n    }\n    if (!dir.deleteRecursively()) {\n        throw IOException(\"delete failed: ${dir.absolutePath}\")\n    }\n}\n```\n\nAlternatively, keep `deleteRecursively()` but first assert `dir.canonicalPath.startsWith(attachmentsDir.canonicalPath + File.separator)` to refuse any entry whose canonical path escapes the intended root.",
+      "cwe": "CWE-59"
+    },
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring Failures",
+      "title": "runBlocking on the Hilt injection thread defers an ANR-class failure — not a disclosure issue, but worth noting",
+      "description": "`provideSanctumDatabase` writes the corruption event via `runBlocking { errorLog.e(...) }`. `ErrorLog.e` acquires `mutex.withLock` and then `withContext(Dispatchers.IO)` to append to `filesDir/logs/errors.log`. `provideSanctumDatabase` is invoked the first time any Hilt consumer requests `SanctumDatabase` — on Android this will normally be the main thread (SanctumApplication injection completes before the first coroutine is dispatched in onCreate). A slow filesystem append inside `runBlocking` therefore blocks the main thread for the duration of the write + any contention on the ErrorLog mutex. The task spec explicitly notes the provider is synchronous and this is intentional. Confirming the review concern: the log line contents themselves are NOT a PII/SQL/path leak beyond ErrorLog's existing 500-char description + 200-char cause bounds and control-whitespace sanitiser. The `corruptName` is a deterministic timestamped literal with no user input; the `cause` message from Room/SQLite may contain the absolute DB path `/data/data/app.sanctum.machina/databases/sanctum.db`, which is the app's own private path and therefore not a disclosure — `errors.log` is itself written inside the same app-private `filesDir/logs/`. No external sink.",
+      "location": "app/src/main/kotlin/app/sanctum/machina/di/AppModule.kt:81-83",
+      "impact": "No confidentiality impact. Availability / reliability impact only: under filesystem pressure or mutex contention the main thread is pinned for the duration of the log write. ANR watchdog (5s) would fire before this became a security incident, but the pattern is worth noting so future reviewers do not assume `runBlocking { errorLog.e(...) }` is cheap. Does NOT leak PII, SQL, or attachment paths — ErrorLog's sanitiser bounds the surface.",
+      "recommendation": "Two options, in order of preference: (1) record the corruption event into a plain volatile field on `AppCorruptionState` (e.g. `pendingLog: Pair<String, Throwable>?`) and let `SanctumApplication`'s existing `appScope.launch(Dispatchers.IO) { … }` drain it asynchronously — this matches the fire-and-forget pattern used for the other startup steps. (2) If the synchronous guarantee is required so the log line is durable before `CrashHandler` can observe the process, keep `runBlocking` but add a brief comment acknowledging the main-thread trade-off. No security remediation needed beyond documenting the decision.",
+      "cwe": "CWE-400"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "AppCorruptionState.corruptionOccurred lacks @Volatile — cross-thread visibility not guaranteed",
+      "description": "`AppCorruptionState.corruptionOccurred: Boolean` is a plain `var` with no `@Volatile` annotation and no synchronization. It is written on the Hilt injection thread inside `provideSanctumDatabase` (potentially the main thread) and, per the task spec, will be read in Task 10 from `HomeScreen`'s `LaunchedEffect` on the Compose main thread. JVM/ART guarantees atomic read/write of a Boolean field but NOT happens-before visibility across threads. In practice on ARM, without a memory barrier, the reader can observe the stale `false` indefinitely. This is not a security vulnerability (the corrupt DB has already been renamed on disk, and the replacement DB is fresh and empty), but it weakens the defence-in-depth signal to the user that history was lost.",
+      "location": "app/src/main/kotlin/app/sanctum/machina/engine/AppCorruptionState.kt:18",
+      "impact": "User does not receive the one-time \"история повреждена\" banner even though their history was in fact discarded. No data leak, no auth bypass; purely a UX/trust-signal failure mode. Ranked minor only because it conflicts with the acceptance criterion \"HomeScreen reads it once in LaunchedEffect to decide whether to show the one-time banner\".",
+      "recommendation": "Either annotate with `@Volatile`:\n\n```kotlin\n@Singleton\nclass AppCorruptionState @Inject constructor() {\n    @Volatile var corruptionOccurred: Boolean = false\n}\n```\n\nor promote to `AtomicBoolean`, or expose as `MutableStateFlow<Boolean>` if the Task 10 consumer wants reactive observation. The first option is the smallest diff.",
+      "cwe": "CWE-662"
+    },
+    {
+      "severity": "minor",
+      "category": "A04: Insecure Design",
+      "title": "Corrupt-rename may silently clobber an existing sanctum.db.corrupt_{ts} in the same second",
+      "description": "`File.renameTo` on Android/Linux will overwrite an existing target file atomically (unlike `java.nio.file.Files.move` with no options). The corrupt target filename is derived from `LocalDateTime.now()` at one-second resolution using the system default time zone (not `Locale.ROOT` as claimed in the task spec — the `Locale.ROOT` parameter passed to `DateTimeFormatter.ofPattern` affects locale-dependent symbols like month names, but not the clock source). If the provider is invoked twice within the same wall-clock second — for instance a zygote double-fork, a Hilt graph reconstruction during instrumentation tests, or a process restart triggered by the `CrashHandler` racing against the initial failure — the second corrupt file silently overwrites the first, destroying the forensic evidence of the earlier corruption event. The timestamp is also derived from the device wall clock, so NTP jumps backward across a reboot can produce a name collision deterministically.",
+      "location": "app/src/main/kotlin/app/sanctum/machina/di/AppModule.kt:70-73, 107-110",
+      "impact": "Forensic / incident-response integrity only. An attacker cannot exploit this to exfiltrate data (files never leave app-private storage) or race the rename to plant content (see mandatory-checks note on /data/data/<pkg>/databases being 0700). Worst case: support loses one of two corrupt DB snapshots for post-mortem analysis.",
+      "recommendation": "Either bump the timestamp resolution (include milliseconds and/or a short random suffix) or refuse to proceed when the target already exists:\n\n```kotlin\nprivate fun corruptTimestamp(): String =\n    LocalDateTime.now().format(\n        DateTimeFormatter.ofPattern(\"yyyyMMdd-HHmmss-SSS\", Locale.ROOT),\n    ) + \"-${UUID.randomUUID().toString().take(8)}\"\n```\n\nAlternatively use `Files.move(src, target, StandardCopyOption.ATOMIC_MOVE)` without REPLACE_EXISTING so a collision throws rather than silently overwrites. No security-critical fix; improves evidence retention.",
+      "cwe": "CWE-367"
+    }
+  ]
+}

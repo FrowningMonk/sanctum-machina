@@ -77,6 +77,9 @@
   <string name="attachment_max_images_reached">Максимум 10 фото в одном сообщении.</string>
   <string name="attachment_audio_disabled">Максимум один аудио-клип на сообщение</string>
   <string name="attachment_image_decode_failed">Не удалось обработать фото.</string>
+  <string name="attachment_save_failed">Не удалось сохранить вложение.</string>
+  <string name="attachment_still_saving">Вложение ещё сохраняется…</string>
+  <string name="attachment_only_first_persisted">Сохранено только первое фото — остальные прикреплены к ответу модели, но не попадут в историю.</string>
 
   <!-- Camera bottom sheet -->
   <string name="camera_capture">Снять</string>
@@ -110,4 +113,62 @@
   <string name="about_diagnostics_title">Диагностика</string>
   <string name="dev_crash_dialog_title">Спровоцировать тест-краш?</string>
   <string name="dev_crash_dialog_confirm">Да</string>
+
+  <!-- Home screen (Phase 3 Task 7) -->
+  <string name="home_title">Sanctum · Home</string>
+  <string name="home_product_name">Sanctum Machina</string>
+  <string name="home_kicker">Локальный ИИ — тихий сосредоточенный труд</string>
+  <string name="home_action_new_quick_chat">Новый быстрый чат</string>
+  <string name="home_action_open_history">Открыть историю</string>
+  <string name="home_no_models_body">Для начала работы скачайте модель.</string>
+  <string name="home_action_open_model_manager">Открыть Model Manager</string>
+  <string name="home_status_model_cold">Модель не прогрета</string>
+  <string name="home_menu_open">Открыть меню</string>
+  <string name="home_default_model_label">Модель по умолчанию: %1$s</string>
+
+  <!-- Chat TopAppBar state machine (Phase 3 Task 10) -->
+  <string name="chat_topappbar_reloading">Модель перезагружается…</string>
+  <string name="chat_topappbar_loading_model">Загружаю %1$s…</string>
+  <string name="chat_topappbar_load_action">Загрузить</string>
+  <string name="chat_topappbar_quick_subtitle">Быстрый чат</string>
+  <string name="chat_topappbar_cross_model_title">Переключить модель?</string>
+  <string name="chat_topappbar_cross_model_body">Переключение займёт 20–30 секунд (дольше если модель ещё прогревается). Продолжить?</string>
+  <string name="chat_topappbar_cross_model_confirm">Переключить</string>
+  <string name="chat_topappbar_incognito_desc">Инкогнито</string>
+  <string name="chat_topappbar_pick_model_desc">Выбрать модель</string>
+
+  <!-- Corruption banner (Phase 3 Task 10 / AC-D5) -->
+  <string name="corruption_banner_body">Прошлая история оказалась повреждена. Старая база сохранена.</string>
+  <string name="corruption_banner_save_log">Сохранить лог</string>
+  <string name="corruption_banner_dismiss">Закрыть</string>
+
+  <!-- Model Manager — default model selection (Phase 3 Task 11) -->
+  <string name="model_manager_default_badge_desc">Модель по умолчанию</string>
+  <string name="model_manager_overflow_desc">Дополнительные действия</string>
+  <string name="model_manager_set_default">Сделать по умолчанию</string>
+
+  <!-- Drawer (Phase 3 Task 9) -->
+  <string name="drawer_title">История чатов</string>
+  <string name="drawer_new_chat">Новый чат</string>
+  <string name="drawer_empty">Нет сохранённых чатов.</string>
+  <string name="drawer_untitled_chat">Без названия</string>
+  <string name="drawer_section_today">Сегодня</string>
+  <string name="drawer_section_yesterday">Вчера</string>
+  <string name="drawer_section_this_week">На этой неделе</string>
+  <string name="drawer_section_earlier">Раньше</string>
+  <string name="drawer_delete_action">Удалить</string>
+  <string name="drawer_delete_title">Удалить чат?</string>
+  <string name="drawer_delete_body_with_count">Чат «%1$s» содержит %2$d сообщ. Это действие нельзя отменить.</string>
+  <string name="drawer_delete_body_without_count">Удалить чат «%1$s»? Это действие нельзя отменить.</string>
+  <string name="drawer_delete_confirm">Удалить</string>
+  <string name="drawer_rename_title">Переименовать чат</string>
+  <string name="drawer_rename_placeholder">Оставьте пустым для авто-названия</string>
+  <string name="drawer_rename_save">Сохранить</string>
+  <string name="drawer_model_unavailable_title">Модель недоступна</string>
+  <string name="drawer_model_unavailable_body">Файл модели «%1$s» отсутствует на устройстве. Скачайте её заново, чтобы открыть чат.</string>
+  <string name="drawer_model_unavailable_download">Скачать</string>
+
+  <!-- Drawer footer (Phase 3 Task 18) -->
+  <string name="drawer_nav_models">Модели</string>
+  <string name="drawer_nav_about">О приложении</string>
 </resources>

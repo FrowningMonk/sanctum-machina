@@ -1,0 +1,90 @@
+{
+  "verdict": "pass_with_warnings",
+  "findings": [
+    {
+      "area": "unit",
+      "issue": "ChatRepositoryTest does not specify coverage for the deletion path: deleteChat() must call File.deleteRecursively() on filesDir/attachments/{chatId}/ AND verify the Room CASCADE row is gone. Without an explicit assertion on filesystem cleanup, a bug where files are orphaned (Room deleted, files remain) passes all tests silently.",
+      "severity": "major",
+      "recommendation": "Add a dedicated test case: given a committed chat with staged files, call deleteChat(chatId), assert (a) chatDao.deleteById was called with correct chatId and (b) the attachments directory deleteRecursively() was invoked. Use a hand-rolled FakeFile or inject a FileDeleter lambda so the test can assert on the call without touching the real filesystem."
+    },
+    {
+      "area": "unit",
+      "issue": "ChatRepositoryTest covers IOException on staging write → rollback, but does not cover the mirrored failure: Room @Transaction INSERT succeeds but the staging directory rename fails (e.g., cross-partition rename throws IOException). Per AC-A6 the staging dir must deleteRecursively and the Room row must be rolled back. This failure path is entirely untested in the stated strategy.",
+      "severity": "major",
+      "recommendation": "Add a test: FakeChatDao commits successfully; inject a FileRenamer that throws IOException; assert (a) dao.deleteById is called to roll back the Room row and (b) staging directory deleteRecursively is called. Without this, a partial-state bug (Room row written, staging dir orphaned) escapes to production."
+    },
+    {
+      "area": "unit",
+      "issue": "WarmupCoordinatorTest lists 'cancelAndRestart while warmup in flight' as a scenario but does not mention asserting the in-flight Job is actually cancelled before the new initialize() call begins. A naive implementation that simply launches a new Job without cancelling the previous one would still pass a test that only checks the final state. The single-engine invariant (one model in RAM at a time) depends on this cancellation being verified.",
+      "severity": "major",
+      "recommendation": "The test must verify sequencing, not just final state. Use a FakeModelRegistry that records call order and timing: (1) start warmupDefault() with a slow fake initialize (suspends on a Channel), (2) call cancelAndRestart(newModelId), (3) assert initialize(originalModelId) was never completed and initialize(newModelId) was called after cancellation. A CountDownLatch-style mechanism in the fake is idiomatic for this pattern without Mockito."
+    },
+    {
+      "area": "unit",
+      "issue": "ChatViewModelTest is listed without specifying coverage of the double-bubble flicker fix: the combine(persistedMessages, _streamingMessage) handover at done=true. This is explicitly called out in user-spec Risks section as a known race condition with an architectural mitigation. The tech-spec itself notes 'no test, but code-review fixes pattern; manual smoke confirms'. For an L-size feature this is a missing test of core view-state logic.",
+      "severity": "major",
+      "recommendation": "Add a test case to ChatViewModelTest: use a FakeMessageDao that emits a new list containing the ASSISTANT row, and a TestCoroutineDispatcher to control emission order. Assert that after done=true is processed: (a) displayMessages contains exactly the persisted ASSISTANT row (not duplicated), and (b) _streamingMessage is null. This is testable with hand-rolled fakes and kotlinx-coroutines-test without any Compose dependency."
+    },
+    {
+      "area": "unit",
+      "issue": "ChatRepositoryTest describes 'zombie sweep logic: 0-message chat with missing dir → delete' but AC-P8 adds a guard: if the chat has at least one message, it must NOT be deleted even if the attachment dir is missing. The positive case (delete zombie) is listed but the negative case (preserve chat with messages despite missing dir) is absent. A bug that deletes all chats with missing dirs regardless of message count would pass the stated test.",
+      "severity": "major",
+      "recommendation": "Add a second sweep test case: insert a chat row with 1+ messages rows but no filesystem directory. Call sweepZombieChats(). Assert the chat row is NOT deleted. This mirrors the exact guard condition in AC-P8 and would catch an off-by-one in the 0-message check."
+    },
+    {
+      "area": "unit",
+      "issue": "SettingsMigrationHelperTest covers 'single updateData call per run' but does not specify asserting the atomicity guarantee: if the test interrupts updateData mid-flight (simulated by having the fake DataStore throw on the first call), the sentinel must NOT be set and the migration must not be partial. The stated test only verifies happy-path call count, not the crash-safety invariant.",
+      "severity": "minor",
+      "recommendation": "Add a test: FakeDataStore throws IOException on the first updateData call; assert (a) settings_keys_migrated remains false and (b) per_model_overrides still contains the original keys unmodified. This verifies the all-or-nothing guarantee that AC-R8 depends on."
+    },
+    {
+      "area": "unit",
+      "issue": "AutoTitleGeneratorTest is described as covering 'cut at last space ≤20, append …'. AC-U2 specifies the fallback: 'Чат от DD.MM HH:mm' when the first message has no text (e.g., image-only message). The description mentions 'fallback' but does not explicitly list a test for image-only message with empty text string. If the implementation checks for null but not empty string, the fallback never fires.",
+      "severity": "minor",
+      "recommendation": "Ensure one test case uses an empty string ('') as message text (not null), and a second uses a whitespace-only string. Both should produce the 'Чат от DD.MM HH:mm' fallback, not a trimmed empty title. Also test that manual-title flag suppression is verified with a non-null non-empty title scenario to confirm the flag check is not confused with the fallback path."
+    },
+    {
+      "area": "unit",
+      "issue": "ModelRegistryActiveModelTest specifies 'concurrent reads during initialize' but the testing constraint is JUnit4 + hand-rolled fakes. True concurrent read/write testing requires either kotlinx-coroutines-test with UnconfinedTestDispatcher or explicit Thread manipulation. Without specifying how concurrency is simulated, implementors will likely write a sequential test (call initialize, then read), which doesn't exercise the race condition that J5 hazard in code-research describes.",
+      "severity": "minor",
+      "recommendation": "Specify in the test design that a FakeModelRegistry delays initialize completion via a CompletableDeferred, reads activeModelName during the delay (while initializing), and asserts null is returned (not the in-progress model name). Then complete the deferred and assert the name appears. This is achievable with kotlinx-coroutines-test runTest + advanceUntilIdle pattern, no Mockito needed."
+    },
+    {
+      "area": "integration",
+      "issue": "SanctumDatabaseTest is listed as verifying 'schema JSON matches @Entity definitions (Room compiler snapshot comparison)' but this is not a runtime test — Room's schema export is a build-time artifact from KSP. At connectedAndroidTest time, the JSON file already exists on disk. The test as described would only assert a file exists (ls check in AVP step 7), not that the running Room instance matches the JSON. A schema-mismatch bug (Entity changed, JSON not regenerated) would not be caught by this test.",
+      "severity": "minor",
+      "recommendation": "Replace the 'schema JSON matches @Entity' assertion with a test that opens the in-memory database using Room.inMemoryDatabaseBuilder and verifies the actual table structure by querying SQLite's sqlite_master: assert tables 'chats' and 'messages' exist with the expected columns. The schema JSON file check belongs in the AVP (it already appears as Step 7) not in the instrumented test."
+    },
+    {
+      "area": "integration",
+      "issue": "ChatDaoTest and MessageDaoTest do not list explicit coverage for the Flow emission timing: observeByChat(chatId) must emit immediately on the initial subscription (no messages yet → empty list), then re-emit after insert. Missing the initial empty-list emission test means a bug that hangs without emitting until first message could pass.",
+      "severity": "minor",
+      "recommendation": "Add a test: subscribe to observeByChat(nonExistentChatId), collect first emission, assert it is an empty list (not a timeout/hang). This is a one-liner with turbine or manual Channel collection in a test coroutine scope and verifies the 'optimistic open' behaviour required by AC-E4."
+    },
+    {
+      "area": "integration",
+      "issue": "No instrumented test is specified for the DB corruption handler path (Decision 9 / AC-D5). The rename-on-corruption flow happens inside AppModule's Room.databaseBuilder setup. At L-size this is a risk-ranked architectural decision but its integration behaviour (corrupt file renamed, fresh DB opened, corruptionOccurred flag set) has no test.",
+      "severity": "minor",
+      "recommendation": "This is admittedly hard to integration-test because it wraps the DB builder, not the DAO layer. At minimum, add a unit test for the corruption-handler logic extracted into a testable function: given a simulated IOException from the builder, assert (a) the rename is attempted, (b) corruptionOccurred is set true, (c) ErrorLog.e('history-read', ...) is called. Use a hand-rolled FakeDatabaseBuilder that throws on first call."
+    },
+    {
+      "area": "avp",
+      "issue": "AVP Step 4 ('core-settings unit tests — includes migration sentinel tests') in the tech-spec maps to 'SettingsMigrationHelperTest' but SettingsMigrationHelper is created in :app, not :core-settings. The gradlew command './gradlew :core-settings:testDebugUnitTest' will not run SettingsMigrationHelperTest. The user-spec 'Агент проверяет' step 4 reflects the same error. This means the migration test is not gated by the AVP sentinel step.",
+      "severity": "major",
+      "recommendation": "Change AVP Step 4 to ':app:testDebugUnitTest' or add SettingsMigrationHelper to :core-settings if that is the intended module. Verify that ':app:testDebugUnitTest' (step 2) covers all of: ChatRepositoryTest, WarmupCoordinatorTest, SettingsMigrationHelperTest, ChatViewModelTest, AutoTitleGeneratorTest. If these all live in :app, step 4 is redundant and should either be removed or corrected to ':app:testDebugUnitTest' with explicit mention of migration tests."
+    },
+    {
+      "area": "avp",
+      "issue": "User-spec 'Агент проверяет' step 10 checks 'Privacy manifest without regressions: allowBackup=false, dataExtractionRules unchanged'. This step is entirely absent from the tech-spec AVP (which has 10 steps). The user-spec table has 11 steps. The tech-spec AVP stops at step 10 (assembleDebug) and omits the manifest regression check. An agent running off the tech-spec AVP would skip this privacy verification.",
+      "severity": "minor",
+      "recommendation": "Add AVP Step 11 to tech-spec matching user-spec step 10: 'aapt dump xmltree app-debug.apk AndroidManifest.xml | grep -E \"allowBackup|dataExtractionRules\"' → verify allowBackup=false and dataExtractionRules reference unchanged. Keeps the two AVP tables in sync."
+    },
+    {
+      "area": "e2e",
+      "issue": "E2E exclusion is justified and consistent with constraints (no Compose UI tests, no CI model). The manually-verified acceptance criteria list (AC-P1 kill-and-reopen, AC-G4 TTFT benchmark) are appropriately moved to user-verification. However, AC-R3 ('process killed mid-stream → USER in Room, ASSISTANT lost, visible on reopen') is a non-trivial integration behaviour that is listed only as manual verification. It is technically testable as an instrumented test by simulating process interruption via abrupt coroutine cancellation without a real device kill.",
+      "severity": "minor",
+      "recommendation": "Consider adding AC-R3 as an instrumented test in SanctumDatabaseTest: insert a USER message row, do NOT insert the ASSISTANT row (simulating kill mid-stream), reopen the DAO query, assert only the USER message is returned. This does not require killing the process — it tests that the data model correctly represents the partial-stream state that a process kill would leave."
+    }
+  ],
+  "notes": "The testing strategy is well-structured for an L-size Android feature under the stated tooling constraints (JUnit4 + Robolectric + hand-rolled fakes, Room instrumented tests, no E2E). The test subject list is appropriately scoped and all major components have designated tests. The E2E exclusion is sound given the constraints. However, five findings are rated major: (1) deleteChat filesystem cleanup not covered, (2) rename-failure rollback path missing, (3) cancelAndRestart cancellation sequencing not verifiable from stated assertions, (4) double-bubble handover (known race, 'no test' acknowledged in spec) is missing, and (5) AVP module routing error that would cause SettingsMigrationHelperTest to not run during agent verification. The pyramid balance (7 unit + 3 integration + 0 E2E) is appropriate for this stack. No critical findings. Verdict: pass_with_warnings — the strategy is acceptable to proceed but the five major gaps should be addressed during task implementation, not deferred."
+}

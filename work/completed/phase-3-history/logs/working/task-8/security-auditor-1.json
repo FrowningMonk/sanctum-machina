@@ -1,0 +1,54 @@
+{
+  "round": 1,
+  "verdict": "approved",
+  "summary": "ChatViewModel rework around ChatIdentity has no critical or major security issues. SavedStateHandle nav-arg trust boundary is safe (no exported deep links, Long-typed chatId, Room-parameterised queries, no filesystem surface from modelId). AC-R1/R2/R3 message-persistence invariants (USER-before-inference / ASSISTANT-only-on-done / kill-mid-stream leaves USER+no-ASSISTANT) are honoured by runInferencePersistent; draft rollback is delegated to ChatRepository and VM stays on draft route with _attachments preserved. All errorLog.e call sites use whitelisted components (history-read, history-write, inference, inference-init, attachment-decode, camera, audio). Navigation SharedFlow is encapsulated (asSharedFlow on an MutableSharedFlow with private write side), no chatId spoofing surface. onCleared no-op is explicit Decision 5 behaviour, not a regression. Thinking text is correctly gated: when shouldAccumulateThinking is false, thinkingText stays null on both the streaming bubble and the persisted MessageEntity. Three minor observability / data-hygiene findings filed below; none block merge.",
+  "owasp_categories_checked": [
+    "A01 Broken Access Control",
+    "A02 Cryptographic Failures",
+    "A03 Injection",
+    "A04 Insecure Design",
+    "A05 Security Misconfiguration",
+    "A07 Identification and Authentication Failures",
+    "A08 Software and Data Integrity Failures",
+    "A09 Security Logging and Monitoring Failures",
+    "A10 SSRF",
+    "Hardcoded Secrets",
+    "Insecure Deserialization",
+    "Path Traversal / Injection"
+  ],
+  "findings": [
+    {
+      "id": "s1",
+      "severity": "minor",
+      "owasp": "A09",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 717,
+      "title": "Raw inference engine error string logged to on-device errorLog may echo user prompt content",
+      "detail": "In both dispatchInferencePersistent (line 717) and dispatchInference (line 800) the engine-supplied onError `msg` is written verbatim to `errorLog.e(\"inference\", safeMsg)`. LiteRT / MediaPipe LLM error paths sometimes include a portion of the prompt or tokenised input in the exception message (e.g. tokenizer errors). On-device logs at filesDir/logs/errors.log are bounded (2 MB + one rotation) and not transmitted, but any attachment/export surface added later (see Phase 2.5 logexport work in git-status) would promote this content to an egress channel. ErrorLog already sanitises control-whitespace and truncates to 500 chars, so the bound exists; the class of content is the concern, not the volume.",
+      "exploit_scenario": "Phase 2.5 log-export feature (sibling workstream visible in git status) ships a share-sheet for errors.log. A user forwards the log to triage, unknowingly forwarding fragments of their prompt (e.g. a password they pasted into chat or a medical question). This is a privacy leak via logs, not an exploit — but it is exactly the scenario OWASP A09 cautions against when logging error context.",
+      "recommendation": "Narrow the inference error log to class-name + synthetic descriptor rather than the raw engine message: `errorLog.e(\"inference\", \"runInference failed\", IllegalStateException(msg.take(80)))` — or simply drop `safeMsg` from the description. The cause-class name is already captured by ErrorLog's `causeClass` path when a Throwable is passed. If keeping the message is required for debuggability, add a redaction step that strips substrings matching the last outgoing `input` text for the current turn."
+    },
+    {
+      "id": "s2",
+      "severity": "minor",
+      "owasp": "A08",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 639,
+      "title": "updateChatLastMessage is not gated on savePersistentMessage success — ordering risk around AC-R3",
+      "detail": "In runInferencePersistent the USER persist path is:\n  runCatching { chatRepository.savePersistentMessage(userMsg) }.onFailure { errorLog.e(...) }\n  chatRepository.updateChatLastMessage(identity.id, userTs)   // unconditional\n  dispatchInferencePersistent(...)\nIf savePersistentMessage throws (e.g. Room SQLiteConstraintException, disk-full IOException) it is swallowed by runCatching, the USER row is absent, but updateChatLastMessage still bumps `last_message_at`. A subsequent crash/kill leaves a chat whose `last_message_at` claims a message that was never written — violates the spirit of AC-R3 (USER present after kill) by creating the inverse state (timestamp says USER exists, Room says it doesn't). It also advances the drawer ordering on a message that never happened. Not an attacker-driven issue, but it is a data-integrity gap that the tech-spec's atomicity language (Decision 4) does not cover for this specific call.",
+      "exploit_scenario": "Attacker with local storage pressure (e.g. another app filling the app's data dir, or SQLiteFullException in a low-storage scenario) causes the USER INSERT to fail. The chat surfaces in the drawer as \"most recent\" with a stale timestamp but no content, confusing the user into thinking data was lost silently. There is no direct security boundary crossed, but the absence of an error surface on the primary path also means the user has no feedback that AC-R1 was violated — they press Send, see no streaming, and the only signal is an entry in errors.log they cannot reach without Phase 2.5 log-export.",
+      "recommendation": "Move updateChatLastMessage and dispatchInferencePersistent inside the onSuccess branch of a `.fold(...)`, or abort the inference on USER persist failure and emit a user-facing snackbar. A minimal fix:\n```\nval saved = runCatching { chatRepository.savePersistentMessage(userMsg) }\n  .onFailure { errorLog.e(\"history-write\", \"savePersistentMessage USER failed\", it) }\nif (saved.isFailure) {\n    _snackbar.tryEmit(R.string.chat_load_failed_title)\n    _streamingMessage.value = null\n    _uiState.value = ChatUiState.Ready(isGenerating = false)\n    return@launch\n}\nchatRepository.updateChatLastMessage(identity.id, userTs)\ndispatchInferencePersistent(...)\n```\nThis also prevents AC-R3 from being trivially broken when the USER write fails before the stream starts."
+    },
+    {
+      "id": "s3",
+      "severity": "minor",
+      "owasp": "A09",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt",
+      "line": 553,
+      "title": "Error logs enqueued via nested viewModelScope.launch can be dropped on scope cancellation",
+      "detail": "Several error-reporting sites wrap `errorLog.e(...)` in an additional `viewModelScope.launch { ... }` from a non-suspend function body (e.g. commitDraft line 553, addImages failed-uri loop line 387-391, reportCameraError/reportAudioError lines 419/424, applyHeavySetting onFailure lines 347-349, dispatchInferencePersistent onError line 717, dispatchInference onError line 800). If the ViewModel is cleared between the outer send/callback firing and the inner launch dispatching, the error is silently dropped. Combined with finding s2, this means a USER-persist failure could log *nothing* if the user navigates away quickly. OWASP A09 explicitly calls out \"logging is lost before it reaches the pipeline\" as a monitoring failure.",
+      "exploit_scenario": "User sends a message that triggers an inference error (e.g. OOM on a large context). The VM logs via `viewModelScope.launch { errorLog.e(\"inference\", msg) }`. User immediately hits Back — viewModelScope is cancelled before the log coroutine runs. The post-mortem log (which Phase 2.5 exports for triage) contains no record of the failure. Repeat scenarios erode the ability to diagnose crashes from user reports.",
+      "recommendation": "Option A (minimal, preserves VM-scope ownership): use a process-scoped dispatcher for error logging — inject an `@ApplicationScope CoroutineScope` (SupervisorJob + Dispatchers.IO) and `appScope.launch { errorLog.e(...) }` instead of `viewModelScope.launch`. Error logs outlive any single ViewModel.\nOption B: make `errorLog.e` a fire-and-forget with its own internal appScope that the call site triggers via a non-suspend wrapper `errorLog.record(component, description, cause)` — shifts the lifetime concern into the logger class itself.\nEither approach is a small refactor and does not block Task 8, but should be in-scope for the engine-warmup / history-write reliability work."
+    }
+  ]
+}

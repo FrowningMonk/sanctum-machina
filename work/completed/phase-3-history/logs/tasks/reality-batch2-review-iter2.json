@@ -1,0 +1,69 @@
+{
+  "validator": "reality-checker",
+  "batch": [6, 7, 8, 9, 10, 11],
+  "iteration": 2,
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "task": 8,
+      "issue": "Task 8 depends_on: [1, 6, 7] but Task 8 explicitly requires ChatRepository.commitDraftChat() (created by Task 4) and WarmupCoordinator.cancelAndRestart() (created by Task 5). Both are used in the body: the draft→committed transition calls chatRepository.commitDraftChat(), and the Details section states 'Task 5 (WarmupCoordinator): cancelAndRestart(modelId: String) — calls from applyHeavySetting (cross-model reinit in TopAppBar)'. Without depends_on: [4, 5] declared, a parallel executor could assign Task 8 before Task 4 and Task 5 are complete, producing compile failures. Task 4 creates ChatRepository.kt and Task 5 creates WarmupCoordinator.kt — both are reads listed under 'Code files to read (dependencies из Task 4, 5, 6)'.",
+      "fix": "Add 4 and 5 to Task 8's depends_on: [1, 4, 5, 6, 7]."
+    },
+    {
+      "severity": "major",
+      "category": "tdd",
+      "task": 7,
+      "issue": "Task 7 HomeViewModelTest says 'Use turbine or runTest + awaitItem() pattern matching existing test style'. Turbine (app.cash.turbine) is NOT in the project's dependency graph — it does not appear in gradle/libs.versions.toml or any build.gradle.kts. The existing test style for ViewModel Flow collection in this project uses kotlinx-coroutines-test (runTest + StateFlow.value assertions or manual collect), not Turbine. Referencing Turbine as a valid testing option without it being available could mislead the implementer into adding an undeclared dependency or spending time investigating a missing library.",
+      "fix": "Remove the 'turbine' mention from HomeViewModelTest hints. Replace with: 'Use runTest + advanceUntilIdle() + StateFlow.value assertions, matching the pattern in existing ModelManagerViewModel tests. Do not add the turbine library — it is not in the project dependencies.'"
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 10,
+      "issue": "Task 10 requires WarmupCoordinator.isWarmupInProgress: StateFlow<Boolean> to derive TopAppBarState.Loading (referenced in TDD anchor topAppBarState_warmupInFlight_returnsLoading and Details section 'derive via combine(chatIdentity, registry.models, warmupCoordinator.isWarmupInProgress)'). Task 5 (WarmupCoordinator) is NOT in Task 10's depends_on: [6, 7, 8]. The task acknowledges the gap in an edge-case note ('if Task 5 doesn't export it, add it here') but does not declare the dependency. If Task 10 is assigned before Task 5 is complete, isWarmupInProgress will be absent from the WarmupCoordinator interface, and the implementer will have to modify Task 5's output within Task 10's scope — an untracked cross-task modification.",
+      "fix": "Add 5 to Task 10's depends_on: [5, 6, 7, 8]. Also ensure Task 5's AC includes exporting 'val isWarmupInProgress: StateFlow<Boolean>' so Task 10 has a firm contract to rely on."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 6,
+      "issue": "Task 6 instructs the implementer to call 'SettingsMigrationHelper.migrateIfNeeded()' and inject it as '@Inject lateinit var settingsMigrationHelper: SettingsMigrationHelper'. The task states 'SettingsMigrationHelper has an @Inject constructor (created in Task 2) and is resolved by Hilt automatically — no explicit @Provides method in AppModule is needed'. This is correct for a concrete class with @Inject constructor. However, the task's TDD Anchor does not include any test for the migration path (only housekeeping and corruption), and the 'What to do' section step 4 lists launching 'settingsMigrationHelper.migrateIfNeeded()' but never explicitly states the SettingsMigrationHelper injection in the @Inject fields list (step 3 mentions only WarmupCoordinator + ChatRepository; step 5 adds SettingsMigrationHelper but the numbering is split across two separate steps, which could cause an implementer to overlook it). Minor readability risk but the duplicate-step structure is technically ambiguous.",
+      "fix": "Consolidate the @Inject field list: 'Extend SanctumApplication with three @Inject fields: WarmupCoordinator, ChatRepository, SettingsMigrationHelper'. Remove the separate step 5 for SettingsMigrationHelper injection and fold it into step 3. This eliminates the split-step ambiguity."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 9,
+      "issue": "Task 9 Details section for DrawerContent.kt contains a complete line-by-line prescription for the SwipeToDismissBox implementation: exact import path ('androidx.compose.material3.SwipeToDismissBox'), exact Background composable structure ('red MaterialTheme.colorScheme.error + trash icon'), exact modifier for active row highlight ('Modifier.drawBehind { drawRect(accentColor, ..., size = Size(2.dp.toPx(), size.height)) }'), and exact TextField constraints ('maxLines=1, keyboardOptions=KeyboardOptions(imeAction=ImeAction.Done), onValueChange = { if (it.length <= 60) value = it }'). This is a full implementation prescription, not directional hints. Per the validation checklist, implementation hints containing step-by-step composable implementations with exact parameters are a major finding.",
+      "fix": "Replace the prescriptive UI code fragments with directional hints: reference the SwipeToDismissBox Material3 docs for the correct API; point to the 60-char limit as a business rule from AC-U1; leave the exact Modifier and composable parameter choices to the implementer. Keep the business logic hints (what conditions trigger each dialog) since those encode spec knowledge the implementer cannot derive from code alone."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9's edge case for 'Удаление открытого чата во время стрима (US-7)' states 'рекомендуется бросить Intent-like event через SharedFlow, который ChatViewModel поймает и вызовет stopResponse()' as one option, and also suggests DrawerViewModel injecting WarmupCoordinator. The first option (SharedFlow-based cross-VM event) is not supported by current project patterns and is not architecturally established anywhere. The second option (WarmupCoordinator injection) would add an undeclared dependency to DrawerViewModel without a corresponding depends_on. The MVP resolution described ('Room CASCADE DELETE runs; VM checks stale chatId in callback — crash not possible') is the correct minimal approach but is buried at the end of the edge-case note rather than being stated as the mandated path.",
+      "fix": "Make the MVP resolution the primary guidance: 'For MVP: allow the stream callback to execute on the already-deleted chatId; Room will silently no-op on INSERT to a non-existent row; ChatViewModel's onCleared handles cleanup. Do not inject WarmupCoordinator into DrawerViewModel for this release.' Remove the SharedFlow cross-VM event suggestion entirely."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 11,
+      "issue": "Task 11 Details section describes changing 'onLoad(modelName: String)' to 'onLoad(modelId: String)' in ModelManagerViewModel and ModelManagerScreen. The current ModelList composable passes onLoad = { onLoad(entry.model.name) } (observed in actual ModelManagerScreen.kt line 161: 'onLoad = { onLoad(entry.model.name) }'). After the Task 2 plumbing adds Model.modelId, the call site in ModelList must change to 'onLoad = { onLoad(entry.model.modelId) }'. The task's Details section for ModelManagerScreen.kt mentions updating the LaunchedEffect and ModelCard/ModelStatusSection, but does not explicitly call out that the ModelList item lambda (the actual call site for the onLoad function) must also be updated from 'entry.model.name' to 'entry.model.modelId'. An implementer following only the listed changes could miss this call site.",
+      "fix": "Add an explicit bullet in the ModelManagerScreen changes: 'In ModelList items lambda, change onLoad = { onLoad(entry.model.name) } to onLoad = { onLoad(entry.model.modelId) }.' This ensures the call site is not missed."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 6,
+      "issue": "Task 6 TDD Anchor specifies 'app/src/androidTest/.../AppModuleCorruptionTest::testCorruptDbRenamedAndFreshDbCreated' as an instrumented test that calls 'AppModule().provideDatabase(context, appCorruptionState, errorLog)'. AppModule is a Hilt abstract class (or object); calling 'AppModule()' directly as a constructor is incompatible with Hilt module patterns — Hilt modules are not meant to be instantiated in tests and are typically abstract. The instrumented test for DB corruption should use ApplicationProvider.getApplicationContext() and Hilt test rules, not direct constructor invocation of AppModule.",
+      "fix": "Replace 'AppModule().provideDatabase(...)' with an extraction pattern: refactor the corruption-handler logic into a standalone testable function (e.g., 'buildSanctumDatabase(context, corruptionState, errorLog)') that AppModule calls internally. The instrumented test then calls this extracted function directly, avoiding the Hilt module construction anti-pattern."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 6,
+    "claims_verified": 58,
+    "issues_found": 8
+  }
+}

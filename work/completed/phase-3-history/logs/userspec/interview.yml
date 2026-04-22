@@ -1,0 +1,959 @@
+# Interview Plan for Feature Planning: phase-3-history
+#
+# Tracks progress of adaptive discovery interview for Phase 3 — persistent chat history
+# plus explicit quick-chat entry and engine-lifecycle acceleration.
+
+# ============================================================================
+# Interview Metadata (Session Recovery)
+# ============================================================================
+interview_metadata:
+  started: "2026-04-18 12:00:00"
+  last_updated: "2026-04-20 17:30:00"
+  status: "completed"
+  can_resume: false
+  current_question_num: 12
+  feature_size: "L"  # new architecture: Room introduction + navigation overhaul + engine lifecycle
+
+# ============================================================================
+# Conversation History (for session recovery)
+# ============================================================================
+conversation_history:
+  - question_num: 0
+    timestamp: "2026-04-18 11:30:00"
+    topic: "pre_interview_scope_sketch"
+    agent_question: |
+      Pre-interview exchange — agent read PK (project.md, architecture.md, decisions.md Phase 2, NOTES.md),
+      identified Phase 3 = "persistent chat history". Raised architectural tension: architecture.md says
+      chats.project_id NOT NULL, but roadmap says projects are Phase 4. Asked user to pick scope.
+    user_answer: |
+      Phase 3 contains two things:
+      (1) "Быстрый чат" — same behaviour as Phase 2 today, but with explicit entry button. Session-scoped,
+          killed on chat close / process death. Not written to Room.
+      (2) "Обычный чат с историей" — persistent chat, NOT tied to a project. Can later be attached to a
+          project (Phase 4). Schema implication: chats.project_id becomes NULLABLE.
+      Projects themselves are NOT in Phase 3 scope — they come in Phase 4 with RAG.
+    summary: |
+      Scope = quick chat (ephemeral, explicit) + standalone persistent chat (no project).
+      chats.project_id must be nullable.
+
+  - question_num: 0
+    timestamp: "2026-04-18 11:45:00"
+    topic: "pre_interview_chat_start_flow"
+    agent_question: |
+      How do chats start in the new architecture? Currently: ModelManager → pick model → "Загрузить" →
+      ChatScreen. Proposed: tap "Быстрый чат" / "Новый чат" → ChatScreen opens → model loads in background.
+      Raised five follow-up questions (which model, what if none, where does ModelManager go, first run,
+      start screen contents).
+    user_answer: |
+      User agreed with the flow. Deferred the five follow-up questions to the formal interview.
+    summary: |
+      New chat-creation flow approved at high level. Details (default model, fallbacks, ModelManager
+      placement, start screen) to be resolved in Cycle 1/Cycle 2.
+
+  - question_num: 0
+    timestamp: "2026-04-18 11:55:00"
+    topic: "pre_interview_init_acceleration"
+    agent_question: |
+      Can model init be accelerated? Proposed three tactics: (1) Application-scope singleton engine so
+      intra-session chat switching is free, (2) warmup on app launch for default/last-used model,
+      (3) optimistic UI — chat opens instantly, message queues until engine ready. Rejected foreground
+      service as RAM/battery-hostile.
+    user_answer: |
+      Agreed init speed is UX-critical on mobile. Agreed these options fit the interview rather than
+      being pre-interview decisions.
+    summary: |
+      Init acceleration is in scope. Direction: singleton + warmup + optimistic UI. Foreground service
+      explicitly out of scope.
+
+  - question_num: 3
+    timestamp: "2026-04-18 12:50:00"
+    topic: "cycle1_batch3: scope resolution for both hotfixes + RAM constraint + drawer"
+    agent_question: |
+      Agent proposed: (1) single-model-in-memory as a constraint (LiteRT-LM stability + LMK pressure +
+      battery/thermal), (2) logging hotfix as standalone release vs first tasks of Phase 3, (3) model
+      discovery as A+C plan (SAF import + move storage to Android/media/{package}/), (4) drawer wireframe
+      with minimalist main screen showing only quick-chat button.
+    user_answer: |
+      1) Single-model-in-memory — CONFIRMED as a constraint.
+      2) Logging — OUT of this user-spec. Will be done as a separate release in another chat. Don't think
+         about it here.
+      3) Model discovery — deferred to Phase 3 OR later. User still thinking about the approach, not
+         committed. Kept OUT of Phase 3 core scope for now; revisit if time permits or deferred to
+         a later phase.
+      4) Drawer wireframe — CONFIRMED.
+    summary: |
+      Hard constraint locked: one model in memory at a time. Logging hotfix entirely out of this spec.
+      Model discovery deferred (user undecided). Start-screen drawer pattern confirmed. Cycle 1 scope
+      is now stable — ready to close and go to code research.
+
+  - question_num: 12
+    timestamp: "2026-04-20 16:30:00"
+    topic: "model_choice_in_draft_chat — resolve TopAppBar model picker semantics"
+    agent_question: |
+      Final clarification after user raised "в персистент чате обязательно давать выбирать модель".
+      Corrected interpretation: user wants model choice AT chat creation (before first message),
+      NOT mid-chat switch.
+      Proposal: draft chat state (no messages yet, no Room row yet) — TopAppBar model label is
+      tappable → dropdown → switch active model if different (cross-model dialog applies to warmup
+      delta). On first Send: chats row created in Room with model_id = active model at that
+      moment. Thereafter model_id is locked, TopAppBar becomes read-only label.
+      Same pattern for quick chat (no Room row ever; lock is for the session).
+    user_answer: |
+      "да" — confirmed.
+    summary: |
+      Business rule preserved: chat bound to one model_id for its lifetime. Lifetime begins at
+      first-message Send. Before that, chat is a draft — switchable. Same for quick chat within
+      the session. Drawer stays clean because empty drafts never hit Room.
+      All scope questions resolved. Ready to draft user-spec.md.
+    agent_question: |
+      Q22 (NB-1 migration): migrate PerModelSettings keys Model.name → Model.modelId at first boot?
+      Q23 (attachment IOException not disk-full): atomic (block Send + Snackbar, don't save partial)?
+      Q24 (project_files stub in v1 schema): A create empty now vs B defer to Phase 4 Migration(1,2)?
+      Q25 (Model Manager Load button semantics): A open new quick chat on that model /
+          B open new persistent chat / C just warm + stay on screen / D remove button.
+          Plus user raised: "можно и через чат с топбара загрузить" — second load path from
+          ChatScreen TopAppBar.
+    user_answer: |
+      Q22: да, договаривались что modelId = стандарт.
+      Q23: все или ничего.
+      Q24: B (defer to Phase 4 migration).
+      Q25: A (Model Manager "Load" opens a new quick chat on that model). TopAppBar path:
+           user wrote "а можно и через чат с топбара загрузить" but answered just "a" to the
+           batch — path 2 not explicitly detailed.
+    summary: |
+      Three blockers resolved. TopAppBar load path needs one final one-liner confirmation.
+    agent_question: |
+      Q19 (disk full on attachment save): option A (atomic) — no Room write, no partial state,
+          Snackbar "Недостаточно места", attachments stay in _attachments for retry after cleanup;
+          vs B (text-only fallback).
+      Q20 (Room open fails): rename to sanctum.db.corrupt_{ts} + new empty DB + one-time banner
+          on main screen "Прошлая история повреждена. [Сохранить лог] [Закрыть]" + ErrorLog.e(
+          "history-read", ...). vs harder path through CrashHandler.
+      Q21 (manual "Unload model" button in Model Manager): include in Phase 3 or defer to Phase 5.
+          Recommendation: defer (cross-model cleanup covers 95% of cases).
+    user_answer: |
+      Q19: A (atomic). Все либо ничего.
+      Q20: ok (graceful rename + banner).
+      Q21: никакой выгрузки пока не надо. Надо освободить память — закрывай приложение.
+    summary: |
+      Final edge-case decisions. Attachment save is atomic (no partial). DB corruption handled
+      gracefully with sidelined file + banner. No manual unload in Phase 3.
+    agent_question: |
+      Q15 (warmup both-backend fail): ErrorLog.e("engine-warmup", ...); Snackbar on tap; ChatScreen
+          opens with red "Модель недоступна" in TopAppBar, Send+Reset disabled. User routed to
+          Model Manager for retry / switch model.
+      Q16 (model file missing externally): dialog "Модель недоступна — {model} нет на устройстве.
+          [Отмена] [Скачать]"; Скачать → Model Manager with that model pre-selected; Отмена → back
+          to drawer.
+      Q17 (process kill mid cross-model reinit): no special handling needed — next onCreate starts
+          default warmup, another cross-model dialog on next open. No Room writes happen between
+          cleanup() and initialize().
+      Q18 (delete chat during its active stream): helper.stopResponse → Room CASCADE DELETE →
+          deleteRecursively attachments/{chatId}/ → popBackStack → Snackbar. Late onMessage
+          callback ignored because chatId changed.
+    user_answer: |
+      Q15: ок. CRITICAL GENERAL RULE — all new Phase 3 error paths MUST route through ErrorLog so
+           Phase 2.5's diagnostic export (errors.log) captures them. This is non-negotiable.
+      Q16: ок.
+      Q17: ок.
+      Q18: ок.
+    summary: |
+      All four edge-case flows confirmed. NEW META-RULE: every Phase 3 failure surface (try/catch,
+      gracefully-handled error) must call ErrorLog.e(component, ...) so that Phase 2.5's
+      LogExportManager picks it up. This applies to: engine warmup failure, init silent-failure
+      wrap, missing model file, Room open/read/write failure, attachment save/read failure,
+      disk-full, any catch clause anywhere in the new code.
+    agent_question: |
+      Q12 (delete): swipe-left reveals "Удалить"; confirmation dialog "{chat_title} — N сообщений";
+          CASCADE delete messages + deleteRecursively attachments/{chatId}/; pop if currently open;
+          Snackbar "Чат удалён". Long-press → context menu rename/delete.
+      Q13 (rename + auto-title): long-press → Rename dialog; 60-char limit; blank → restore auto-title.
+          Auto-title fires only after first ASSISTANT done=true AND chat has no manual name. Algorithm:
+          trim → collapse whitespace → if ≤N chars use whole, else cut by last space before N and add "…".
+          Empty first-user-text → "Чат от DD.MM HH:mm".
+      Q14 (empty states):
+          (a) no models downloaded → main screen is a placeholder "Скачайте модель" + button to
+              Model Manager; drawer "Новый чат" disabled with tooltip.
+          (b) model present, no chats → central "Новый быстрый чат" on main; drawer shows "Нет
+              сохранённых чатов" + "Новый чат" button.
+          (c) empty chat → no placeholder inside, just input bar (ux-guidelines compliance).
+    user_answer: |
+      Q12: ок.
+      Q13: 40 characters is too many for auto-title — reduce to 20. Rest ok.
+      Q14: ok.
+    summary: |
+      Delete + rename + empty states confirmed. Auto-title cap changed from 40 to 20 chars.
+    agent_question: |
+      Q8 (onCleared cleanup): Variant A — engine lives until (a) model switch via cross-model dialog,
+         (b) explicit "Unload model" in Model Manager, (c) process kill. Clarified after user asked:
+         engine lives in RAM only, NEVER survives process death (swipe-away / LMK / reboot / crash
+         / adb install). Phase 3 does NOT persist the engine across restarts. Value is:
+         (1) within-session back-press → engine stays loaded for next chat on same model;
+         (2) cold-start warmup is backgrounded from SanctumApplication.onCreate while user sees UI
+         immediately, so perceived latency drops to near-zero for navigation time.
+      Q9 (cross-model dialog): Text "Переключить модель? Этот чат использует Gemma-4-E2B-it. Сейчас
+         загружена Gemma-4-E4B-it. Переключение займёт 20-30 секунд. [Отмена] [Переключить]".
+         Indicator during reinit: spinner only (no seconds counter) + text "Модель перезагружается…".
+      Q10 (Room streaming pattern): USER → Room INSERT immediately on send(). ASSISTANT → in-memory
+         StateFlow while streaming, Room INSERT only on done=true. UI = combine(dao.observeByChat,
+         streamingMessage). On process death mid-stream: USER persists, ASSISTANT is lost (NOT kept
+         as partial-interrupted). User re-asks or types "continue".
+      Q11 (auto-title): Simple approach — first ~40 chars of first USER message, trim to word
+         boundary, "…" if truncated. No LLM call. Manual rename available via long-press → dialog.
+    user_answer: |
+      Q8: A, confirmed after clarification. Engine in RAM only, never survives process restart.
+          Warmup on SanctumApplication.onCreate in background is the mechanism that makes cold
+          start feel fast (hidden behind UI, not blocking first-message).
+      Q9: Confirmed.
+      Q10: Confirmed — save only COMPLETED messages. Either USER or ASSISTANT. Partial streams
+           are discarded on process kill. No "interrupted" flag in Room.
+      Q11: Confirmed.
+    summary: |
+      Engine lifecycle: no auto-unload across back-presses; warmup hidden in onCreate background;
+      engine always dies with process. Cross-model = dialog-before-open, spinner-only indicator.
+      Room write only on completion (not per-token). Auto-title = simple first-40-chars approach.
+    agent_question: |
+      User merged Phase 2.5 into main. Agent verified: merge commit aded318 on main, tag
+      v0.2.5-logexport created, docs update commit 45ff112 present. Branch phase/3-history created
+      from main (contains Phase 2.5 code as base).
+      NOTES.md has three new items that may affect Phase 3 scope:
+      (A) Explicit Phase 3 TODO: wrap model init point with try/catch + ErrorLog.e("model", ...).
+          Driver: friend-tester on realme RMX3085 got black screen loading Gemma-4-E4B; exported
+          diagnostic .txt was empty (crash.log/errors.log/logcat all no trace), because
+          LlmChatModelHelper.initialize is Google code that doesn't throw JVM exception and doesn't
+          call ErrorLog.e. Silent failure. Phase 3 must fix.
+      (B) Backlog (not Phase-assigned): keyboard-open Send UX. Cannot see Send button while virtual
+          keyboard covers the input bar. Phase 3 restructures chat flow, natural window to address.
+      (C) Phase 2.5 follow-up: DeviceInfoCollector.activeModelId / downloadedModels are stubbed;
+          need real ModelRegistry wiring. Phase 3 touches ModelRegistry (warmup + activeModelName
+          accessor) so this is a cheap add-on.
+    user_answer: |
+      "Давай все включаем." → (A), (B), (C) all in Phase 3 scope.
+    summary: |
+      Phase 2.5 fully merged. Phase 3 branch created from post-merge main.
+      SCOPE ADDITIONS confirmed for Phase 3:
+        (A) Error-logging wrap around model initialization: try/catch in LlmChatModelHelper.initialize
+            (or ChatViewModel callback) → ErrorLog.e("model", ...) + add "model" to ALLOWED_COMPONENTS.
+            Optional Snackbar with error code instead of black screen. Driver: realme RMX3085 silent
+            init-failure diagnosis.
+        (B) Keyboard-over-Send UX fix: imePadding / WindowInsets.ime on ChatScreen input-bar
+            container so Send stays visible above virtual keyboard. ~15-20 min of work, attaches
+            naturally to the ChatScreen rework.
+        (C) DeviceInfoCollector real-data wiring: pipe activeModelName + downloaded list from
+            ModelRegistry (Phase 3 already touches Registry for warmup + activeModelName accessor).
+            Closes Phase 2.5 TODO — diagnostic export starts showing real state for testers.
+    agent_question: |
+      User reported that Phase 2.5 (log export / crash handler) has been implemented in a separate
+      branch. Asked whether Phase 3 interview needs updates. Agent verified the state: phase/2.5-logexport
+      branch is ~30 commits ahead of main; code exists on disk.
+    user_answer: |
+      Phase 2.5 is complete. Confirm it affects Phase 3 as a landed integration point.
+    summary: |
+      Phase 2.5 adds: :app/crash/ (CrashHandler, CrashReportActivity, CrashState, Killer,
+      RestartCrashBanner), :app/logexport/ (LogExportManager, DeviceInfoCollector, LogcatReader,
+      TapCounter, LogExportModule). SanctumApplication.onCreate now runs process-guard + installs
+      CrashHandler BEFORE DefaultDownloadRepository.mainActivityFqn assignment. ModelManagerScreen
+      hosts RestartCrashBanner above model list. AboutScreen has "Диагностика" section + 7-tap
+      dev-gesture. ErrorLog.ALLOWED_COMPONENTS was NOT extended (Phase 2.5 Decision 9 — CrashHandler
+      bypasses ErrorLog for bulletproof path).
+
+      Impact on Phase 3 open questions (Q8-Q11): NONE. Phase 2.5 did not touch ChatViewModel, engine
+      lifecycle, Room (which doesn't exist yet), streaming, attachment storage, or navigation graph.
+      Q8 (onCleared cleanup), Q9 (cross-model dialog), Q10 (streaming+Room pattern), Q11 (auto-title)
+      all still apply as asked.
+
+      New integration constraints captured:
+        - Phase 3 warmup call in SanctumApplication.onCreate MUST go AFTER CrashHandler install
+          (so warmup exceptions are captured by the handler) AND inside the process-name guard
+          (so :crash process does not attempt warmup).
+        - Phase 3 follows the :app-level Hilt module pattern established by LogExportModule when
+          adding AppModule for Room.
+        - SAF export pattern (ACTION_CREATE_DOCUMENT + openOutputStream in ContentResolver) is now
+          established if chat export is ever added (out of Phase 3 scope per constraints).
+        - RestartCrashBanner on ModelManagerScreen does not conflict with Phase 3 drawer plan —
+          ModelManager stays reachable via drawer entry; banner lives on that destination unchanged.
+
+      code-research.md remains accurate except for one stale item: it describes SanctumApplication
+      as a 3-line file with only the FQN assignment. The current version is 27 lines with the process
+      guard and CrashHandler install. Noting this here; the code-researcher findings for Phase 3
+      integration points are otherwise valid.
+
+  - question_num: 4
+    timestamp: "2026-04-18 12:50:00"
+    topic: "cycle1_close: testing_strategy + target_users + feature_description finalize"
+    agent_question: |
+      Implicit close — based on all prior answers, agent consolidates Cycle 1 required items:
+      - testing_strategy: :app unit tests for repos + instrumented DAO/migration tests via connectedAndroidTest
+        on Honor 200 + schema JSON in git; no Compose UI tests; manual smoke on device.
+      - target_users: primary = developer himself, Phase 3 is the phase that turns this into his daily driver.
+      - feature_description: final scope without hotfixes — persistence + nav + engine lifecycle.
+    user_answer: |
+      [Implicit — user has already agreed to DAO-on-device testing and confirmed scope boundaries
+       throughout the interview. No new input needed.]
+    summary: |
+      Cycle 1 closed. All required items at >=85%. Proceeding to code research phase.
+    agent_question: |
+      Q2 follow-up: explained DAO tests (Room interface → generated SQL, verifies real SQLite insert/
+      read/cascade/Flow emissions; requires connectedAndroidTest on device or Robolectric in-memory).
+      Q5 — Default-model fallback rules (settings > last-used > route to Model Manager with snackbar).
+      Q6 — Cross-model reopen: variant A (no dialog, open + bg reinit) vs B (dialog before reinit).
+      Q7 — Start screen composition with chat list, quick-chat button, TopAppBar, FAB, swipe-to-delete.
+    user_answer: |
+      DAO: ready to connect phone for connectedAndroidTest (no Robolectric fallback needed).
+      Q5: Agreed.
+      Q6: Show confirmation BEFORE opening the chat. Users can't remember which model a chat was on;
+          give them a chance to NOT open it now. User asked: "we can't keep two initialized models in
+          memory?"
+      Q7: Prefers left drawer pattern (swipe-right-to-reveal, ModalNavigationDrawer style a-la
+          ChatGPT/Claude). Drawer holds persistent chats now, projects later. If no chats — drawer shows
+          a "start new chat" button. Main screen keeps the quick-chat button.
+
+      HOTFIX-1 (model discovery): friends are testing and reinstalling the APK; the 2-3GB re-download
+          each reinstall is painful. Since the architecture is "wrapper is separate from model",
+          the app should auto-discover existing model files on the device and register them —
+          survives uninstall/reinstall AND aligns with the long-term concept.
+      HOTFIX-2 (local logging + export): friends hit init failure, don't know why. Need:
+          - local error log readable from a file manager (so user can grab it themselves),
+          - a standard "Выгрузить отчёт об ошибке" button on errors,
+          - user ships the log to the developer manually (Telegram / email / whatever) — manifesto
+            "nothing auto-uploaded" preserved.
+          MUST SHIP FIRST — currently blocking tester feedback loop.
+    summary: |
+      DAO testing via real device confirmed. Cross-model = dialog-before-open (lets user cancel).
+      Drawer pattern for chat list. TWO NEW SCOPE ADDITIONS: (1) model discovery / external-storage
+      model files, (2) on-device error log export. User flagged the logging hot-fix as highest priority.
+    agent_question: |
+      Q1 — Success criteria proposal:
+        - Persistence: close → reopen → old chat shows full history within <1s after warmup
+        - Init UX: intra-session chat switching on same warm model = instant; cold start shows UI <500ms,
+          generation starts after 20-30s warm but non-blocking
+        - Quick chat incognito invariant: filesDir/quick/ + DB empty after closure
+        - Regression: multimodality/streaming/thinking/settings continue to work
+      Q2 — Testing strategy proposal: :app unit tests for repos; instrumented DAO + migration tests on Honor 200
+        via connectedAndroidTest; Room schema JSON exported to git; no Compose UI tests, no E2E inference in CI;
+        manual smoke checklist per phase.
+      Q3 — Scope out: projects/RAG/foreground/mid-chat model switch confirmed out. Also out: export/import,
+        search, selective message delete, multi-select. IN: rename + auto-title, delete (obligatory + confirmation).
+      Q4 — User problem formulation: "Phase 2 is demo, not daily driver; every session dies on swipe-away;
+        20-30s warmup on every reopen blocks first message; can't use it daily instead of ChatGPT/Claude."
+    user_answer: |
+      Q1: Agreed on persistence. Added clarification — all persistent chats should switch between each
+      other WITHOUT warmup IF they are on the already-warm model. If the chat's model differs from the
+      currently-loaded model, the chat opens and warmup of the required model starts in background.
+      Q2: Asked for clarification — "DAO is Data Access Object? Tests verifying correct save/read
+      with our database where persistent chats are stored?"
+      Q3: Full agreement. Delete chat is OBLIGATORY in Phase 3.
+      Q4: Agreed. Preference clarified — init latency bothers more than history loss.
+    summary: |
+      Persistence criteria refined with same-model-no-warmup rule. Scope boundaries confirmed
+      (rename+auto-title+delete-with-confirm IN; export/search/partial-delete/multi-select OUT).
+      Init latency is the dominant pain. DAO testing awaiting explanation.
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding  (Cycle 1 scope)
+# ============================================================================
+phase1_feature_overview:
+
+  feature_name:
+    score: 100
+    status: "complete"
+    value: "phase-3-history"
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 90
+    status: "complete"
+    value: |
+      Phase 3 introduces persistent chat history and restructures the chat-start flow:
+      (1) Explicit "Быстрый чат" entry — session-scoped, in-memory only (preserves current Phase 2
+          behaviour, makes incognito intent explicit).
+      (2) Persistent chats stored in Room — standalone, not tied to a project (chats.project_id nullable
+          in Phase 3; Phase 4 will add projects and MAY decide to make it NOT NULL again with a migration).
+      (3) Chat-creation flow changes: start screen is minimalist with a central "Новый быстрый чат"
+          button; left ModalNavigationDrawer (swipe-right from edge, a-la ChatGPT/Claude) hosts the
+          persistent-chat history + "Новый чат" + entry points to Model Manager and About. Tapping any
+          entry opens ChatScreen immediately; model load happens in background.
+      (4) Engine lifecycle rewrite: Application-scope singleton engine (DefaultModelRegistry becomes
+          @Singleton), warmup-on-launch of default/last-used model, optimistic UI so ChatScreen is
+          interactive (history visible, scroll, typing) while engine prepares. Cross-model reopen
+          surfaces a confirmation dialog BEFORE opening — user can cancel to avoid reinit wait.
+      (5) Attachment storage migrates from in-memory Bitmap/PCM to files:
+          - filesDir/attachments/{chat_id}/ for persistent chats (paths stored in messages table)
+          - filesDir/quick/ for quick chats (purged on session termination)
+      (6) Rename + auto-title from first user message; delete chat (swipe-left + long-press) with
+          confirmation dialog. Standard ChatGPT/Claude-style affordances.
+      (7) Default model selection: global setting "Модель по умолчанию" > last-used fallback > route to
+          Model Manager with snackbar when nothing is downloaded.
+
+      Explicit NON-scope additions:
+      - One-model-in-memory invariant (cross-model chat requires reinit; dialog-before-open).
+      - Phase 2.5 (logging hotfix) ALREADY MERGED to main as v0.2.5-logexport — Phase 3 builds on it.
+      - Model-file-on-disk discovery / external storage — deferred (Phase 3 if time permits, else later).
+
+      Follow-up scope additions confirmed (from NOTES.md 2026-04-19):
+      (8) Error-logging wrap around model initialization. Wrap LlmChatModelHelper.initialize (or the
+          ChatViewModel callback around it) in try/catch → ErrorLog.e("model", ...). Extend
+          ALLOWED_COMPONENTS with "model". Optionally surface a Snackbar with the error code so
+          users see something other than a black screen when init fails silently. Driver: realme
+          RMX3085 tester got a black screen with zero log entries — Google's litertlm init is
+          silent, current Phase 2.5 export shows no trace.
+      (9) Keyboard Send-button UX. Apply imePadding / WindowInsets.ime to the MultimodalInputBar
+          container so the Send button stays visible above the IME. Small, lands with the
+          ChatScreen restructure that Phase 3 is doing anyway.
+      (10) DeviceInfoCollector real-data wiring. Replace the stubs that emit "active model: none"
+           and "downloaded models: (none)" with real reads from the ModelRegistry (which Phase 3
+           extends with an activeModelName accessor for cross-model dialog). Closes a Phase 2.5
+           follow-up and instantly improves diagnostic exports for testers.
+    gaps: ""
+    required: true
+
+  work_type:
+    score: 100
+    status: "complete"
+    value: "feature"
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 90
+    status: "complete"
+    value: |
+      Sanctum Machina at Phase-2 state is a demo, not a daily driver. Two compounding problems:
+      (1) No history — every dialog lives one session; process death or casual swipe-away erases everything;
+          yesterday's context is gone every morning.
+      (2) Init latency — 20-30s warmup on every app reopen blocks the first message. On a phone, where
+          usage is bursty (glance, type, dismiss), this is the dominant pain — more painful than history
+          loss itself. The mental cost of "wait half a minute before I can even type" pushes the user
+          back to ChatGPT/Claude for daily work, even though on-device privacy is the manifesto.
+      The phase must solve both, with init latency taking priority in design decisions when they conflict.
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 85
+    status: "complete"
+    value: |
+      Primary: solo developer himself (see project.md). Phase 3 is THE phase that turns Sanctum Machina
+      into his daily driver — the phase-closing success criterion is "I actually use this instead of
+      ChatGPT/Claude for a full work day without it annoying me."
+      Secondary (post-Phase-5): privacy-conscious users wanting fully-local LLM. They benefit from
+      everything built here but are not the primary audience for Phase 3.
+      Tertiary (current): friend-testers helping validate the APK — their needs (model-on-disk survival
+      across reinstall, error-log export) are being addressed in a parallel Phase 2.5 release, not here.
+    gaps: ""
+    required: false
+
+  success_criteria:
+    score: 90
+    status: "complete"
+    value: |
+      (SC-1) Persistence: close app → reopen → last chat (or any persistent chat) opens showing full
+             history. Rendering the chat list and a chat body must not block on engine warmup.
+      (SC-2) Zero-warmup same-model switch: if two persistent chats use the currently-loaded model,
+             switching between them is instant (no reinit, no delay).
+      (SC-3) Background warmup on cross-model switch: opening a persistent chat whose model_id differs
+             from the currently-loaded model shows the chat history immediately; warmup of the required
+             model runs in background; Send is gated until warmup completes; user may still read / scroll /
+             type during warmup.
+      (SC-4) Quick chat incognito invariant: after leaving the quick-chat screen OR process kill,
+             filesDir/quick/ is empty, no Room rows exist for that session.
+      (SC-5) Regression-free: multimodality / streaming / thinking / settings sheet from Phase 2 continue
+             to work unchanged on the final APK.
+      (SC-6) Init latency is no longer perceived as blocking: the user can open a chat, see history,
+             scroll, type — all before warmup completes. First message only waits if warmup is still
+             in progress at Send time.
+    gaps: ""
+    required: true
+
+  constraints:
+    score: 90
+    status: "complete"
+    value: |
+      Out of scope for Phase 3:
+        - Projects entity + UI (Phase 4)
+        - RAG / project files (Phase 4)
+        - Foreground service keep-alive (UX-hostile, ruled out)
+        - Model switching mid-chat (deferred per patterns.md business rules)
+        - Cloud sync / account system (manifesto)
+        - Export / import history as .json (post-MVP, likely Phase 5)
+        - Search across chats (post-MVP, small chat count for now)
+        - Selective message deletion (delete single message from context — post-MVP)
+        - Multi-select / batch delete of chats (post-MVP)
+      In scope (UX features attached to persistence):
+        - Rename chat (UI action, persisted in Room)
+        - Auto-title from first user message (like ChatGPT/Claude)
+        - Delete chat — OBLIGATORY per user, with confirmation dialog
+      Architectural constraints:
+        - Room 2.7.x, SQLite single DB sanctum.db
+        - Attachments as files in filesDir/attachments/{chat_id}/ (persistent) and filesDir/quick/ (quick)
+        - DAOs: suspend/Flow only
+        - Schema JSON exported to app/schemas/ + committed to git
+        - Instrumented migration tests required (Room convention)
+        - Context window truncation: hard-cut oldest-first for MVP (patterns.md business rule)
+        - No mid-chat model switch (chat bound to one model_id for lifetime)
+    gaps: ""
+    required: true
+
+  testing_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      - Unit (:app/src/test/ + :core-runtime/src/test/): ChatRepository wrappers with mock DAOs;
+        EngineCoordinator (singleton engine lifecycle, warmup, cross-model reinit gating); classifier
+        logic; new helpers. Robolectric where Android context required (same pattern as Phase 2).
+      - Instrumented DAO tests (:app/src/androidTest/, runs via ./gradlew :app:connectedAndroidTest on
+        connected Honor 200): one test per DAO covering insert/query/update/delete; FK cascade test
+        for messages.chat_id ON DELETE CASCADE; Flow emission test to confirm observeAll() re-emits
+        on write. User has confirmed willingness to connect the phone for these tests.
+      - Schema JSON export (Room convention): app/schemas/{dbName}/1.json committed to git in v0.3-history.
+      - No Compose UI tests (precedent set in Phase 2: UI verified via manual smoke).
+      - No E2E inference in CI (no model in CI).
+      - Manual smoke checklist on Honor 200 specific to Phase 3:
+        persistent chat survives kill; two chats on same model switch instantly; cross-model dialog;
+        delete + rename + auto-title; quick-chat invariant (filesDir/quick/ empty after close);
+        regression of Phase 2 features (multimodal, thinking, settings).
+    gaps: ""
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios  (Cycle 2 scope)
+# ============================================================================
+phase2_user_experience:
+
+  user_stories:
+    score: 90
+    status: "complete"
+    value: |
+      US-1 Новый быстрый чат: main screen → tap "Новый быстрый чат" → ChatScreen открывается сразу,
+           история пустая, warmup default-модели уже идёт в фоне → как только engine ready, Send
+           активен → шлём → стрим. На Back / swipe-away: сессия и filesDir/quick/ стираются.
+      US-2 Новый persistent чат: drawer → "Новый чат" → Room INSERT пустого чата → ChatScreen(chatId)
+           → первое сообщение → после done=true ассистента → auto-title из первых 20 символов USER.
+      US-3 Открытие старого чата с warm моделью: drawer → тап, model_id == активная → мгновенно,
+           история из Room, Send доступен.
+      US-4 Открытие старого чата с другой моделью: drawer → тап, model_id != активная → диалог
+           "Переключить модель?" → OK → navigate → история видна сразу, reinit в фоне, Send disabled
+           до готовности.
+      US-5 Продолжить разговор после перезапуска: запустил → main screen → onCreate warmup в фоне →
+           открываю drawer → вчерашний чат → история сразу → пишу "продолжим" → стрим.
+      US-6 Переименовать чат: long-press → "Переименовать" → диалог с TextField → сохранить.
+      US-7 Удалить чат: swipe-left → "Удалить" → диалог с названием и N сообщений → Удалить →
+           CASCADE DELETE + deleteRecursively attachments/{chatId}/ → Snackbar.
+      US-8 Первый запуск без моделей: main screen = placeholder "Скачайте модель" + кнопка Model
+           Manager → скачиваю → становится default → main screen обычный.
+      US-9 Сбой инициализации (realme): init-ошибка → try/catch → ErrorLog.e("model", ...) →
+           Snackbar с кодом вместо чёрного экрана → в экспорте диагностики видна запись.
+      US-10 Экспорт диагностики: "О программе" → "Сохранить лог" → .txt с реальными active model
+            и downloaded list (не stubbed).
+      US-11 Send с открытой клавиатурой: печатаю → IME поднимает content → Send виден над клавиатурой.
+    gaps: ""
+    required: true
+
+  acceptance_criteria:
+    score: 75
+    status: "partial"
+    value: |
+      Persistence + navigation:
+      AC-P1 Закрытие приложения (swipe-away) и последующий запуск сохраняют persistent-чаты с
+            полной историей.
+      AC-P2 Quick chat не оставляет следов: filesDir/quick/ пуст, Room rows отсутствуют.
+      AC-P3 Drawer открывается свайпом и тапом hamburger; сортировка по last_message_at DESC.
+      AC-P4 Start destination = home hub (не Model Manager).
+      AC-P5 Route "chat/{chatId}" работает для persistent; quick chat имеет отдельный маршрут.
+
+      Engine / warmup:
+      AC-E1 SanctumApplication.onCreate запускает warmup default-модели после CrashHandler install
+            внутри process-name guard.
+      AC-E2 Переход между двумя persistent-чатами на активной модели — без reinit (мгновенно).
+      AC-E3 При переходе на чат с model_id != активной — показывается диалог "Переключить модель?"
+            до навигации.
+      AC-E4 ChatScreen открывается мгновенно даже пока engine не готов; Send disabled; текст можно
+            набирать.
+      AC-E5 При закрытии процесса (любым способом) engine теряется; при запуске warmup начинается
+            заново.
+      AC-E6 ChatViewModel.onCleared НЕ вызывает registry.cleanup.
+
+      Room / storage:
+      AC-R1 USER сообщение пишется в Room синхронно до вызова движка.
+      AC-R2 ASSISTANT сообщение пишется в Room только на done=true (не по токенам).
+      AC-R3 Процесс убит на середине стрима → USER в Room, ASSISTANT потерян.
+      AC-R4 chats.project_id nullable в v1 schema.
+      AC-R5 app/schemas/...SanctumDatabase/1.json закоммичен в git.
+      AC-R6 messages.chat_id ON DELETE CASCADE работает (покрыто instrumented-тестом).
+
+      Attachments:
+      AC-A1 При Send persistent-чата файлы attachment пишутся в filesDir/attachments/{chatId}/
+            с путём в messages.image_path / audio_path.
+      AC-A2 Delete chat удаляет Room rows И соответствующую директорию с attachments.
+      AC-A3 filesDir/quick/ очищается в SanctumApplication.onCreate.
+
+      UX affordances:
+      AC-U1 Rename через long-press → диалог, 60-char limit, blank восстанавливает auto-title.
+      AC-U2 Auto-title из первых 20 символов первого USER-сообщения по первому пробелу, "…"
+            если обрезано; fallback "Чат от DD.MM HH:mm" если текст пустой.
+      AC-U3 Delete через swipe-left + confirmation dialog с названием и N сообщений.
+      AC-U4 Send button остаётся видимым над клавиатурой (imePadding).
+
+      Diagnostics (Phase 2.5 follow-up + new):
+      AC-D1 DeviceInfoCollector выдаёт реальные active_model_id + downloaded list (не stubbed).
+      AC-D2 Ошибка инициализации модели пишется в errors.log через ErrorLog.e("model", ...).
+      AC-D3 При сбое init вместо чёрного экрана — Snackbar с кодом ошибки.
+
+      Defaults:
+      AC-F1 AppSettings.proto получает optional default_model_id + optional last_used_model_id.
+      AC-F2 Первый запуск без скачанных моделей → main screen показывает "Скачайте модель" +
+            кнопку Model Manager.
+
+      Regression (Phase 2):
+      AC-G1 Multimodal input (photo/camera/audio) работает, thinking-блок работает, settings
+            sheet работает, About screen + diagnostics секция Phase 2.5 работают без изменений.
+    gaps: "Sanity-check AC count (~32) after user-spec.md is written — may split or merge"
+    required: true
+
+  edge_cases:
+    score: 95
+    status: "complete"
+    value: |
+      - Same-model session: multiple chats open back-to-back → engine warmed once, subsequent
+        opens instant (covered by onCleared fix).
+      - Cross-model open: dialog before navigation; cancel stays in drawer.
+      - Process kill mid-stream: USER persisted, ASSISTANT discarded.
+      - Process kill mid cross-model reinit: no special handling — next onCreate warms default,
+        user re-confirms cross-model on next tap. No Room writes happen in that window.
+      - Delete while streaming to the same chat: stop + CASCADE delete + popBackStack + Snackbar;
+        late onMessage ignored.
+      - Model file removed externally: dialog "Модель недоступна — [Отмена] [Скачать]", routes
+        to Model Manager with model pre-selected.
+      - Warmup GPU+CPU both fail: ChatScreen opens with disabled Send + red "Модель недоступна"
+        in TopAppBar + Snackbar + ErrorLog.e("engine-warmup", ...). User retries via Model Manager.
+      - First run without any model: main screen placeholder + drawer Новый чат disabled.
+      - Rotation during streaming: VM survives, Room observes unchanged, streaming StateFlow
+        unaffected.
+      - Very first chat in app: onCreate completed, warmup ongoing → user lands on main, taps
+        New chat before warmup done → ChatScreen opens, Send disabled, warmup finishes, Send
+        enables.
+    gaps: ""
+    required: true
+
+  error_scenarios:
+    score: 95
+    status: "complete"
+    value: |
+      GENERAL RULE (from 2026-04-20 user feedback): every failure surface in Phase 3 code MUST
+      call ErrorLog.e(component, description, cause) so that Phase 2.5's LogExportManager picks
+      up the event in errors.log. This is enforced by existing runtime whitelist + code-review.
+
+      Specific handlers:
+      - LlmChatModelHelper.initialize silent failure → ErrorLog.e("model", ...) + Snackbar with
+        error code (AC-D2, AC-D3).
+      - Application-level warmup failure → ErrorLog.e("engine-warmup", ...); surfaced on next
+        chat open attempt.
+      - Room DAO read failure → ErrorLog.e("history-read", ...); drawer shows "Не удалось
+        загрузить историю" placeholder; other navigation still works.
+      - Room DAO write failure → ErrorLog.e("history-write", ...); Snackbar "Не удалось
+        сохранить сообщение"; user decides whether to retry or discard.
+      - Attachment save failure (IOException writing to filesDir/attachments/) →
+        ErrorLog.e("attachment-save", ...); Snackbar; Send either blocked or proceeds text-only
+        (TBD — asking in next batch).
+      - Attachment read failure on chat reopen (file deleted / corrupt) →
+        ErrorLog.e("attachment-read", ...); bubble shows placeholder "Вложение недоступно".
+      - Model file missing → non-fatal dialog, no ErrorLog entry (expected user-facing state).
+      - Cross-model reinit cleanup() failure → same as heavy reinit in Phase 2 (already logged).
+      - Disk full on attachment save: ATOMIC — no Room write, no partial state; Snackbar
+        "Недостаточно места"; _attachments preserved for retry after user frees space.
+        ErrorLog.e("attachment-save", "disk full", cause).
+      - Room open failure at startup (corrupt file, schema mismatch): rename DB to
+        sanctum.db.corrupt_{timestamp}, create fresh empty DB, log ErrorLog.e("history-read",
+        "db open failed — renamed, new empty created", cause). One-time banner on main screen:
+        "Прошлая история оказалась повреждена. Старая база сохранена." + [Сохранить лог] +
+        [Закрыть]. "Сохранить лог" reuses the Phase 2.5 SAF flow. Banner state dismissed per-session.
+      - No manual "Unload model" action in Phase 3: to free RAM the user closes the app
+        (swipe-away / system-kill). Cross-model dialog still handles the 95% scenario.
+    gaps: ""
+    required: true
+
+  error_scenarios:
+    score: 10
+    status: "pending"
+    value: ""
+    gaps: "Room write failure, attachment write failure, engine init failure on auto-load"
+    required: true
+
+  verification_strategy:
+    score: 85
+    status: "complete"
+    value: |
+      Agent-verifiable:
+      - ./gradlew build — zero warnings, BUILD SUCCESSFUL (TAC-1 Phase-3)
+      - ./gradlew :app:testDebugUnitTest :core-runtime:testDebugUnitTest :core-settings:testDebugUnitTest
+        — all green, new Phase-3 unit tests added
+      - ./gradlew :app:connectedAndroidTest — instrumented DAO + migration tests green on Honor 200
+      - ./gradlew lintDebug — clean
+      - app/schemas/app.sanctum.machina.data.SanctumDatabase/1.json exists and matches @Entity shape
+      - ErrorLog whitelist grep confirms new components: history-read, history-write, attachment-save,
+        attachment-read, engine-warmup, model
+      - AndroidManifest unchanged on backup flags (Phase 2 privacy hardening preserved)
+
+      User-verifiable on Honor 200 (and optionally realme RMX3085 for US-9):
+      - US-1..US-11 walkthroughs per user_stories section above
+      - Persistence survives swipe-away: open chat, send message, swipe away from recents, reopen,
+        chat is there with history
+      - Quick chat invariant: open quick chat, attach photo, close chat, check filesDir/quick/ via
+        exported diagnostic — empty
+      - Same-model same-session: open 3 chats on default model, switch back and forth, zero warmup
+        between second and third switches
+      - Cross-model dialog flow end to end
+      - Phase 2 regressions: multimodal (photo+audio), streaming, thinking, settings sheet still work
+      - Diagnostic export now shows active model + downloaded list (Phase 2.5 stub fix verified)
+      - Silent-init repro on realme: install apk, try Gemma-4-E4B → either succeeds or produces a
+        non-empty errors.log entry + Snackbar with error code (no black screen)
+    gaps: ""
+    required: true
+
+  ui_ux_requirements:
+    score: 90
+    status: "complete"
+    value: |
+      Main screen (home hub): TopAppBar "Sanctum Machina" with hamburger (drawer) on left and
+      Settings cog on right; body is either a central "Новый быстрый чат" button (when ≥1 model
+      downloaded) or a "Скачайте модель" placeholder + Model Manager button.
+
+      Drawer (ModalNavigationDrawer, swipe-right from left edge): header "История чатов",
+      "Новый чат" button at top, then persistent chats sorted by last_message_at DESC. Each row:
+      title (manual rename or 20-char auto-title) + model label + relative date. Footer entries
+      "Модели" (Model Manager), "О приложении". Swipe-left on row → "Удалить" with confirmation.
+      Long-press → context menu Rename/Delete.
+
+      Empty states:
+      - No models downloaded → main is placeholder (see above); drawer "Новый чат" disabled.
+      - Model present, no chats → drawer shows "Нет сохранённых чатов." + "Новый чат".
+      - Empty chat body → no placeholder text (ux-guidelines), only input bar.
+
+      ChatScreen:
+      - TopAppBar: Back, chat title (editable on long-press), Settings ⚙, Reset ↻.
+      - Body: message list, streaming assistant bubble, thinking block.
+      - Bottom: MultimodalInputBar with imePadding / WindowInsets.ime so Send stays above IME.
+      - If warming up / reinit in progress → spinner + "Модель перезагружается…" in TopAppBar,
+        Send disabled, text field editable.
+      - QuickChatScreen: same layout; incognito indicator in TopAppBar; no "rename/delete" gestures.
+
+      Cross-model dialog (BEFORE navigation):
+      - Title: "Переключить модель?"
+      - Body: "Этот чат использует {modelA}. Сейчас загружена {modelB}. Переключение займёт
+        20-30 секунд."
+      - Buttons: [Отмена] [Переключить]
+    gaps: ""
+    required: false
+
+  risks:
+    score: 60
+    status: "partial"
+    value: |
+      Identified + addressed:
+      - Engine leak across back-press — mitigated by removing onCleared() cleanup; engine dies only
+        with process or explicit user action.
+      - Room emissions vs streaming (10-50 Hz token writes) — mitigated by "in-memory stream, Room
+        write only on done=true" pattern.
+      - Process death mid-stream — accepted: ASSISTANT partial is discarded, USER preserved. User
+        re-asks. No "interrupted" flag stored (simpler + less confusing state).
+      - Model.name vs Model.modelId drift from Phase 2 NB-1 — migration required in Phase 3 as
+        Room chats.model_id specifies stable HF id; must re-key PerModelSettings DataStore at boot.
+      - onCleared cleanup landmine — flagged, fix is removal not change of behaviour.
+    gaps: "Still need: Room corruption recovery, attachment orphaned files, warmup failure UX, disk full"
+    required: true
+
+  technical_decisions:
+    score: 60
+    status: "partial"
+    value: |
+      Locked:
+      - chats.project_id nullable (Phase 3 reality; Phase 4 may revisit).
+      - Engine singleton @Singleton already (no scope change). Warmup in SanctumApplication.onCreate
+        AFTER CrashHandler install, inside process-name guard.
+      - Attachments as files in filesDir/attachments/{chatId}/ (persistent) + filesDir/quick/
+        (ephemeral, purged on onCreate).
+      - Truncation on context window overflow: hard-cut oldest-first (MVP per patterns.md business rules).
+      - Default model resolution: settings.default_model_id → last_used_model_id → route to Model Manager.
+      - One-model-in-memory invariant.
+      - No model.instance across process restart (engine ALWAYS dies with process).
+      - Cross-model reopen: confirmation dialog BEFORE navigation.
+      - Room write only on message completion. No partial/interrupted rows.
+      - Auto-title: simple first-40-chars trim, no LLM. Manual rename via long-press.
+      - DeviceInfoCollector wiring to real ModelRegistry (Phase 2.5 follow-up closed).
+      - ErrorLog.e("model", ...) wrap around initialize (silent-failure fix).
+      - imePadding on ChatScreen input-bar.
+      - PerModelSettings DataStore key migration: one-shot rewrite at first boot of Phase 3 version,
+        re-keying from Model.name to Model.modelId. Fallback: entries with no matching allowlist
+        modelId are dropped with ErrorLog.e("settings-io", "orphan key …", ...).
+      - project_files table NOT in v1 schema. Phase 4 will add it via Migration(1,2).
+      - Model Manager "Загрузить" button opens a new QUICK chat on the tapped model (old Phase 2
+        "try this model" semantics preserved; ephemeral — no clutter in persistent history).
+      - TopAppBar model picker semantics:
+        * Draft chat (no messages yet, no Room row yet): label is tappable; dropdown lists
+          downloaded models; picking a different one triggers the standard cross-model dialog +
+          reinit. Active model changes.
+        * First Send: chats row INSERT with model_id = currently-active model. From that point
+          the label is read-only.
+        * Quick chat: same pattern but lock applies only to the session (no Room write).
+        * Business rule "one model_id per chat for its lifetime" preserved — the lifetime begins
+          at first-message Send.
+    gaps: ""
+    required: false
+
+  technical_decisions:
+    score: 25
+    status: "pending"
+    value: |
+      Pre-decided: chats.project_id nullable; attachments as files; engine singleton at Application scope;
+      truncation = hard-cut oldest-first (MVP per patterns.md). Default model = global setting with fallback to last-used.
+    gaps: "Decision log still to be fleshed out in Cycle 2"
+    required: false
+
+  deploy_approach:
+    score: 60
+    status: "partial"
+    value: |
+      Manual APK install to Honor 200 (no CI). Pre-deploy: ./gradlew build + instrumented DAO tests
+      (`connectedAndroidTest`) since schema is new. Rollback: uninstall + install previous APK.
+    gaps: "Confirm whether connectedAndroidTest is gate — requires device during CI-less workflow"
+    required: false
+
+  manual_user_actions:
+    score: 80
+    status: "complete"
+    value: "None. Feature is self-contained inside the app; no external setup, no API keys, no bot registration."
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context  (Cycle 2 scope)
+# ============================================================================
+phase3_integration:
+
+  integration_points:
+    score: 55
+    status: "partial"
+    value: |
+      Confirmed from code-research.md + post-Phase-2.5 state:
+        - SanctumApplication.onCreate: add warmup call AFTER CrashHandler install, INSIDE the
+          process-guard. DefaultModelRegistry is already @Singleton — no scope change. Pull it via
+          EntryPointAccessors.fromApplication() since Application.onCreate cannot use @Inject fields.
+        - NavHost (SanctumApp.kt): wrap in ModalNavigationDrawer; start destination changes from
+          "model_manager" to a new "home" hub; route "chat/{modelName}" → "chat/{chatId}";
+          Model Manager destination preserved (Phase 2.5 RestartCrashBanner lives there and must
+          keep working).
+        - ChatViewModel: NAV_ARG_MODEL_NAME → NAV_ARG_CHAT_ID; derive modelName from chat.model_id
+          read; onCleared() engine teardown removed/gated (hazard #1).
+        - New :app-level Hilt module AppModule for Room @Database, DAOs, ChatRepository. Follows
+          the LogExportModule pattern (Phase 2.5 precedent).
+        - :core-settings: AppSettings.proto gets optional default_model_id + optional last_used_model_id
+          (trivial proto3-optional addition).
+        - ErrorLog whitelist: add "history-read", "history-write", "attachment-save", "attachment-read",
+          "engine-warmup" (distinct from "inference-init"), and "model" (silent-init wrapper per
+          NOTES 2026-04-19).
+        - DeviceInfoCollector (introduced in Phase 2.5): replace stubs with real ModelRegistry reads
+          — activeModelName + downloaded list.
+        - ChatScreen.kt: add imePadding / WindowInsets.ime on input-bar container so Send is
+          always visible above the virtual keyboard.
+        - Phase 2.5 crash/logexport packages untouched — Phase 3 does not modify them.
+    gaps: "Confirm if ModelManagerScreen 'Load' button changes semantics in new flow (redundant?)"
+    required: true
+
+  dependencies:
+    score: 75
+    status: "partial"
+    value: |
+      New deps in libs.versions.toml:
+        - androidx.room:room-runtime, room-ktx, room-compiler (KSP) — persistent DB
+        - androidx.room:room-testing (testImplementation for instrumented DAO + migration tests)
+      Reused without changes:
+        - Hilt (precedent: Phase 2.5 added LogExportModule as first :app-level module)
+        - kotlinx.coroutines / Flow (existing ChatViewModel patterns)
+        - :core-runtime engine (singleton, re-used as-is)
+        - :core-settings DataStore (proto additive change only)
+        - Material3 + Navigation Compose (ModalNavigationDrawer is standard M3)
+      Phase 2.5 packages (untouched): :app/crash/, :app/logexport/.
+    gaps: "Finalize module ownership: Room @Database lives in :app (precedent: LogExportModule also in :app)"
+    required: false
+
+  technical_constraints:
+    score: 35
+    status: "pending"
+    value: |
+      Phone RAM: 8-12 GB but engine alone takes 2-5 GB. Foreground service ruled out. No cloud sync.
+    gaps: "Concurrent write scenarios (assistant streaming + chat switch), Room + Flow backpressure, DB file size"
+    required: false
+
+  data_requirements:
+    score: 40
+    status: "partial"
+    value: |
+      Persistent: chats, messages tables per architecture.md (but project_id nullable); attachments as files.
+      Transient: QuickChatSession in memory. No PII, no user account.
+    gaps: "Confirm schema fields against architecture.md; decide on tokenCount caching; image/audio file cleanup policy"
+    required: false
+
+  migration_needs:
+    score: 70
+    status: "partial"
+    value: |
+      No existing user data to migrate (Phase 2 persisted nothing besides per-model settings in DataStore,
+      which is orthogonal). This is Room v1 — no Migration(0,1) class needed; just initial schema export.
+    gaps: "Verify NB-1 (modelName → modelId key) fix ships alongside Room — requires DataStore migration for Phase 2 users"
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: "work/phase-3-history/user-spec.md"
+  status: "approved"
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+  required_threshold: 85
+  optional_threshold: 50
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty or conscious limitations"
+  priority_order:
+    - "Required items with score < 85% (lowest score first)"
+    - "Optional items mentioned by user in context"
+    - "Other optional items if user seems knowledgeable"
+  question_strategy:
+    - "3-4 questions per batch about different gaps"
+    - "Run as many batches as needed — batch size is NOT cycle limit"
+    - "Propose solutions based on PK, not just ask questions"
+    - "Challenge with substance: counterexamples, code references, unexplored scenarios"
+    - "After each response: update scores, values, gaps, conversation_history, save"
+
+# ============================================================================
+# Interview Progress
+# ============================================================================
+progress:
+  current_phase: "phase1_feature_overview"
+  questions_asked: 0
+  last_question: ""
+  total_required_score: 0
+  total_optional_score: 0
+  completion_estimate: "25%"
+  user_detail_level: "detailed"
+
+# ============================================================================
+# Notes
+# ============================================================================
+notes: |
+  Key pre-interview decisions already baked in:
+  - Scope: quick chat (ephemeral) + persistent chat (standalone, no project). Projects + RAG = Phase 4.
+  - chats.project_id nullable (architecture.md update needed in tech-spec).
+  - Engine singleton + warmup + optimistic UI (foreground service rejected).
+  - Auto-load on chat open, no separate Load button in new flow.
+
+  Open tensions still to resolve:
+  - Start screen composition (chat list only? what about ModelManager entry point?)
+  - Default model selection — first-run UX
+  - Heavy reinit when reopening a chat with a different model_id
+  - Mid-stream process death recovery — preserve partial assistant message or discard?

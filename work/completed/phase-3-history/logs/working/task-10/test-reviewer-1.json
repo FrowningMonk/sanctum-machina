@@ -1,0 +1,63 @@
+{
+  "status": "needs_improvement",
+  "summary": "All 7 TDD anchors for topAppBarState plus loadModel delegation are present and each passes the litmus test — removing the corresponding branch of deriveTopAppBarState would cause a real failure. The Ready-before-Loading seeding pattern in topAppBarState_warmupInFlight_returnsLoading is the right shape; publishEntries correctly propagates download status for the no-downloaded case. However, HomeViewModel grew two new behaviours (corruptionOccurred seed + buildAndWrite SAF export) with zero unit coverage despite the HomeViewModelTest migration to Robolectric explicitly wiring those new ctor deps. Several minor litmus gaps and one resource-leak concern in FakeWarmupCoordinator complete the picture.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/home/HomeViewModelTest.kt",
+      "issue": "HomeViewModel.corruptionOccurred is a new Task-10 surface (AC-D5 seed for the banner) but has no test. The VM reads `appCorruptionState.corruptionOccurred` once at construction and caches it as a Boolean property. A refactor that replaces it with a hard-coded `false`, or swaps to `corruptionOccurred = !appCorruptionState.corruptionOccurred`, would ship undetected — the HomeViewModelTest setUp constructs a default AppCorruptionState (which defaults to false) but never exercises both polarities or asserts the flag reflects the injection.",
+      "recommendation": "Add two tests that pin the pass-through behaviour:\n\n```kotlin\n@Test fun corruptionOccurred_reflectsInjectedState_true() {\n  corruption.markCorruption() // or whatever setter AppCorruptionState exposes\n  val vm = HomeViewModel(registry, corruption, logExport)\n  assertTrue(vm.corruptionOccurred)\n}\n\n@Test fun corruptionOccurred_reflectsInjectedState_false() {\n  val vm = HomeViewModel(registry, corruption, logExport) // fresh default = false\n  assertFalse(vm.corruptionOccurred)\n}\n```\nIf AppCorruptionState has no public mutator, construct one via its test-visible API or use a tiny test subclass exposing the flag. Without the `true` case the test suite accepts any constant — the banner's seed is the only gate between a real corruption event and the UI surfacing it."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/home/HomeViewModelTest.kt",
+      "issue": "HomeViewModel.buildAndWrite has zero test coverage despite being the entire SAF export contract for the corruption banner's «Сохранить лог» button (AC-D5 export path). The method has two meaningful branches — success returns Result.success(Unit) after delegating to logExportManager.buildExport + writeTo, and IOException is mapped to Result.failure(e). Neither is pinned. A regression that silently swallowed the IOException, or returned Result.success without writing, would not fail any test.",
+      "recommendation": "Replace the real LogExportManager with a test double that records buildExport + writeTo calls and can throw IOException on demand. Two tests:\n\n```kotlin\n@Test fun buildAndWrite_success_delegatesToLogExportManager() = runTest {\n  val fake = RecordingLogExport()\n  val vm = HomeViewModel(registry, corruption, fake)\n  val uri = Uri.parse(\"content://foo\")\n  val result = vm.buildAndWrite(uri)\n  assertTrue(result.isSuccess)\n  assertEquals(ExportSource.About, fake.lastSource)\n  assertEquals(uri, fake.lastUri)\n  assertEquals(fake.builtContent, fake.writtenContent) // proves write uses buildExport output\n}\n\n@Test fun buildAndWrite_ioException_returnsFailure() = runTest {\n  val fake = RecordingLogExport().apply { writeThrows = IOException(\"disk full\") }\n  val vm = HomeViewModel(registry, corruption, fake)\n  val result = vm.buildAndWrite(Uri.parse(\"content://foo\"))\n  assertTrue(result.isFailure)\n  assertTrue(result.exceptionOrNull() is IOException)\n}\n```\nMock change: extract a RecordingLogExport fake in this file rather than constructing the real LogExportManager — the current setUp instantiates the real one solely to satisfy the ctor and comments that tests \"never call buildAndWrite\", which is a tell that the coverage is missing."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:1789-1803",
+      "issue": "FakeWarmupCoordinator extends the production class and inherits its init block, which calls startDefaultModelObserver — a scope.launch that collects registry.models forever. Each test therefore leaks one never-cancelled coroutine on a CoroutineScope(Dispatchers.Unconfined) held by the fake. Because the scope is not shared between tests and the FakeModelRegistry passed to the super-ctor never emits a SUCCEEDED entry, no observable state leaks between tests. But the scope is never cancelled in @After, so coroutines accumulate for the duration of the JVM test process, and any future change that makes the inner FakeModelRegistry emit would suddenly exercise settings writes on an unrelated registry. The docstring claims 'construction has no side effect relevant to the tests' which is true today but fragile.",
+      "recommendation": "Give FakeWarmupCoordinator a dedicated CoroutineScope stored as a property, and cancel it in @After:\n\n```kotlin\nprivate class FakeWarmupCoordinator(val ownScope: CoroutineScope) : WarmupCoordinator(\n  registry = FakeModelRegistry(mutableListOf()),\n  appSettings = FakeAppSettingsRepository(),\n  errorLog = ErrorLog(ApplicationProvider.getApplicationContext<Application>()),\n  scope = ownScope,\n) { ... }\n\n// in test class:\nprivate val fakeScopeJob = SupervisorJob()\nprivate val fakeScope = CoroutineScope(fakeScopeJob + Dispatchers.Unconfined)\n@Before fun setUp() { ...; fakeWarmupCoordinator = FakeWarmupCoordinator(fakeScope) }\n@After fun tearDown() { Dispatchers.resetMain(); fakeScopeJob.cancel() }\n```\nAlternatively, prefer composition over inheritance — declare WarmupCoordinator as an `interface` (or extract one) and let the fake implement it without inheriting the init block. This is strictly cleaner but a larger refactor."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:1277-1285",
+      "issue": "topAppBarState_draft_returnsDownloadedModels asserts the model list but not `draft.currentModelId`. A regression where deriveTopAppBarState hard-coded currentModelId to \"\" for Draft (e.g. forgot to thread `effectiveModelId` into the Draft branch) would not fail this test. The dropdown check-mark rendering in ChatScreen depends on currentModelId matching one of the listed entries — silently losing that field would break AC-U7's 'mark the current model' behaviour.",
+      "recommendation": "Extend the existing assertion to pin currentModelId:\n\n```kotlin\nval draft = state as TopAppBarState.Draft\nassertEquals(listOf(\"id-a\", \"id-b\"), draft.models.map { it.model.modelId })\nassertEquals(\n  \"currentModelId must track the active (Ready) model so the dropdown checkmark lands\",\n  \"id-a\",\n  draft.currentModelId,\n)\n```\nNo mock changes required — publishEntries already sets activeModelName to id-a (the Ready entry), so the value flows through."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt:319-346",
+      "issue": "deriveTopAppBarState has a branch for ModelInitStatus.Initializing (persistent / quick paths) that maps to TopAppBarState.Loading(effectiveModelId). No test exercises this arm specifically via the entry's initStatus — topAppBarState_warmupInFlight_returnsLoading drives Loading through the `warmupInFlight` short-circuit, and the persistent tests cover Idle/Failed/Ready but not Initializing. A regression that removed the Initializing arm would leave the state at Ready-with-stale-name (falling into the missing-entry branch returns Failed, but if the `when` still matched Initializing to Ready/etc.) — the current tests would miss it.",
+      "recommendation": "Add a sibling of topAppBarState_persistentFailed_returnsFailed:\n\n```kotlin\n@Test fun topAppBarState_persistentInitializing_returnsLoading() = runTest(dispatcher) {\n  val model = Model(name = \"m\", modelId = \"id-m\")\n  fakeChatDao.put(ChatEntity(id = 7L, modelId = \"id-m\", createdAt = 0L, lastMessageAt = 0L))\n  fakeRegistry.publishEntry(model, ModelInitStatus.Initializing)\n  val vm = buildViewModel(ChatIdentityArg.Persistent(7L))\n  advanceUntilIdle()\n  assertEquals(TopAppBarState.Loading(modelId = \"id-m\"), vm.topAppBarState.value)\n}\n```\nThis pins the entry-init Loading branch without conflating it with warmupCoordinator.isWarmupInProgress. Note that publishEntry currently clears activeModelName when status != Ready, which is fine — the test pins the pinned-chat-model-id path, not activeModelName."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:1384-1386",
+      "issue": "loadModel_delegatesToWarmupCoordinator only asserts the recorded modelId. Litmus passes (empty body would fail), but the test does not pin that loadModel forwards the *caller-supplied* id rather than, say, `_chatModelId.value`. A bug where loadModel shadowed the argument with the current chat model would still be caught here (test passes \"id-b\" while the VM has \"id-m\" pinned), so this is adequate. However a stronger variant would assert exactly one call, not just the content — defending against a retry loop regression.",
+      "recommendation": "Minor tightening: assert call count and the exact payload in one step, and add a second call to prove idempotence does not collapse entries:\n\n```kotlin\nvm.loadModel(\"id-b\")\nvm.loadModel(\"id-c\")\nassertEquals(listOf(\"id-b\", \"id-c\"), fakeWarmupCoordinator.cancelAndRestartCalls)\n```\nOptional; the current assertion is already prescriptive and litmus-valid."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "litmusTest": {
+      "checked": 9,
+      "passed": 9,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 50,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

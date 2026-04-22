@@ -1,0 +1,65 @@
+{
+  "round": 2,
+  "status": "approved",
+  "commit": "05c9732d7198e1ed04e7ad607f14ce48bd73ddec",
+  "scope": "Verify round-1 s1/s2/s3 disposition and scan commit 05c9732 for new security regressions introduced by the round-1 fixes (commitDraft isGenerating flip, observePersistedForHandover removal, runInferencePersistent USER-save ordering).",
+  "round_1_disposition": {
+    "s1": {
+      "status": "deferred",
+      "owasp": "A09",
+      "note": "Raw inference onError message logging unchanged in commit 05c9732 (lines 713-714 persistent, 800-ish quick). Confirmed out of Task-8 scope — Phase 2.5 logexport workstream concern. Leaving as deferred."
+    },
+    "s2": {
+      "status": "partially_closed",
+      "owasp": "A08",
+      "note": "Both `savedOk` guards verified:\n  - USER path line 628-633: savePersistentMessage return routed through isSuccess → gates updateChatLastMessage.\n  - ASSISTANT path line 697-702: same pattern on done=true branch.\nThe timestamp-without-row data-integrity gap from round-1 s2 is closed on both paths. However, the original recommendation also asked to abort the inference dispatch on USER-persist failure (`return@launch` + snackbar). The current fix gates only `updateChatLastMessage`; `dispatchInferencePersistent(...)` at line 635 still fires unconditionally when the USER save failed. See new finding s4 below — this is a residual, lower-severity slice of the same concern and is filed as minor rather than blocking."
+    },
+    "s3": {
+      "status": "deferred",
+      "owasp": "A09",
+      "note": "Nested errorLog.launch drops on scope cancellation — unchanged, explicitly out-of-scope per round-1 disposition (architectural, requires ApplicationScope injection)."
+    }
+  },
+  "regression_scan": {
+    "commitDraft_isGenerating_flip_M1": {
+      "verdict": "no_security_regression",
+      "analysis": "Line 548 flips `_uiState.value = ChatUiState.Ready(isGenerating = true)` synchronously on the main thread before the `viewModelScope.launch` at line 556, closing a rapid double-tap TOCTOU on the Send gate. The onFailure branch (line 577) restores `isGenerating = false`. One minor UX caveat (not security): if `observeEngineState` emits a status update while the commit is in-flight, `updateUiStateFromEntry` may recompute uiState from engine status and erase the isGenerating flip — but this is a race on UI state, not on persistence or authorization, and no double-write or double-commit is possible because `chatRepository.commitDraftChat` is itself the atomicity boundary. No new A01/A04/A08 exposure."
+    },
+    "observePersistedForHandover_removal_m2": {
+      "verdict": "no_security_regression",
+      "analysis": "Deleting the side-effect collector (old lines 514-524) leaves the combine in `buildMessagesFlow` as the single invariant. Round-1 T1 strengthened the test to \"ASSISTANT count ≤ 1 in every emission\" independent of the streaming flag, so the load-bearing invariant is now enforced by the test suite. No data-integrity or access-control surface; the removed function wrote only to in-memory `_streamingMessage`. No logging was lost (it was a no-log side-effect). Clean."
+    },
+    "runInferencePersistent_ordering_change": {
+      "verdict": "minor_residual (see s4)",
+      "analysis": "Save ordering is: launch → savePersistentMessage(USER) → gated updateChatLastMessage → unconditional dispatchInferencePersistent. The fix correctly addresses the drawer-timestamp lie from round-1 s2, but allows runInference to stream a response to a USER message that does not exist in Room. Filed as s4 minor below."
+    },
+    "mapNotNull_m4": {
+      "verdict": "no_security_regression",
+      "analysis": "`registry.activeModelName.mapNotNull { it }.first()` (line 475) is semantically equivalent to the old `first { it != null }!!` — suspends until non-null, then returns the value. No change in trust boundary or failure mode."
+    },
+    "reinitInProgress_m3": {
+      "verdict": "no_security_regression",
+      "analysis": "Dropping the redundant `_reinitInProgress = false` assignments inside `try` is safe — the `finally` block already clears the flag on every return path. No lock-stuck scenario introduced."
+    }
+  },
+  "new_findings": [
+    {
+      "id": "s4",
+      "severity": "minor",
+      "category": "A08 Software and Data Integrity",
+      "cwe": "CWE-362",
+      "title": "dispatchInferencePersistent runs unconditionally after a failed USER savePersistentMessage",
+      "location": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt:635",
+      "description": "The round-1 s2 fix gates `updateChatLastMessage` on `savedOk`, but `dispatchInferencePersistent(identity, text, pending, model, accumulateThinking)` at line 635 executes regardless of whether the USER row landed in Room. When `savePersistentMessage(userMsg)` throws (SQLiteFullException, SQLiteConstraintException, or any IO failure on `Dispatchers.IO`), the VM proceeds to stream tokens from the engine and — on done=true — persists an ASSISTANT row at line 697 referencing a `chatId` whose new USER turn is absent. Violates the spirit of AC-R1 (USER persisted BEFORE runInference fires): the guarantee is now \"USER persist was attempted before runInference,\" not \"USER persist succeeded.\"",
+      "impact": "Data-integrity gap rather than an exploit surface: on USER-save failure the persisted history shows an orphan ASSISTANT bubble with no preceding USER prompt, while the in-memory `_streamingMessage` still shows the USER bubble (appended by the repository-side path? — actually the VM does not append USER in-memory for Persistent mode; the combine reads USER from Room). A process kill between the failed USER INSERT and the successful ASSISTANT INSERT produces a persisted ASSISTANT with no USER — the inverse of AC-R3's stated invariant (\"kill mid-stream leaves USER+no-ASSISTANT\"). The attacker surface is null (no cross-user or privilege boundary), but the post-mortem log is the only signal the user has that anything went wrong, which intersects with deferred s3.",
+      "recommendation": "Fold the early-abort into the existing launch as round-1 s2 originally recommended:\n```kotlin\nval savedOk = runCatching { chatRepository.savePersistentMessage(userMsg) }\n    .onFailure { errorLog.e(\"history-write\", \"savePersistentMessage USER failed\", it) }\n    .isSuccess\nif (!savedOk) {\n    _snackbar.tryEmit(R.string.chat_load_failed_title)\n    _streamingMessage.value = null\n    _uiState.value = ChatUiState.Ready(isGenerating = false)\n    return@launch\n}\nchatRepository.updateChatLastMessage(identity.id, userTs)\ndispatchInferencePersistent(identity, text, pending, model, accumulateThinking)\n```\nThis restores the full AC-R1 invariant (USER row is present in Room before any engine work begins) and avoids ever persisting an orphan ASSISTANT. Does not block merge — the failure mode requires disk-full / Room constraint violation, and the ASSISTANT-orphan window is bounded by inference duration."
+    }
+  ],
+  "summary": {
+    "totalFindings": 1,
+    "critical": 0,
+    "major": 0,
+    "minor": 1
+  },
+  "verdict_rationale": "Round-1 s2 is closed on the original exploit scenario (timestamp lie in drawer). s1 and s3 remain deferred per round-1 disposition. No OWASP A01-A10 regression introduced by the M1/m2/m3/m4 changes — commitDraft gate flip is a pure in-memory state flip with no auth or persistence implications; observePersistedForHandover removal is covered by strengthened combine invariant tests; mapNotNull refactor is semantically identical. One new minor finding (s4) extends the s2 fix: dispatchInferencePersistent should also be gated on USER savedOk. Zero critical or major findings — approved for merge; s4 can be addressed in follow-up or as a trailing round-2 touch-up if desired."
+}

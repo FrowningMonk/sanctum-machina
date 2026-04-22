@@ -1,0 +1,45 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "severity": "nit",
+      "location": "core-settings/src/test/kotlin/app/sanctum/machina/core/settings/AppSettingsRepositoryTest.kt",
+      "issue": "Task TDD-Anchor list names a NEW file `DefaultAppSettingsRepositoryTest.kt`; the implementer instead appended the 3 required observe-tests (plus one bonus sentinel test) to the pre-existing `AppSettingsRepositoryTest.kt`. The two files would test the same class with identical fixtures, so consolidation is rational and avoids duplication — but the task wording was not followed literally. Flag as an acceptable deviation, not a defect.",
+      "fix": "Either (a) note the deviation in decisions.md for Task 2 so future readers know why the file name diverges from the anchor spec, or (b) rename the existing file to `DefaultAppSettingsRepositoryTest.kt` to match the anchor. Preferred: (a), since the existing file already predates this task and touches other concerns."
+    },
+    {
+      "severity": "nit",
+      "location": "core-runtime/src/test/kotlin/app/sanctum/machina/core/log/ErrorLogTest.kt:69-84",
+      "issue": "`newComponents_accepted` fully re-executes 6 of the 14 component-writes already covered by `knownComponents_accepted` (which now asserts all 14 including the Phase-3 six). The redundancy adds no regression protection: if a Phase-3 component is removed from `ALLOWED_COMPONENTS`, both tests fail simultaneously. Test-quality rule: every test must catch a failure no other test catches.",
+      "fix": "Either delete `newComponents_accepted` and rely on `knownComponents_accepted` (preferred — it already asserts the 14-count invariant and writes each component), or repurpose `newComponents_accepted` to a targeted negative case (e.g., assert that one of the pre-Phase-3 names like `inference` is still accepted and a typo like `engine_warmup` with underscore is rejected). The current duplication is acceptable for TDD-anchor traceability but wasteful."
+    },
+    {
+      "severity": "nit",
+      "location": "app/src/test/kotlin/app/sanctum/machina/data/SettingsMigrationHelperTest.kt:24",
+      "issue": "`import org.junit.Assert.assertNull` is present but never used. Unused imports are a minor code-hygiene issue.",
+      "fix": "Remove the `assertNull` import."
+    },
+    {
+      "severity": "nit",
+      "location": "core-settings/src/test/kotlin/app/sanctum/machina/core/settings/AppSettingsRepositoryTest.kt",
+      "issue": "Asymmetry in coverage: `observeDefaultModelId_emitsEmptyString_whenUnset` exists, but there is no parallel `observeLastUsedModelId_emitsEmptyString_whenUnset`. Both flows rely on the same `.map { it.<field> }` plumbing on top of the same DataStore, so the second one is not strictly necessary for regression protection, but the asymmetry is visible. Task only required the `defaultModelId` variant, so not a blocker.",
+      "fix": "Optional: add a one-liner `observeLastUsedModelId_emitsEmptyString_whenUnset` for symmetry. Skip if redundancy concern outweighs completeness."
+    }
+  ],
+  "notes": "All 9 TDD-anchor tests are present (one delivered under a renamed equivalent — tests live in `AppSettingsRepositoryTest.kt` rather than a new `DefaultAppSettingsRepositoryTest.kt`; same test class, same DataStore fixture reused). The consolidation is acceptable and should be noted in decisions.md.\n\nLitmus test results for every meaningful test:\n- `knownComponents_accepted`: removing any Phase-3 string from `ALLOWED_COMPONENTS` makes `errorLog.e(component, \"ok\")` throw IAE → test fails. Passes.\n- `newComponents_accepted`: same, passes litmus but is redundant with the above.\n- `observeDefaultModelId_emitsEmptyString_whenUnset`: if proto default changes or `.map { it.defaultModelId }` is broken → fails. Passes.\n- `observeDefaultModelId_emitsCurrentValue` / `observeLastUsedModelId_emitsCurrentValue`: if setter is a no-op or the observe flow does not map the right field → fails. Passes.\n- `settingsMigrated_flagFalseByDefault_trueAfterMark`: if `markSettingsMigrated` is a no-op or `isSettingsMigrated` returns the wrong field → fails. Passes.\n- `happyPath_rekeysNameToModelId`: if rekey logic is removed the old key remains and the new key is absent → two assertions fail; also sentinel assert fails. Strong.\n- `orphanKey_droppedAndLogged`: reads the real `errors.log` file and counts lines containing `\"OrphanName\"` with component `[settings-io]`. This is NOT mock-based — it is a genuine end-to-end assertion on the side effect. If orphan logging is removed the count becomes 0 → fails. Passes.\n- `sentinel_preventsRerun`: counts `CountingDataStore.updateCount` before and after the second invocation. Note: `markSettingsMigrated` goes through the repository into `rawDataStore`, NOT through `CountingDataStore`, so only the rekey `updateData` is counted. The assertion (countAfterFirst == updateCount) is correct for the sentinel guard. If the guard were removed, the second run would call updateData on the counting store → fail. Passes.\n- `singleUpdateDataCall_perRun`: with 3 overrides, asserts updateCount == 1 on CountingDataStore. Verifies atomicity. Strong.\n- `emptyOverrides_marksSentinel_withoutLogging`: bonus test; asserts sentinel is set AND `errors.log` does not exist — meaningful because an over-eager orphan-logging impl would create the file. Good.\n\nOrphan-log assertion is meaningful (NOT a mock-only test): it reads the physical file produced by the real `ErrorLog` writer, uses substring matching on line content, and asserts exactly 1 matching line. This verifies real behavior end-to-end.\n\nSingle-updateData invariant is reliably verified: `CountingDataStore` is a thin wrapper that delegates `data` reads to the real DataStore and counts `updateData` calls. The migration helper is injected with the counting wrapper, while the repository (used for the sentinel) is injected with the raw delegate — so sentinel writes do not pollute the count. The design cleanly isolates the atomic-write invariant from sentinel bookkeeping.\n\nTest isolation:\n- SettingsMigrationHelperTest uses `TemporaryFolder` for the proto file (fresh per test) and `errorLogFile.parentFile?.deleteRecursively()` in both @Before and @After for the log directory.\n- Each test gets a fresh UUID-named proto file, a fresh DataStoreFactory instance, and a fresh registry.\n- Robolectric shares `filesDir` across tests within a suite, so the @Before deletion is necessary and correctly implemented. Mirrors the existing `ErrorLogTest` pattern.\n- No shared static state observed.\n\nMocking strategy: only `ModelRegistry` is a hand-rolled fake (`FakeModelRegistry`), and only the `models` StateFlow is exercised — all other methods throw or no-op. This is well under the 3+ dependency threshold for excessive mocking. DataStore is real, repository is real, ErrorLog is real writing to real files. Strong integration-flavored unit tests, appropriate for migration coordination logic.\n\nNo tautological / false-positive assertions detected. No mock-return anti-pattern. All assertions verify observable state (DataStore contents, log file lines, updateCount, sentinel boolean).\n\nOverall: high-quality, well-isolated tests. Findings are all cosmetic (`nit` severity) and do not block approval.",
+  "metrics": {
+    "filesReviewed": 3,
+    "litmusTest": {
+      "checked": 11,
+      "passed": 11,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 11,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

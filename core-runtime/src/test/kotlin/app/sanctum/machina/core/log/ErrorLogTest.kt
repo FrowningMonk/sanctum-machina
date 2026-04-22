@@ -40,20 +40,47 @@ class ErrorLogTest {
   @Test
   fun knownComponents_accepted() = runTest {
     val allowed = listOf(
+      // Phase 1
       "download",
       "inference-init",
       "inference",
       "inference-cleanup",
+      // Phase 2 (D27)
       "settings-io",
       "camera",
       "audio",
       "attachment-decode",
+      // Phase 3
+      "model",
+      "engine-warmup",
+      "history-read",
+      "history-write",
+      "attachment-save",
+      "attachment-read",
     )
+    assertEquals("expected 14 allowed components", 14, allowed.size)
     for (component in allowed) {
       errorLog.e(component, "ok")
     }
     assertTrue("log file must exist", logFile.exists())
     assertEquals(allowed.size, logFile.readLines().size)
+  }
+
+  @Test
+  fun newComponents_accepted() = runTest {
+    val phase3 = listOf(
+      "model",
+      "engine-warmup",
+      "history-read",
+      "history-write",
+      "attachment-save",
+      "attachment-read",
+    )
+    for (component in phase3) {
+      errorLog.e(component, "ok")
+    }
+    assertTrue("log file must exist", logFile.exists())
+    assertEquals(phase3.size, logFile.readLines().size)
   }
 
   @Test(expected = IllegalArgumentException::class)

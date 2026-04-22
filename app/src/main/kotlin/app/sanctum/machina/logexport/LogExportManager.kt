@@ -49,7 +49,9 @@ enum class ExportSource { About, CrashReport }
  * See `work/phase-2.5-logexport/tech-spec.md` Decisions 1, 5, 7, 8, 11.
  */
 @Singleton
-class LogExportManager @Inject constructor(
+// `open` so test doubles can substitute `buildExport` / `writeTo` without exercising the
+// real filesystem + logcat stack (Task 10 HomeViewModel tests, same pattern used by Task 9).
+open class LogExportManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val deviceInfo: DeviceInfoCollector,
     private val logcat: LogcatReader,
@@ -74,7 +76,7 @@ class LogExportManager @Inject constructor(
         logcat = LogcatReader(DefaultCommandRunner()),
     )
 
-    suspend fun buildExport(source: ExportSource): String = withContext(Dispatchers.IO) {
+    open suspend fun buildExport(source: ExportSource): String = withContext(Dispatchers.IO) {
         val logsDir = File(context.filesDir, LOG_DIR)
         buildString {
             append(deviceInfo.buildHeader())
@@ -96,7 +98,7 @@ class LogExportManager @Inject constructor(
         }
     }
 
-    suspend fun writeTo(uri: Uri, content: String) = withContext(Dispatchers.IO) {
+    open suspend fun writeTo(uri: Uri, content: String) = withContext(Dispatchers.IO) {
         val stream = openOutputStreamForTest(uri)
             ?: throw IOException("openOutputStream returned null")
         stream.use { it.write(content.toByteArray(Charsets.UTF_8)) }
