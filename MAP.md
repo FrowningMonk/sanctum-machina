@@ -48,7 +48,9 @@
 | `src/` | папка | Все исходники модуля: Kotlin-код, `.proto`-схема, тесты. Структура внутри (`main/`, `test/`) задана соглашением Gradle/Android, не нашим выбором | да |
 | `build.gradle.kts` | файл | Конфиг сборки модуля: 5 плагинов (включая **`protobuf`** — только здесь), namespace `app.sanctum.machina.core.settings`, зависимость на `:core-runtime`, тянет `androidx.datastore` + `protobuf-javalite`. Содержит блок `protobuf { ... }` для кодогенерации Java-классов из `.proto` | да |
 
-**Где живёт схема настроек:** `src/main/proto/app_settings.proto` — объявлен список параметров инференса (`max_tokens`, `top_k`, `top_p`, `temperature`, `enable_thinking`, `accelerator`, `system_prompt_default`) с именами, типами и тегами для бинарной сериализации. Сами **значения по умолчанию** задаются не здесь, а в Kotlin-коде модуля — proto описывает только форму записи.
+**Где живёт схема настроек:** `src/main/proto/app_settings.proto` — объявлен список параметров инференса (`max_tokens`, `top_k`, `top_p`, `temperature`, `enable_thinking`, `accelerator`, `system_prompt_default`) с именами, типами и тегами для бинарной сериализации. Proto описывает только форму записи.
+
+**Где живут значения по умолчанию:** **не в этом модуле**, а в `core-runtime/src/main/kotlin/.../core/data/Consts.kt` (`DEFAULT_TEMPERATURE = 1.0f`, `DEFAULT_TOPK = 64`, `DEFAULT_TOPP = 0.95f`, `DEFAULT_MAX_TOKEN = 1024`). Логика разделения: `core-settings` хранит то, что задал пользователь, и возвращает `null`, если оверрайда нет; `core-runtime` подставляет константу при инференсе — он знает, чем стартовать модель «из коробки».
 
 ## 3. Конфиги сборки
 
