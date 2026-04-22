@@ -269,6 +269,33 @@ class WarmupCoordinatorTest {
   }
 
   @Test
+  fun ac_f3Observer_triggersWarmup_afterAutoSettingDefault() = runTest {
+    // Regression: first-launch scenario where no default is set at cold start, so
+    // warmupDefault() skipped. Downloading the first model auto-writes the default,
+    // and without this trigger Home's "Начать быстрый чат" suspends forever on
+    // registry.activeModelName.first().
+    appSettings.defaultModelId = ""
+    appSettings.lastUsedModelId = ""
+    val coordinator = newCoordinator()
+    coordinator.warmupDefault() // first pass: no default, no-op
+    advanceUntilIdle()
+    assertTrue(registry.initializeCalls.isEmpty())
+
+    val model = fakeModel(name = "gemma-local", modelId = "org/first-downloaded")
+    registry._models.value = listOf(
+      ModelEntry(
+        model = model,
+        downloadStatus = ModelDownloadStatus(status = ModelDownloadStatusType.SUCCEEDED),
+        initStatus = ModelInitStatus.Idle,
+      ),
+    )
+    advanceUntilIdle()
+
+    assertEquals(listOf("org/first-downloaded"), appSettings.setDefaultModelIdCalls)
+    assertEquals(listOf("org/first-downloaded"), registry.initializeCalls)
+  }
+
+  @Test
   fun ac_f3Observer_doesNotSetDefault_onEmptyModelList() = runTest {
     // Edge case from tasks/5.md: empty list on startup MUST NOT trigger setDefaultModelId.
     appSettings.defaultModelId = ""

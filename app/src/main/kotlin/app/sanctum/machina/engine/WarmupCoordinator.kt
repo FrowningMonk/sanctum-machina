@@ -173,7 +173,13 @@ open class WarmupCoordinator @VisibleForTesting(otherwise = VisibleForTesting.PR
             it.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED
           } ?: return@collect
           if (appSettings.getDefaultModelId().isEmpty()) {
-            appSettings.setDefaultModelId(downloaded.model.modelId)
+            val modelId = downloaded.model.modelId
+            appSettings.setDefaultModelId(modelId)
+            // Cold start with no default skipped warmup; downloading the first model
+            // completes the setup step, so trigger warmup now — otherwise Home's
+            // "Начать быстрый чат" would suspend on registry.activeModelName.first()
+            // forever (ChatViewModel's bootstrap contract).
+            launchWarmup(modelId)
             ownJob.cancel()
           }
         }
