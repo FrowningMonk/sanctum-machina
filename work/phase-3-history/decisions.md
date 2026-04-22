@@ -526,7 +526,7 @@ User device smoke на Honor 200 после Task 11 вскрыл четыре д
 ## Task 14: Security Audit
 
 **Status:** Done
-**Commit:** <pending>
+**Commit:** b654e1a
 **Agent:** main agent
 **Summary:** Полный security audit Phase 3 по семи focus areas из tech-spec (file-path injection, SQL, quick/ purge, PII в логах, attachment decode, cross-process crash state, DataStore migration atomicity) + OWASP Mobile Top 10 sweep + SafeMarkdown/privacy-manifest regression check. Все семь focus areas — PASS. Findings: 0 Critical / 0 High / 0 Medium / 1 Low / 1 Info. **F1 (Low)**: `SettingsMigrationHelper` — транзиентный IOException в `isSettingsMigrated()` возвращает false и запускает re-migration на уже-мигрированных данных; все ключи станут orphan и сдропятся. Fix: перенести sentinel-check внутрь `dataStore.updateData { ... }` блока. **F2 (Info)**: `ChatViewModel.kt:1192,1275` форвардит `onError` payload движка в ErrorLog без caller-side cap — полагается на 500-char truncate в ErrorLog; harden `safeMsg.take(200)`. No Critical / High findings — Task 16 QA может стартовать.
 **Deviations:** None.
