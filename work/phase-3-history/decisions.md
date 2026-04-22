@@ -448,6 +448,33 @@ User device smoke на Honor 200 после Task 11 вскрыл четыре д
 - `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL.
 - User device smoke на Honor 200 (`2026-04-22`): (a) «Загрузить» A → работает, (b) «Загрузить» B → работает, (c) возврат на A после фикса 4 → корректно переинициализируется, (d) «Начать быстрый чат» после перезапуска → мгновенный (default модель прогрета `warmupDefault` на старте app'а), (e) star-индикатор + overflow «Сделать по умолчанию» — визуально корректны.
 
+## Task 12: Project knowledge docs update
+
+**Status:** Done
+**Commit:** d224198 (impl), 65762c7 (review round 1 fixes)
+**Agent:** main agent
+**Summary:** Pure docs edit. `architecture.md` обновлён под Phase-3 реальность: `chats.project_id` описан как nullable INTEGER без FK (AC-R4/R7), `project_files` убрана из v1 и заменена forward-reference на `Migration(1,2)` в Phase 4, Key Constraints секция переведена на v1-only (FK только `messages.chat_id`; индексы `messages.chat_id`, `messages.created_at`, `chats.last_message_at`), NavHost routes перечислены типизированно (`home` / `chat/quick?modelId={id}` / `chat/draft` / `chat/{chatId}` / `model_manager` / `about`) с примечанием про оставшийся `chat/{modelName}` tombstone, Project Structure получил `drawer/` и `home/` подпапки, SanctumApplication comment расширен через `WarmupCoordinator.warmupDefault()` + `SettingsMigrationHelper.migrateIfNeeded()` + `StartupHousekeeper` (Room corruption handler корректно атрибутирован `di/AppModule.provideSanctumDatabase`, не SanctumApplication). Model lifecycle секция переписана через `DefaultModelRegistry` + `activeModelName` + single-engine invariant + Task 18 CancellationException recovery. `patterns.md`: ErrorLog whitelist расширен 8 → 14 компонентов с Phase-origin breakdown; Model lifecycle переписан через ownership-at-app-layer, `onCleared()` does NOT cleanup (Decision 5 / AC-E6), cleanup только на `cancelAndRestart` или process death, `resetConversation` cheap path, heavy-setting reinit bypasses `WarmupCoordinator`; Business Rule «Model switching mid-chat» переписан через Draft picker + AlertDialog → `cancelAndRestart`, Persistent «Загрузить» button, auto-resume для unpaired USER (Task 18 B4).
+**Deviations:** None — все AC выполнены строго. Code-reviewer round 1 поймал два claim-vs-code mismatch'а (corruption handler file, `chats.title` nullability) — ровно тот класс stale-doc ошибок, который Task 12 должен был устранить; оба пофикшены в round 2.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: `changes_required`, 2 critical / 0 major / 3 minor → [logs/working/task-12/code-reviewer-1.json](logs/working/task-12/code-reviewer-1.json)
+  - C1: SanctumApplication.kt comment ошибочно приписывал Room corruption handler этому файлу — реально в `di/AppModule.provideSanctumDatabase`.
+  - C2: `chats.title (TEXT, not null)` противоречит `ChatEntity.kt:22` (`val title: String? = null`).
+  - Minor: `chat/{modelName}` tombstone всё ещё зарегистрирован (только deprecated); phase-origin `settings-io` — Phase 2 не 2.5 per D27.
+
+*Fixes applied after round 1 (commit `65762c7`):*
+- C1: comment переписан — corruption handler атрибутирован `di/AppModule.provideSanctumDatabase`, описан пошагово (rename → sidecar delete → `corruptionOccurred=true` → `errorLog.e("history-read", …)` → fresh rebuild).
+- C2: `chats.title` возвращён к `nullable`, добавлено описание `AutoTitleGenerator` + «Без названия» fallback в drawer.
+- Minor: NavHost comment признал tombstone; phase-origin `settings-io` / `camera` / `audio` / `attachment-decode` объединены под Phase 2 с ссылкой на D27.
+
+**Verification:**
+- Grep checks из Task 12 Verification: `project_files` count = 1 ✅, nullable `project_id` присутствует ✅, `chat/{modelName}` только в tombstone-комментарии ✅, все 6 Phase-3 ErrorLog компонентов присутствуют в `patterns.md` ✅, `onCleared` описан как «does NOT call cleanup» ✅.
+- Code-reviewer round 1 verified accurate: ErrorLog ALLOWED_COMPONENTS = 14; `activeModelName` projectов `Model.modelId`; single-engine release + CE reset в `DefaultModelRegistry.initialize`; `loadModel` pins `_chatModelId` перед `cancelAndRestart` (Task 18 fix); `applyHeavySetting` обходит WarmupCoordinator; `chats.project_id` nullable без FK; schema version = 1.
+- No build run — task docs-only.
+- No user verify — docs sync, не UI change.
+
 ## Task 18: Phase-3 device-smoke bug batch
 
 **Status:** Done
