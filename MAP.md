@@ -52,6 +52,12 @@
 
 **Где склеивается всё вместе:** `src/main/kotlin/.../core/inference/LlmChatModelHelper.kt` — берёт значения из настроек или подставляет константу из `Consts.kt`, передаёт в LiteRT.
 
+**Где живёт манифест модуля:** `src/main/AndroidManifest.xml` — декларация `POST_NOTIFICATIONS` и merge-директива, подключающая `SystemForegroundService` WorkManager'а. **Зачем:** модуль качает модели через WorkManager, foreground-сервис с уведомлением нужен, чтобы Android не убил загрузку на фоне. Потребителю (`app/`) ничего дополнительно настраивать не надо — подключил модуль, и разрешение с сервисом уже попадут в итоговый манифест приложения.
+
+**Где живёт список поддерживаемых моделей:** `src/main/assets/model_allowlist.json` — JSON-каталог моделей (сейчас — две вариации Gemma 4: E2B и E4B, обе мультимодальные). У каждой: `modelId`, путь к файлу, размер, минимум RAM, commit-hash для пиннинга, флаги поддержки image/audio/thinking, дефолтные `topK`/`topP`/`temperature`/`maxContextLength`/`maxTokens`, список поддерживаемых task-типов. **Зачем:** жёсткий whitelist — грузить можно только то, что здесь перечислено. Лежит в `assets/`, потому что пакуется в APK как есть; на старте читается `AllowlistLoader`'ом и попадает в `ModelRegistry`, откуда — в UI.
+
+**Чтобы добавить новую модель:** править только `src/main/assets/model_allowlist.json` — добавить запись с `name`, `modelId`, `modelFile`, `commitHash`, `sizeInBytes`, `taskTypes` (остальные поля опциональны). Требования: модель должна лежать на HuggingFace в org `litert-community`, быть в формате LiteRT-LM (`.litertlm` или `.task`), размер ≤ 10 GB, `commitHash` — настоящий 40-символьный git-SHA коммита на HF. Если модель не из `litert-community` или в другом формате — одним JSON не обойтись, придётся трогать валидатор в коде (пока не описан в MAP).
+
 ### Что внутри `core-settings/`
 
 | Имя | Тип | Что это | В git |
