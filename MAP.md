@@ -48,6 +48,19 @@
 | `src/` | папка | Исходники модуля: Kotlin-код + тесты | да |
 | `build.gradle.kts` | файл | Конфиг сборки: 4 плагина (без protobuf), namespace `app.sanctum.machina.core`, ключевые зависимости — **`litertlm`** (LLM-движок), `work-runtime` (загрузчик моделей), `exifinterface` (метаданные изображений), `gson` | да |
 
+**Откуда скорость.** On-device-скорость инференса обеспечивает **не наш код**, а зависимость `com.google.ai.edge.litertlm:0.10.0` — скомпилированный `.aar` с Google Maven. **Её исходника в нашем git-репо нет**; на этапе сборки Gradle качает `.aar` (нативные `.so`-библиотеки под arm64/armv7 + Kotlin/Java биндинги) из Google Maven и линкует в итоговый APK. Движок открытый: [github.com/google-ai-edge/LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) (+ [github.com/google-ai-edge/litert](https://github.com/google-ai-edge/litert) под капотом — GPU-делегат, XNNPACK, партиционирование графа), читать можно; компилировать самому не нужно.
+
+В нашем `core-runtime` с LiteRT-LM напрямую общаются всего **четыре файла**:
+
+- `inference/LlmChatModelHelper.kt` — главный вход (`Engine`, `Conversation`, `Message`, `SamplerConfig`, `MessageCallback`).
+- `runtime/LlmModelHelper.kt` — загрузка файла модели в движок.
+- `registry/DefaultModelRegistry.kt` — `resetConversation` (стирает контекст, не пересоздавая `Engine`).
+- `common/MultimodalContentsBuilder.kt` — собирает image/audio/text в формат `Contents` движка.
+
+Остальные сотни Kotlin-файлов работают через наши собственные абстракции (`Model`, `ModelEntry`, `ModelDownloadStatus`, …) и о LiteRT-LM ничего не знают.
+
+**Практический вывод.** Заметно ускорить или замедлить инференс правкой **нашего** кода нельзя — скорость живёт в бинаре зависимости. Наша роль — оркестрация: discovery моделей, lifecycle движка, UI, мультимодальная обвязка, настройки. Это примерно ~8000 строк обвязки вокруг чужого движка — и именно этого не хватит, если подключить голый LiteRT-LM к пустому Android-проекту.
+
 **Где живут значения по умолчанию для инференса:** `src/main/kotlin/.../core/data/Consts.kt` — `DEFAULT_TEMPERATURE = 1.0f`, `DEFAULT_TOPK = 64`, `DEFAULT_TOPP = 0.95f`, `DEFAULT_MAX_TOKEN = 1024`. Подставляются при инференсе, если у пользователя нет оверрайда в `core-settings`.
 
 **Где склеивается всё вместе:** `src/main/kotlin/.../core/inference/LlmChatModelHelper.kt` — берёт значения из настроек или подставляет константу из `Consts.kt`, передаёт в LiteRT.
