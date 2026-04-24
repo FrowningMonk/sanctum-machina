@@ -54,9 +54,127 @@
 
 **Где живёт манифест модуля:** `src/main/AndroidManifest.xml` — декларация `POST_NOTIFICATIONS` и merge-директива, подключающая `SystemForegroundService` WorkManager'а. **Зачем:** модуль качает модели через WorkManager, foreground-сервис с уведомлением нужен, чтобы Android не убил загрузку на фоне. Потребителю (`app/`) ничего дополнительно настраивать не надо — подключил модуль, и разрешение с сервисом уже попадут в итоговый манифест приложения.
 
-**Где живёт список поддерживаемых моделей:** `src/main/assets/model_allowlist.json` — JSON-каталог моделей (сейчас — две вариации Gemma 4: E2B и E4B, обе мультимодальные). У каждой: `modelId`, путь к файлу, размер, минимум RAM, commit-hash для пиннинга, флаги поддержки image/audio/thinking, дефолтные `topK`/`topP`/`temperature`/`maxContextLength`/`maxTokens`, список поддерживаемых task-типов. **Зачем:** жёсткий whitelist — грузить можно только то, что здесь перечислено. Лежит в `assets/`, потому что пакуется в APK как есть; на старте читается `AllowlistLoader`'ом и попадает в `ModelRegistry`, откуда — в UI.
+### Процесс: добавление и скачивание моделей
 
-**Чтобы добавить новую модель:** править только `src/main/assets/model_allowlist.json` — добавить запись с `name`, `modelId`, `modelFile`, `commitHash`, `sizeInBytes`, `taskTypes` (остальные поля опциональны). Требования: модель должна лежать на HuggingFace в org `litert-community`, быть в формате LiteRT-LM (`.litertlm` или `.task`), размер ≤ 10 GB, `commitHash` — настоящий 40-символьный git-SHA коммита на HF. Если модель не из `litert-community` или в другом формате — одним JSON не обойтись, придётся трогать валидатор в коде (пока не описан в MAP).
+> Кросс-файловый сценарий. Начинается статическим каталогом в `assets/` на сборке, заканчивается файлом модели на устройстве пользователя. Затрагивает восемь файлов в `core-runtime` + один JSON-asset, триггер — из `:app` через `ModelRegistry`.
+
+**End-to-end цепочка (данные вниз, статус вверх):**
+
+```
+  assets/model_allowlist.json         ← статический каталог моделей
+         │
+         │ парсинг + валидация через regex'ы (security gate)
+         ▼
+  registry/AllowlistLoader.kt
+         │
+         │ List<Model>
+         ▼
+  data/Model.kt                       ← «анкета» — общий словарь для всего ниже
+         │
+         │ оборачивается в ModelEntry (Model + downloadStatus + initStatus)
+         ▼
+  registry/ModelRegistry              ← UI подписан на StateFlow<List<ModelEntry>>
+         │
+         │ пользователь нажал «скачать» — Registry зовёт:
+         ▼
+  data/DownloadRepository             ← диспетчер
+         │   Model → Data-bundle, OneTimeWorkRequest<DownloadWorker>, enqueue
+         ▼
+  worker/DownloadWorker               ← HTTP-качалка в WorkManager'е
+         │
+         ▼
+  externalFilesDir/<normalizedName>/<version>/<fileName>   ← файл на диске
+         ▲
+         │ инференс потом зовёт Model.getPath() — тот же путь
+         └── LiteRT-LM грузит файл в движок
+```
+
+Прогресс идёт в обратную сторону: worker публикует `WorkInfo.State` → Repository ловит через LiveData → переводит в `ModelDownloadStatus` → Registry мутирует `ModelEntry.downloadStatus` в `StateFlow` → UI перерисовывается. Одна подписка UI — всё видно.
+
+---
+
+#### 1. Каталог моделей (источник)
+
+**`src/main/assets/model_allowlist.json`** — JSON-каталог (сейчас две Gemma 4: E2B и E4B, обе мультимодальные). На каждую запись: `modelId`, `modelFile`, `commitHash`, `sizeInBytes`, `minDeviceMemoryInGb`, флаги `llmSupport*`, `defaultConfig` (`topK`/`topP`/`temperature`/`maxContextLength`/`maxTokens`/`accelerators`), `taskTypes`, `bestForTaskTypes`. **Зачем:** жёсткий whitelist — грузить можно только то, что здесь перечислено. Лежит в `assets/`, потому что пакуется в APK как есть; удалённого allowlist’а в нашем форке нет.
+
+#### 2. Валидация каталога (security gate)
+
+**`src/main/kotlin/.../core/registry/AllowlistLoader.kt`** — парсит JSON через Gson, прогоняет каждую запись через охранные правила:
+
+- `modelId` матчится на `^litert-community/[A-Za-z0-9._-]+$`
+- `modelFile` — на `^[A-Za-z0-9._-]+$`
+- `commitHash` — ровно 40 hex-символов в нижнем регистре
+- `sizeInBytes` — в диапазоне `1..10 GB`
+- итоговый URL обязан начинаться с `https://huggingface.co/`
+
+При нарушении любого — `Result.failure`, список моделей в Registry не обновится. **Зачем:** физически невозможно начать качать что-то вне `litert-community`, в чужом формате или подозрительного размера. Чтобы расширить политику (другая org, другой источник, больший размер) — править regex’ы и константы **здесь, в одном файле**.
+
+#### 3. Доменный объект (общий словарь)
+
+**`src/main/kotlin/.../core/data/Model.kt`** — data-class `Model`, общий язык между парсером allowlist’а, Repository, воркером, Registry и инференсом. Поля: часть из JSON (`url`, `version`, `downloadFileName`, `sizeInBytes`, флаги мультимодальности), часть сгенерирована (`normalizedName` = `name` с не-алфанумом → `_`), часть — рантайм (скачанный `instance` движка, `configValues` пользователя, статус инициализации).
+
+**Интуиция:** `Model` в скачке — анкета модели. До скачки отдаёт поля воркеру («что качать»); после скачки тот же объект через `getPath()` говорит, где файл лежит на диске. Одни и те же поля на запись и на чтение — поэтому парсер JSON, Repository, worker и инференс не расходятся в интерпретации «что такое эта модель».
+
+#### 4. Витрина для UI
+
+**`src/main/kotlin/.../core/registry/ModelRegistry.kt`** (интерфейс) + **`DefaultModelRegistry.kt`** (реализация); рядом — **`ModelEntry.kt`** (обёртка `Model + downloadStatus + initStatus`) и **`ModelInitStatus.kt`** (состояния движка). Единая реактивная точка для UI: `StateFlow<List<ModelEntry>>`. Триггерит `AllowlistLoader` через `refreshAllowlist()`, оборачивает callback-скачку Repository в `Flow` и зеркалит прогресс в `StateFlow`, делегирует отмену.
+
+**Интуиция:** в блоке скачки ModelRegistry — UI-адаптер; остальные его обязанности относятся к блоку использования модели.
+
+#### 5. Диспетчер скачки
+
+**`src/main/kotlin/.../core/data/DownloadRepository.kt`** — интерфейс + `DefaultDownloadRepository`. Распаковывает поля `Model` в `Data`-bundle, создаёт `OneTimeWorkRequest<DownloadWorker>` с уникальностью по имени модели (`enqueueUniqueWork(REPLACE)`) и тегом для отмены, подписывается на `WorkInfo`-LiveData, переводит `WorkInfo.State` → `ModelDownloadStatus` для UI, посылает системное уведомление о завершении, если приложение свёрнуто. Принимает FQN `MainActivity` от `:app` через статическое поле-«почтовый ящик», чтобы не хардкодить класс в библиотеке.
+
+**Интуиция:** Repository — **диспетчер**. `Model` — анкета, `Worker` — качалка, а Repository принимает анкету, выдаёт наряд качалке, следит за ходом и докладывает пользователю. Без него воркер не стартует, UI не узнаёт прогресс, отмена невозможна.
+
+#### 6. HTTP-качалка
+
+**`src/main/kotlin/.../core/worker/DownloadWorker.kt`** — `WorkManager` `CoroutineWorker`. Качает файл по HTTP с поддержкой возобновления (HTTP Range), показывает прогресс в системном уведомлении (тот самый foreground-service из манифеста модуля). Переживает сворачивание приложения и обрывы сети.
+
+На входе получает через `Data`-bundle: URL файла, имя файла, `commitHash` (имя подпапки на диске), папка модели, общий размер; опционально — флаг ZIP, extras-URL’ы/имена; + FQN `MainActivity` для клика по уведомлению. JSON напрямую **не читает** — все поля приходят от Repository.
+
+**Интуиция:** worker — тупая качалка (дали URL и куда положить — качает). Всё «умное» (что именно качать, уникальность, отмена, трансляция прогресса в UI) — в `DownloadRepository`.
+
+---
+
+#### Чтобы добавить новую модель
+
+Править **только** `src/main/assets/model_allowlist.json` — добавить запись с `name`, `modelId`, `modelFile`, `commitHash`, `sizeInBytes`, `taskTypes` (остальные поля опциональны). Требования к записи:
+
+- модель лежит на HuggingFace в org `litert-community`;
+- формат LiteRT-LM (`.litertlm` или `.task`);
+- размер ≤ 10 GB;
+- `commitHash` — настоящий 40-символьный git-SHA коммита на HF.
+
+Если модель **не из `litert-community`** или в другом формате — кроме JSON придётся ослаблять правила в `AllowlistLoader.kt`.
+
+#### Практические оговорки
+
+Валидатор проверяет **форму** записи, но не её **правдивость**. Что JSON не страхует:
+
+- **APK нужно пересобрать** — bundled asset, не runtime-конфиг.
+- **Флаги мультимодальности — честное слово автора.** Указал `llmSupportImage: true` модели, которая картинки не умеет → скачка пройдёт, LiteRT-LM упадёт при первой картинке.
+- **Опечатка в `commitHash` проходит валидатор** — проверяется формат (40 hex), не существование. Сломан один символ → HTTP 404 у пользователя на скачивании.
+- **Формат файла:** регексы проверяют только имя, не содержимое. GGUF под видом `.litertlm` → скачка пройдёт, init движка упадёт невнятно.
+- **`minDeviceMemoryInGb` — только подсказка.** Блокировки при нехватке RAM нет. Занизил → OOM у части юзеров.
+- **Пустой или неправильный `taskTypes`** → модель не появится на ожидаемых экранах. `taskTypes.isEmpty()` спасает (считается LLM), частичный список — нет.
+- **Неподходящий `defaultConfig`** → модель отвечает, но может казаться тупее реальности (универсальные дефолты из `Consts.kt` не обязательно оптимальны).
+- **Удаление модели из JSON** оставляет орфанские файлы на диске у тех, кто её уже скачал. Периодической очистки нет.
+- **Gson молча игнорирует опечатки в именах полей.** `modelID` вместо `modelId` → поле не считается, используется дефолт.
+- **Attribution в `app/src/main/assets/about.md` и `app/src/main/res/values/strings.xml`** захардкожена текстом «Gemma · LiteRT-LM». Не-Gemma модель → несоответствие в UI About.
+- **Лицензирование модели** — не код. Лицензия на HF может ограничивать распространение/коммерческое использование.
+
+#### Кандидаты на доработку
+
+Если когда-нибудь решим автоматизировать что-то из оговорок выше:
+
+- **Верификация capabilities модели** — пробный вызов с image/audio при инициализации, чтобы флаги не расходились с реальностью.
+- **Блокировка/предупреждение при нехватке RAM** (сейчас `minDeviceMemoryInGb` только метка).
+- **Валидация совместимости `taskTypes` с флагами мультимодальности** (нельзя `llm_ask_image` без `llmSupportImage`).
+- **GC орфанских файлов моделей** — сканер «что на диске vs что в allowlist», очистка невостребованного.
+- **HEAD-запрос на URL перед публикацией allowlist’а** — ловить несуществующие коммиты/файлы ещё при сборке.
+- **Валидация формата файла модели** по magic-bytes / метаданным LiteRT-LM (если движок такое даёт).
+- **Локальный импорт модели end-to-end** — scaffolding в `Model` есть (`imported` / `IMPORTS_DIR`), но цепочка до UI не проверена; возможно, недоделано в форке.
 
 ### Что внутри `core-settings/`
 
