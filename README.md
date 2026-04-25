@@ -4,8 +4,6 @@
 
 Форк [Google AI Edge Gallery](https://github.com/google-ai-edge/gallery) с собственным UI, persistent-историей чатов и слоем общего контекста для повседневного использования.
 
-Репозиторий: **PhoneWrap** (рабочее имя). Устанавливаемое приложение называется **Sanctum Machina**.
-
 ---
 
 ## Статус
