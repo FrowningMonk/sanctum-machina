@@ -71,10 +71,10 @@ Thumbs.db
 *~
 
 # ============================================================================
-# Claude Code — per-user local settings (shared settings live in settings.json)
+# Claude Code — methodology, skills, agents, commands, settings.
+# Local-only: the public repo ships the project, not the AI tooling around it.
 # ============================================================================
-.claude/settings.local.json
-.claude/scheduled_tasks.lock
+.claude/
 
 # ============================================================================
 # Vendor — Gallery source snapshot (read-only reference, never committed)
