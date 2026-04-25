@@ -71,10 +71,12 @@ Thumbs.db
 *~
 
 # ============================================================================
-# Claude Code — methodology, skills, agents, commands, settings.
-# Local-only: the public repo ships the project, not the AI tooling around it.
+# Claude Code — methodology, skills, agents, commands, settings,
+# plus CLAUDE.md project instructions. Local-only: the public repo ships
+# the project, not the AI tooling around it.
 # ============================================================================
 .claude/
+CLAUDE.md
 
 # ============================================================================
 # Vendor — Gallery source snapshot (read-only reference, never committed)
