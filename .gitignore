@@ -85,3 +85,9 @@ gallery-source/
 # Personal — NOTES.md is the boss's local memo, intentionally out of VCS
 # ============================================================================
 NOTES.md
+
+# ============================================================================
+# Methodology — feature planning artefacts (specs, tasks, decisions, logs).
+# Local-only: the public repo ships the project, not the process behind it.
+# ============================================================================
+work/
