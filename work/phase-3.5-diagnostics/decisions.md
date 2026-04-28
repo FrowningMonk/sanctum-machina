@@ -69,6 +69,30 @@ Polish-pass commit (0a55790) addressed two highest-value suggestions: (1) plugin
 - Red→green confirmed: test-first edit produced `org.junit.ComparisonFailure at LogcatReaderTest.kt:102` before the production token flip; turned green immediately after.
 - User-facing verification of WARN content + 100 KB cap behavior under flood deferred to Pre-deploy QA Task 12 on Honor 200 per task spec.
 
+## Task 4: InitDiagnostics seam + DiagnosticsState + Hilt module
+
+**Status:** Done
+**Commit:** 692e7e1 (impl) + ed79677 (review polish)
+**Agent:** main agent
+**Summary:** Created the write-only `InitDiagnostics` interface in `:core-runtime/registry/` (Decision 6 — same `interface-в-:core-runtime + @Binds-в-:app` shape used by `LogExportModule`), with `DiagnosticsState` (`@Singleton`, `AtomicReference<InitSnapshot?>`) implementing it in `:app/diagnostics/` and `DiagnosticsModule` doing the `@Binds` (Decision 7 — CAS-correct read-modify-write on `onInitEnd`, visibility between writer-Default and reader-Main). `NoOpInitDiagnostics` test fake lives in `:core-runtime/test/` so `DefaultModelRegistryTest` (Task 6) can isolate without pulling `:app`. No consumers wired in this task — pure seam.
+**Deviations:** None.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved, 4 minor doc/style suggestions → [logs/working/task-4/code-reviewer-1.json](logs/working/task-4/code-reviewer-1.json)
+- security-auditor: approved, zero findings → [logs/working/task-4/security-auditor-1.json](logs/working/task-4/security-auditor-1.json)
+- test-reviewer: passed, 2 minor recommendations → [logs/working/task-4/test-reviewer-1.json](logs/working/task-4/test-reviewer-1.json)
+
+Polish-pass commit (ed79677) picked up the two highest-signal suggestions: (1) `InitDiagnostics` KDoc now documents the two-event protocol (one start, one end; CPU fallback shares the original start) so future drift toward N-progress events has to argue against the contract; (2) `concurrentWriterReaderNeverSeesMixedState` got a KDoc clarifying it guards visibility + snapshot atomicity (CAS lost-update is structural to `AtomicReference` per Decision 7, single-writer race is excluded by `lifecycleMutex`) plus an `observedNonNull` counter that fails the test if scheduling left the reader seeing only `null` — guards against the test silently becoming vacuous. Remaining nits (writer-side error propagation symmetry, `val` getter for `lastInitSnapshot`, symmetric `onInitEnd` overwrite test) left as-is — non-load-bearing in current production scope.
+
+**Verification:**
+- `./gradlew :core-runtime:test :app:test` → BUILD SUCCESSFUL; `DiagnosticsStateTest` 7/7 green (initialStateIsNull, onInitStartProducesInProgressSnapshot, onInitEndTrueProducesOkAndPreservesFields, onInitEndFalseProducesFailedAndPreservesFields, onInitEndWithoutStartIsNoop, secondOnInitStartReplacesPreviousAttempt, concurrentWriterReaderNeverSeesMixedState — 10 000 iterations, observedNonNull > 0 after polish-pass).
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL — confirms Hilt graph validation: KSP found `@Binds bindInitDiagnostics`, `DiagnosticsState` resolves as `InitDiagnostics` in `SingletonComponent`.
+- `grep -rEn "app\.sanctum\.machina\.diagnostics" core-runtime/src/main` → zero matches (module boundary held).
+- `grep -rEn "androidx.compose|androidx.activity" core-runtime/src/main` → zero matches (TAC-7 regression gate clean).
+- User-facing verification deferred to Task 8 (DiagnosticsScreen) and Pre-deploy QA Task 12 (Honor 200 device smoke) per task spec — no UI surface delivered by this seam-only task.
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.
