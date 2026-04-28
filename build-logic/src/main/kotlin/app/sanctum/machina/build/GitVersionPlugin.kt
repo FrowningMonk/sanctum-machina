@@ -30,7 +30,12 @@ class GitVersionPlugin : Plugin<Project> {
                 val stdout = execOutput.standardOutput.asText.get()
                 val exitCode = execOutput.result.get().exitValue
                 gitVersionParse(stdout, exitCode)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                // Reached when `git` is missing from PATH or the Gradle exec API
+                // shape changes — expected non-git environments are handled by
+                // gitVersionParse returning null. Logged at info to surface API
+                // drift without spamming normal builds.
+                project.logger.info("gitVersion: falling back, git describe failed: {}", e.toString())
                 null
             }
         }
