@@ -98,10 +98,10 @@ internal const val NA_SENTINEL: Long = Long.MIN_VALUE
 
 /**
  * Pure renderer for the `last init:` line. Four branches per AC-D6 + Decision 12:
+ *  * `null` → `пока не было`
  *  * `Ok` → `<X.X> ГБ RAM · HH:mm · <modelName> · ok`
  *  * `Failed` → `<X.X> ГБ RAM · HH:mm · <modelName> · ошибка`
  *  * `InProgress` → `Идёт инициализация: <X.X> ГБ RAM · HH:mm · <modelName>`
- *  * `null` → `пока не было`
  *
  * Russian `ГБ` (with floor-precision via [formatGbFloor]) is intentional and
  * matches the same units used on the diagnostics screen (Decision 12). The
@@ -110,6 +110,11 @@ internal const val NA_SENTINEL: Long = Long.MIN_VALUE
  *
  * `zone` defaults to system default — production wants whatever the device user
  * sees when they read the export. Tests pin an explicit zone for determinism.
+ *
+ * `modelName` is flattened via [flattenForLogLine] before interpolation. Today
+ * the value is allowlist-controlled (`DefaultModelRegistry.initialize` matches
+ * against `ModelEntry.model.name`), but a stray `\n` would forge a header line
+ * — defense-in-depth keeps that closed.
  */
 internal fun formatLastInit(
     snapshot: InitSnapshot?,
@@ -120,14 +125,21 @@ internal fun formatLastInit(
     val hhmm = OffsetDateTime
         .ofInstant(Instant.ofEpochMilli(snapshot.atEpochMs), zone)
         .format(HH_MM)
+    val name = flattenForLogLine(snapshot.modelName)
     return when (snapshot.outcome) {
-        Outcome.Ok -> "$ramGb ГБ RAM · $hhmm · ${snapshot.modelName} · ok"
-        Outcome.Failed -> "$ramGb ГБ RAM · $hhmm · ${snapshot.modelName} · ошибка"
-        Outcome.InProgress -> "Идёт инициализация: $ramGb ГБ RAM · $hhmm · ${snapshot.modelName}"
+        Outcome.Ok -> "$ramGb ГБ RAM · $hhmm · $name · ok"
+        Outcome.Failed -> "$ramGb ГБ RAM · $hhmm · $name · ошибка"
+        Outcome.InProgress -> "Идёт инициализация: $ramGb ГБ RAM · $hhmm · $name"
     }
 }
 
 private val HH_MM: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+
+private val LINE_BREAK_OR_TAB = Regex("[\\r\\n\\t]+")
+
+/** Collapse newlines/tabs to single spaces so an untrusted token can't split a log line. */
+internal fun flattenForLogLine(raw: String): String =
+    raw.replace(LINE_BREAK_OR_TAB, " ").trim()
 
 /**
  * Header values, all read via this interface so tests stub deterministically
@@ -181,7 +193,8 @@ interface DeviceInfoProvider {
  *    [ModelRegistry] and [DiagnosticsState] from the Hilt graph and forwards
  *    `{ registry.models.value }` + `{ state.lastInitSnapshot() }` thunks to the
  *    primary.
- *  * **Non-Hilt secondary `(Context)`** — `:crash` process. `DiagnosticsState`
+ *  * **Non-Hilt secondary `(Context)`** — `:crash` process (see
+ *    `architecture.md` § «Non-Hilt construction in :crash»). `DiagnosticsState`
  *    is genuinely unavailable (singleton lives only in main process), so the
  *    snapshot thunk forwards `{ null }` — `last init:` row reads `пока не было`
  *    (AC-H4). Registry thunk likewise forwards `{ emptyList() }` — the crashed

@@ -11,6 +11,7 @@ import app.sanctum.machina.core.registry.ModelRegistry
 import app.sanctum.machina.core.settings.AppSettingsRepository
 import app.sanctum.machina.core.settings.proto.PerModelSettings
 import app.sanctum.machina.crash.CrashState
+import app.sanctum.machina.diagnostics.InitSnapshot
 import app.sanctum.machina.logexport.DeviceInfoProvider
 import app.sanctum.machina.logexport.LogExportManager
 import kotlinx.coroutines.Dispatchers
@@ -316,7 +317,7 @@ private class FakeDeviceInfoProvider(
     override fun processJavaHeapBytes(): Long = error("not used")
     override fun processNativeHeapBytes(): Long = error("not used")
     override fun processTotalPssBytes(): Long = error("not used")
-    override fun lastInitSnapshot(): app.sanctum.machina.diagnostics.InitSnapshot? = error("not used")
+    override fun lastInitSnapshot(): InitSnapshot? = error("not used")
     override fun activeModelId(): String? = error("not used")
     override fun downloadedModels(): List<Pair<String, Long>> = error("not used")
     override fun nowIso(): String = error("not used")

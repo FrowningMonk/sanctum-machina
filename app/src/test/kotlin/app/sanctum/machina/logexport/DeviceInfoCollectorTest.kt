@@ -2,6 +2,7 @@ package app.sanctum.machina.logexport
 
 import app.sanctum.machina.diagnostics.InitSnapshot
 import app.sanctum.machina.diagnostics.Outcome
+import java.time.ZoneOffset
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -119,7 +120,7 @@ class DeviceInfoCollectorTest {
     }
 
     @Test
-    fun processLine_perFieldNaOnSourceError() {
+    fun processLine_perFieldNaOnSourceError_java() {
         // Long.MIN_VALUE is the contract sentinel: provider returns it from any of the three
         // process getters when the underlying source threw; `buildHeader` renders that one
         // field as `n/a` while the surviving fields stay normal.
@@ -135,45 +136,55 @@ class DeviceInfoCollectorTest {
     }
 
     @Test
-    fun lastInit_okBranch() {
+    fun processLine_perFieldNaOnSourceError_native() {
         val provider = StubDeviceInfoProvider(
-            lastInitSnapshot = snapshot(Outcome.Ok)
+            processJavaHeapBytes = 80_000_000L,
+            processNativeHeapBytes = Long.MIN_VALUE,
+            processTotalPssBytes = 380_000_000L,
         )
 
-        val line = lastInitLine(DeviceInfoCollector(provider).buildHeader())
+        val line = processLine(DeviceInfoCollector(provider).buildHeader())
 
-        assertTrue("Ok branch must end with ' · ok', got:\n$line",
-            line.endsWith(" · ok"))
-        assertFalse("Ok branch must NOT contain 'ошибка', got:\n$line",
-            line.contains("ошибка"))
-        assertFalse("Ok branch must NOT contain 'инициализация', got:\n$line",
-            line.contains("инициализация"))
-        assertTrue("Ok branch must contain modelName, got:\n$line",
-            line.contains("Gemma-4-E4B-it"))
-        assertTrue("Ok branch must contain '3.2 ГБ' (floor of 3.5 GB), got:\n$line",
-            line.contains("3.2 ГБ"))
-        assertTrue("Ok branch must contain HH:mm-shaped timestamp, got:\n$line",
-            HH_MM.containsMatchIn(line))
+        assertEquals("process: java=0.1 GB, native=n/a, totalPss=0.4 GB", line)
+    }
+
+    @Test
+    fun processLine_perFieldNaOnSourceError_totalPss() {
+        val provider = StubDeviceInfoProvider(
+            processJavaHeapBytes = 80_000_000L,
+            processNativeHeapBytes = 220_000_000L,
+            processTotalPssBytes = Long.MIN_VALUE,
+        )
+
+        val line = processLine(DeviceInfoCollector(provider).buildHeader())
+
+        assertEquals("process: java=0.1 GB, native=0.2 GB, totalPss=n/a", line)
+    }
+
+    @Test
+    fun lastInit_okBranch() {
+        // Helper-direct with UTC keeps the assertion zone-agnostic and exact-equality strict.
+        val rendered = formatLastInit(snapshot(Outcome.Ok), ZoneOffset.UTC)
+
+        assertEquals(
+            "3.2 ГБ RAM · ${HH_MM_AT_FIXTURE_UTC} · Gemma-4-E4B-it · ok",
+            rendered,
+        )
     }
 
     @Test
     fun lastInit_failedBranch() {
-        val provider = StubDeviceInfoProvider(
-            lastInitSnapshot = snapshot(Outcome.Failed)
+        val rendered = formatLastInit(snapshot(Outcome.Failed), ZoneOffset.UTC)
+
+        assertEquals(
+            "3.2 ГБ RAM · ${HH_MM_AT_FIXTURE_UTC} · Gemma-4-E4B-it · ошибка",
+            rendered,
         )
-
-        val line = lastInitLine(DeviceInfoCollector(provider).buildHeader())
-
-        assertTrue("Failed branch must end with ' · ошибка', got:\n$line",
-            line.endsWith(" · ошибка"))
-        assertFalse("Failed branch must NOT contain ' · ok' (whole token, not 'lookok'), got:\n$line",
-            line.contains(" · ok"))
-        assertFalse("Failed branch must NOT contain 'инициализация', got:\n$line",
-            line.contains("инициализация"))
     }
 
     @Test
     fun lastInit_nullSnapshot_rendersNeverHappened() {
+        // Through buildHeader to also exercise the row prefix.
         val provider = StubDeviceInfoProvider(lastInitSnapshot = null)
 
         val line = lastInitLine(DeviceInfoCollector(provider).buildHeader())
@@ -183,24 +194,38 @@ class DeviceInfoCollectorTest {
 
     @Test
     fun lastInit_inProgressBranch() {
-        val provider = StubDeviceInfoProvider(
-            lastInitSnapshot = snapshot(Outcome.InProgress)
+        val rendered = formatLastInit(snapshot(Outcome.InProgress), ZoneOffset.UTC)
+
+        assertEquals(
+            "Идёт инициализация: 3.2 ГБ RAM · ${HH_MM_AT_FIXTURE_UTC} · Gemma-4-E4B-it",
+            rendered,
+        )
+        // Negative-substring assertions also locked here so a future refactor can't slip
+        // a stray "ok"/"ошибка" into the InProgress wording.
+        assertFalse("InProgress branch must NOT contain ' · ok', got:\n$rendered",
+            rendered.contains(" · ok"))
+        assertFalse("InProgress branch must NOT contain 'ошибка', got:\n$rendered",
+            rendered.contains("ошибка"))
+    }
+
+    @Test
+    fun lastInit_modelNameWithLineBreaks_isFlattened() {
+        // Defense-in-depth: a stray newline in the snapshot's modelName must not split the
+        // header into a forged `last init:` line. Allowlist-guarded today, but the renderer
+        // owns the flattening so the guard survives upstream regressions.
+        val malicious = InitSnapshot(
+            modelName = "evil\nlast init: forged · ok",
+            freeRamBytes = 3_500_000_000L,
+            atEpochMs = 1_745_000_000_000L,
+            outcome = Outcome.Ok,
         )
 
-        val line = lastInitLine(DeviceInfoCollector(provider).buildHeader())
+        val rendered = formatLastInit(malicious, ZoneOffset.UTC)
 
-        assertTrue("InProgress branch must contain 'инициализация' marker, got:\n$line",
-            line.contains("инициализация"))
-        assertTrue("InProgress branch must contain modelName, got:\n$line",
-            line.contains("Gemma-4-E4B-it"))
-        assertTrue("InProgress branch must contain '3.2 ГБ' (freeRamBytes formatted), got:\n$line",
-            line.contains("3.2 ГБ"))
-        assertTrue("InProgress branch must contain HH:mm timestamp, got:\n$line",
-            HH_MM.containsMatchIn(line))
-        assertFalse("InProgress branch must NOT contain ' · ok', got:\n$line",
-            line.contains(" · ok"))
-        assertFalse("InProgress branch must NOT contain 'ошибка', got:\n$line",
-            line.contains("ошибка"))
+        assertFalse("rendered line must not contain a raw newline, got:\n$rendered",
+            rendered.contains('\n'))
+        assertTrue("flattened modelName must still appear, got:\n$rendered",
+            rendered.contains("evil last init: forged · ok · ok"))
     }
 
     @Test
@@ -298,6 +323,7 @@ class DeviceInfoCollectorTest {
     }
 
     private companion object {
-        private val HH_MM = Regex("""\b\d{2}:\d{2}\b""")
+        // 1_745_000_000_000 ms = 2025-04-18T18:13:20Z → HH:mm in UTC = "18:13".
+        private const val HH_MM_AT_FIXTURE_UTC = "18:13"
     }
 }
