@@ -93,6 +93,29 @@ Polish-pass commit (ed79677) picked up the two highest-signal suggestions: (1) `
 - `grep -rEn "androidx.compose|androidx.activity" core-runtime/src/main` → zero matches (TAC-7 regression gate clean).
 - User-facing verification deferred to Task 8 (DiagnosticsScreen) and Pre-deploy QA Task 12 (Honor 200 device smoke) per task spec — no UI surface delivered by this seam-only task.
 
+## Task 5: Pre-flight gate logic + Model Manager UI
+
+**Status:** Done
+**Commit:** 3016bb3 (impl) + 7542c2d (review polish)
+**Agent:** main agent
+**Summary:** Slice 1 of Phase 3.5: top-level pure-funs `gateAllowsDownload` / `formatRamShortage` + `internal formatGbFloor` (cross-file-reused by Task 8) live in a new `GateDecision.kt` together with the `GateDecision` / `ModelRowState` data classes. `ModelManagerViewModel` now `@Inject`s `DeviceInfoProvider` (resolved by the existing `LogExportModule` `@Binds` — no DI changes), reads `totalMemoryBytes()` once at property-init, and exposes `rows: StateFlow<List<ModelRowState>>` via `Eagerly` `stateIn` over `registry.models.map(::toRowState)`. `onDownload` short-circuits before `registry.download(...).launchIn(viewModelScope)` when `!gateAllowsDownload(...)`, matching the same predicate the disabled UI button uses (defence-in-depth, AC). The Composable chain (`ModelList` → `ModelCard` → `ModelStatusSection`) threads `GateDecision`; `NOT_DOWNLOADED` / `PARTIALLY_DOWNLOADED` renders disabled-`Button` + `Text(formatRamShortage(...))` on sub-threshold devices and stays identical on passing ones. `R.string.model_gate_secondary` is added as a localization-reserve only — Phase 3.5 UI reads from `formatRamShortage` (visible-text source-of-truth), so the resource carries `tools:ignore="UnusedResources"`.
+**Deviations:** None.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved, 3 minor → [logs/working/task-5/code-reviewer-1.json](logs/working/task-5/code-reviewer-1.json)
+- security-auditor: approved, zero findings → [logs/working/task-5/security-auditor-1.json](logs/working/task-5/security-auditor-1.json)
+- test-reviewer: passed, 2 minor → [logs/working/task-5/test-reviewer-1.json](logs/working/task-5/test-reviewer-1.json)
+
+Polish-pass commit (7542c2d) picked up the highest-signal items: dropped the now-dead `@Deprecated val models` alias (zero callers — only `WarmupCoordinator` uses `registry.models` directly); deduped the row-state mapping into a private `toRowState(entry)` helper instead of repeating the `GateDecision`-build block in both `.map` and `initialValue`; added `tools:ignore="UnusedResources"` on the localization-reserve string; tightened the two `assertTrue(actual.contains(...))` cases in `FormatRamShortageTest` to full `assertEquals` and the `row_above_threshold_has_gate_allowed` assertion to compare the full `GateDecision`. Skipped suggestions: none load-bearing.
+
+**Verification:**
+- `./gradlew :app:testDebugUnitTest --tests "*GateAllowsDownloadTest*" --tests "*FormatRamShortageTest*" --tests "*ModelManagerViewModelTest*"` → 21/21 green (8 + 4 + 9; legacy 5 VM tests still pass with the new `DeviceInfoProvider` parameter).
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL — Hilt graph resolves `DeviceInfoProvider` through the existing `AndroidDeviceInfoProvider` `@Binds`; KSP runs clean.
+- Red→green confirmed: `:app:compileDebugUnitTestKotlin` failed with 33 unresolved references (`gateAllowsDownload`, `vm.rows`, `gate`, new ctor signature) before implementation; turned green after.
+- User-facing smoke (sub-threshold path with `model_allowlist.json` E4B `minDeviceMemoryInGb = 99` override on Honor 200) deferred to Pre-deploy QA Task 12 per the Honor-200 device-matrix policy and the project-memory note "Verify UI chain before device smoke".
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.

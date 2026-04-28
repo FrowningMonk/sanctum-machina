@@ -1,0 +1,24 @@
+{
+  "verdict": "approved",
+  "summary": "Pre-flight gate logic, ViewModel wiring, and Composable threading match the tech-spec verbatim. Gate semantics are correct (>= inclusive boundary, null-minGb fails closed, no Long-overflow on minGb.toLong() * 1_073_741_824 — the explicit Long literal protects up to ~8.6 EB), totalMemoryBytes() is read exactly once at construction, and onDownload short-circuits before reaching registry.download. Tests cover all AC-T4 boundaries plus the floor/round-up trap. Three minor cleanups below — none block approval.",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerViewModel.kt:89-93",
+      "issue": "The `@Deprecated` `models: StateFlow<List<ModelEntry>>` alias has no consumer. A grep across `app/src/main` for `viewModel.models` / `ModelManagerViewModel.*\\.models` returns zero hits — every other site that uses `registry.models` reads it directly from `ModelRegistry`, not through this VM. The alias is dead code from day one. Keeping a `@Deprecated` shim that nobody depends on adds noise to the public surface and to IDE/lint output without buying anything; the Replace-With suggestion will never fire.",
+      "fix": "Drop `val models: StateFlow<List<ModelEntry>>` and its `@Deprecated` annotation. The task spec described this as an OPTIONAL least-invasive escape hatch (tasks/5.md line 43 — 'если предпочесть наименее-инвазивный путь'); since the screen migration is complete in the same commit, the hatch was never needed. Leaves the VM with a single source of truth (`rows`)."
+    },
+    {
+      "severity": "minor",
+      "file": "app/src/main/kotlin/app/sanctum/machina/ui/modelmanager/ModelManagerViewModel.kt:58-87",
+      "issue": "The mapping block for `ModelRowState` is duplicated verbatim between `.map { entries -> entries.map { entry -> ... } }` (lines 60-72) and `initialValue = registry.models.value.map { entry -> ... }` (lines 76-86). Two identical 10-line blocks. Future maintenance (e.g., adding a field to `GateDecision` for Task 8/12) has to be done in two places, with a real risk of skew between the initial snapshot and the steady-state stream. Note also that with `SharingStarted.Eagerly` the `initialValue` is only observable by a subscriber that races the very first upstream emission — and `registry.models` is itself a `StateFlow` whose `.value` is emitted synchronously into the new `stateIn` flow — so in practice the duplicated `initialValue` is mathematically equivalent to the first `.map` output.",
+      "fix": "Extract the per-entry mapping into a private helper (e.g. `private fun ModelEntry.toRowState() = ModelRowState(entry = this, gate = GateDecision(allowed = gateAllowsDownload(totalBytes, model.minDeviceMemoryInGb), totalBytes = totalBytes, minGb = model.minDeviceMemoryInGb ?: 0))`) and call it from both sites: `.map { entries -> entries.map(ModelEntry::toRowState) }` and `initialValue = registry.models.value.map(ModelEntry::toRowState)`. Same byte-cost, removes the skew risk."
+    },
+    {
+      "severity": "minor",
+      "file": "app/src/main/res/values/strings.xml:13-16",
+      "issue": "`R.string.model_gate_secondary` is declared but never read (the UI calls `formatRamShortage(...)` instead — confirmed by the source-of-truth decision in tasks/5.md line 51). Android Lint will flag this as `UnusedResources` once it runs against a clean baseline. The task explicitly accepts this as a localization-reserve, so the resource is intentional — but the absence of a `tools:ignore=\"UnusedResources\"` annotation means the warning will surface in `./gradlew :app:lintDebug` and may be lumped in with real unused strings during future audits.",
+      "fix": "Either add `tools:ignore=\"UnusedResources\"` on the `<string name=\"model_gate_secondary\">` element (and `xmlns:tools=\"http://schemas.android.com/tools\"` on `<resources>` if not already present), or move the reservation into a comment in `GateDecision.kt` next to `formatRamShortage` and drop the resource entirely until Phase-4-level i18n actually wires it up. Either silences the lint, the second is cleaner because it removes a string resource that has no production reader."
+    }
+  ]
+}
