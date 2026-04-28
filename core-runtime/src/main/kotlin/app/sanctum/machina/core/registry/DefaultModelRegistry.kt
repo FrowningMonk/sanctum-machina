@@ -1,5 +1,6 @@
 package app.sanctum.machina.core.registry
 
+import android.app.ActivityManager
 import android.content.Context
 import androidx.annotation.VisibleForTesting
 import app.sanctum.machina.core.data.Accelerator
@@ -103,6 +104,7 @@ constructor(
   private val allowlistLoader: AllowlistLoader,
   private val errorLog: ErrorLog,
   @ApplicationContext private val context: Context,
+  private val initDiagnostics: InitDiagnostics,
 ) : ModelRegistry {
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -232,6 +234,16 @@ constructor(
         // still-allocated native instance (security-auditor-1 SM2). Safe no-op when Idle.
         releaseEngine(model)
 
+        // Phase 3.5 Decision 8: snapshot RAM AFTER `releaseEngine` (so we measure the memory
+        // available to the new init, not what the prior engine still occupies) and BEFORE the
+        // first `awaitInitialize`. One snapshot per init attempt — GPU+CPU fallback is one
+        // attempt, see CPU-arm comment below. Decision 9: read `availMem` through the already
+        // injected `@ApplicationContext` — no new DI seam.
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val memInfo = ActivityManager.MemoryInfo()
+        activityManager.getMemoryInfo(memInfo)
+        initDiagnostics.onInitStart(modelName, memInfo.availMem, System.currentTimeMillis())
+
         // B2 cancellation recovery (Task 18): without this, cancelling a warmup mid-`awaitInitialize`
         // (e.g. rapid cross-model double-tap) leaves `modelName` pinned at
         // [ModelInitStatus.Initializing]. The derived TopAppBar then renders a Loading spinner
@@ -243,6 +255,7 @@ constructor(
           val err1 = awaitInitialize(model)
           if (err1.isEmpty() && model.instance != null) {
             updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Ready) }
+            initDiagnostics.onInitEnd(true)
             return@withLock Result.success(Unit)
           }
 
@@ -256,13 +269,20 @@ constructor(
           val err2 = awaitInitialize(model)
           if (err2.isEmpty() && model.instance != null) {
             updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Ready) }
+            // Decision 8: GPU+CPU fallback is ONE attempt — no second `onInitStart`, single
+            // `onInitEnd(true)` covers both arms.
+            initDiagnostics.onInitEnd(true)
             return@withLock Result.success(Unit)
           }
 
           errorLog.e(LOG_TAG_INIT, "CPU init failed: $err2")
           updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Failed(err2)) }
+          initDiagnostics.onInitEnd(false)
           Result.failure(RuntimeException("GPU+CPU init failed: $err2"))
         } catch (ce: CancellationException) {
+          // Decision 8: cancellation does NOT finalise the snapshot. The InitSnapshot stays in
+          // `Outcome.InProgress` until the next `onInitStart` (e.g. user retry) replaces it; if
+          // no retry follows, the diagnostics screen renders the InProgress variant verbatim.
           updateEntry(modelName) { it.copy(initStatus = ModelInitStatus.Idle) }
           throw ce
         }

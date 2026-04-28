@@ -214,6 +214,7 @@ class ModelRegistryActiveModelTest {
           allowlistLoader = AllowlistLoader(context, ErrorLog(context)),
           errorLog = ErrorLog(context),
           context = context,
+          initDiagnostics = NoOpInitDiagnostics(),
         )
 
       // Use a probe modelId that cannot coincidentally match a real-allowlist entry loaded by
