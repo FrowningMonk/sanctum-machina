@@ -140,6 +140,30 @@ Polish-pass commit (1c92b48) addressed both test-reviewer suggestions: pinned `f
 - `./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL — `:app` tests unaffected by the registry-side plumbing change.
 - End-to-end visibility of the snapshot in the `.txt` export header (Task 7) and on the diagnostics screen (Task 8) deferred to Task 12 (Honor 200 device smoke) per the task spec — UI chain not yet built.
 
+## Task 7: DeviceInfoCollector header expansion
+
+**Status:** Done
+**Commit:** 119c04a (impl) + 6b00f5c (review polish)
+**Agent:** main agent
+**Summary:** Solution slice 4 of Phase 3.5: extended `DeviceInfoProvider` with 6 methods (`thresholdMemoryBytes`, `isLowMemory`, `processJavaHeapBytes`, `processNativeHeapBytes`, `processTotalPssBytes`, `lastInitSnapshot`) and refactored `AndroidDeviceInfoProvider` into a 3-ctor structure — private primary takes both `entriesProvider` and a new `lastInitSnapshotProvider` thunk; `@Inject` secondary forwards `DiagnosticsState`; non-Hilt `(Context)` secondary forwards `{ null }` so AC-H4 holds in `:crash`. `buildHeader` now emits an extended `memory:` line plus new `process:` and `last init:` rows between `memory:` and `active model:`. Per-field `n/a` mechanism uses `NA_SENTINEL = Long.MIN_VALUE` returned via `runCatching` from the three process getters; `formatGbOrNa` renders the sentinel as `n/a` while sibling fields stay normal. `last init:` row uses a top-level `internal fun formatLastInit(snapshot, zone)` covering all four AC-D6 + Decision 12 branches (null / Ok / Failed / InProgress) — Russian `ГБ` floor-formatted via cross-package `formatGbFloor` from `ui/modelmanager/GateDecision.kt`, `HH:mm` via `OffsetDateTime.ofInstant` with explicit zone for testability.
+**Deviations:** None.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved_with_suggestions, 5 minor nits → [logs/working/task-7/code-reviewer-1.json](logs/working/task-7/code-reviewer-1.json)
+- security-auditor: approved, 3 minor (defense-in-depth recommendations) → [logs/working/task-7/security-auditor-1.json](logs/working/task-7/security-auditor-1.json)
+- test-reviewer: passed, 2 minor → [logs/working/task-7/test-reviewer-1.json](logs/working/task-7/test-reviewer-1.json)
+
+Polish-pass commit (6b00f5c) addressed the highest-signal items: (1) defense-in-depth `flattenForLogLine` helper that collapses newline/tab in `modelName` to single space — closes the log-forging gap flagged in security M-1, locked by `lastInit_modelNameWithLineBreaks_isFlattened`; (2) split `processLine_perFieldNaOnSourceError` into `_java`/`_native`/`_totalPss` so a wiring bug that swaps the sentinel routing between getters is caught; (3) tightened `lastInit_okBranch`/`_failedBranch`/`_inProgressBranch` from `HH:mm` regex + substring into exact-equality assertions on the helper output with `ZoneOffset.UTC` — removes system-zone fragility and shape-only weak check; (4) replaced misleading `Decision 10` KDoc reference on the `:crash` secondary ctor with an `architecture.md § Non-Hilt construction in :crash` pointer; (5) imported `InitSnapshot` in `ModelManagerViewModelTest` instead of leaving the fully-qualified type. Remaining nits left as-is: KDoc branch ordering (cosmetic), the four `memoryInfo()` invocations per `buildHeader` (pre-existing, non-regression), `runCatching(Throwable)` future-proofing concern around `CancellationException` (`buildHeader` is sync today; out of scope).
+
+**Verification:**
+- `./gradlew :app:testDebugUnitTest --tests "*DeviceInfoCollectorTest*" --tests "*LogExportManagerTest*"` → BUILD SUCCESSFUL; 29 tests in `DeviceInfoCollectorTest` (was 3) + 14 in `LogExportManagerTest`, all green.
+- `./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL — full `:app` suite compiles and passes after interface extension; `ModelManagerViewModelTest`'s `FakeDeviceInfoProvider` extended with 6 loud-`error("not used")` overrides per the discover-and-extend-stubs protocol.
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL — Hilt graph resolves the new `DiagnosticsState` parameter on the `@Inject`-ctor through Task 4's `@Binds` in `DiagnosticsModule`.
+- Red→green confirmed: `:app:compileDebugUnitTestKotlin` failed with 14 "overrides nothing" errors before implementation; turned green after.
+- End-to-end visibility of the new `memory:`/`process:`/`last init:` rows in the exported `.txt` deferred to Task 12 (Honor 200 device smoke) per the task spec — UI surface (DiagnosticsScreen export entry-point) lands in Task 8.
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.
