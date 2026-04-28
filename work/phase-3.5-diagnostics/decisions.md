@@ -228,6 +228,33 @@ Audit Wave — auditor is the review. Per-task reviewers absent by design (`revi
 - `grep -c "^- AC-T[1-9]:" …/test-audit.md` → 9 (matches the smoke-required count).
 - `grep -E "^## Mock-framework scan" -A 4 …/test-audit.md` → section present with explicit `<empty>` lines for both Mockito and MockK scans.
 
+## Task 12: Pre-deploy QA
+
+**Status:** Done
+**Commit:** d068c50 (in-cycle fix) + (this commit)
+**Agent:** main agent
+**Summary:** Final wave of Phase 3.5. Auto-verifiable surface — 13/13 tech-spec AC + 40/40 user-spec AC pass; 380/380 unit tests green; config-cache clean; lint baseline stable. Honor 200 manual smoke user-confirmed PASS («работает, считаем фазу выполненной» 2026-04-29). AC-L3 cap-flooding empirically confirmed: ≈ 3.1 KB logcat block in user export, 33× headroom under 100 KB cap, both WARN and ERROR present (Risk 3 does not materialise — vendor `*:W` flood on HONOR is bounded). All 7 risks from tech-spec § Risks closed (1× moved to released-pending-sc1, 6× did not materialise).
+**Deviations:**
+- **SC-1 deferred → phase status `released-pending-sc1`.** External tester screenshots (S20 FE 4G / SM-G780F / realme RMX3085) not collected in this cycle. Per Task 12 edge-case clause not a merge blocker; closes retroactively when ≥1 sub-threshold-device screenshot lands in `logs/qa/external-screenshots/`. Indirect evidence: local gate-proof on Honor 200 (synthetic threshold 99 GB on E4B → user observed disabled «Скачать» + Russian secondary-text) + pure-JVM fixture coverage on `gateAllowsDownload` / `formatRamShortage`.
+- **AC-H3 (`last init:` row format in `.txt` differs from spec).** User-spec wording: English `last init: X.X GB RAM at <ISO>, <model>, ok|failed`. Implementation: Russian `last init: 3.7 ГБ RAM · 23:01 · Gemma-4-E4B-it · ok` (mirrors on-screen format from Decision 12). User decision 2026-04-29 («на второй пох»): accept as-is; spec wording carried forward unchanged. Re-visit if a future grep-driven workflow demands ISO precision.
+
+**Reviews:**
+
+Pre-deploy QA — auditor is the review. Per-task reviewers absent by design (`reviewers: []`).
+
+**In-cycle fix (AC-H2 deviation surfaced + fixed):**
+- Discovered during user's first Honor 200 export: `process: java=0.0 GB, native=0.8 GB, totalPss=0.9 GB` collapsed Java-heap to `0.0 GB` — `formatGbOrNa` floored a tens-of-MB counter to GB precision and erased the diagnostic signal that motivates the row.
+- Fix `d068c50`: added `formatMbOrNa` (integer division by 1024², no decimal — MB precision adequate for Java/native/totalPss); renamed fields to spec-exact `javaHeap` / `nativeHeap` / `totalPss`. Output now reads `process: javaHeap=<N> MB, nativeHeap=<N> MB, totalPss=<N> MB`. Three formatter contracts — `formatGb` (memory:), `formatGbFloor` (last-init Russian on-screen + on `.txt`), `formatMbOrNa` (process:) — codified in KDoc to prevent future drift.
+- Six test assertions in `DeviceInfoCollectorTest` updated under same fixture inputs (80M / 220M / 380M bytes → 76 / 209 / 362 MB after integer division); one full-header golden adjusted accordingly.
+- Re-verified on Honor 200 by user post-fix.
+
+**Verification:**
+- `./gradlew :core-runtime:test :app:test :app:lintDebug :app:assembleDebug --configuration-cache` (post-fix) → BUILD SUCCESSFUL. 84 + 296 = 380 tests, 0 failures, 0 ignored. Configuration cache: stored on first run, reused on second; zero serialization warnings.
+- `aapt dump badging app-debug.apk` → `versionName='v0.3-history-48-g33fa440-dev'` matches `git describe --tags --always --dirty=-dev` (workdir is dirty mid-cycle from the AC-H2 fix; on the final tag-commit the suffix drops).
+- `grep -rEn "app\.sanctum\.machina\.diagnostics" core-runtime/src/main` → 0. `grep -rEn "androidx.compose|androidx.activity" core-runtime/src/main` → 0. `ALLOWED_COMPONENTS` = 14 verbatim from `patterns.md`.
+- AC-L3 measurement on Honor 200: ≈ 3.1 KB logcat block; 13 WARN lines, 10 ERROR lines (HONOR vendor + AOSP framework noise; one functional LiteRT OpenCL-fallback WARN — degradation note, inference fully operational; one Phase-3.5-induced `/proc/smaps_group_types` ERROR from new `Debug.MemoryInfo.totalPss` read on a kernel without the feature — totalPss returns valid value, framework log is benign).
+- Full report: [logs/qa/pre-deploy-qa.md](logs/qa/pre-deploy-qa.md).
+
 ## Task 10: Security Audit
 
 **Status:** Done
