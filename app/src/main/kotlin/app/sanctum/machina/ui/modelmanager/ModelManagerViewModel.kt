@@ -7,6 +7,7 @@ import app.sanctum.machina.core.registry.ModelEntry
 import app.sanctum.machina.core.registry.ModelRegistry
 import app.sanctum.machina.core.settings.AppSettingsRepository
 import app.sanctum.machina.crash.CrashState
+import app.sanctum.machina.logexport.DeviceInfoProvider
 import app.sanctum.machina.logexport.ExportSource
 import app.sanctum.machina.logexport.LogExportManager
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -37,8 +39,57 @@ constructor(
     private val crashState: CrashState,
     private val logExportManager: LogExportManager,
     private val appSettings: AppSettingsRepository,
+    private val deviceInfo: DeviceInfoProvider,
 ) : ViewModel() {
 
+    /**
+     * Captured once on VM construction. `MemoryInfo.totalMem` is a kernel-static value
+     * (cannot change between cold-starts), so a single read is sufficient and avoids
+     * recomputation on every registry emission. Recomposition continues to pick up
+     * registry changes through [rows] without re-reading device memory.
+     */
+    private val totalBytes: Long = deviceInfo.totalMemoryBytes()
+
+    /**
+     * Phase 3.5 Slice 1: reactive view of [registry.models] paired with a per-row
+     * [GateDecision]. UI consumes this directly — the legacy [models] alias below is
+     * kept as a deprecated read-only path for any consumer outside this screen.
+     */
+    val rows: StateFlow<List<ModelRowState>> =
+        registry.models
+            .map { entries ->
+                entries.map { entry ->
+                    val minGb = entry.model.minDeviceMemoryInGb
+                    ModelRowState(
+                        entry = entry,
+                        gate = GateDecision(
+                            allowed = gateAllowsDownload(totalBytes, minGb),
+                            totalBytes = totalBytes,
+                            minGb = minGb ?: 0,
+                        ),
+                    )
+                }
+            }
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.Eagerly,
+                initialValue = registry.models.value.map { entry ->
+                    val minGb = entry.model.minDeviceMemoryInGb
+                    ModelRowState(
+                        entry = entry,
+                        gate = GateDecision(
+                            allowed = gateAllowsDownload(totalBytes, minGb),
+                            totalBytes = totalBytes,
+                            minGb = minGb ?: 0,
+                        ),
+                    )
+                },
+            )
+
+    @Deprecated(
+        message = "Use rows: StateFlow<List<ModelRowState>>; legacy callers without gate access only.",
+        replaceWith = ReplaceWith("rows"),
+    )
     val models: StateFlow<List<ModelEntry>> = registry.models
 
     /**
@@ -65,6 +116,11 @@ constructor(
     val navEvents: SharedFlow<NavEvent> = _navEvents.asSharedFlow()
 
     fun onDownload(entry: ModelEntry) {
+        // Defence-in-depth gate: UI already disables the button on a sub-threshold device,
+        // but a programmatic call (test, future deeplink, accessibility action) must not
+        // reach registry.download — that would enqueue a WorkManager job for a model the
+        // device cannot host.
+        if (!gateAllowsDownload(totalBytes, entry.model.minDeviceMemoryInGb)) return
         // registry.download() is a cold callbackFlow — without a terminal subscriber the
         // WorkManager enqueue inside the producer never runs. Subscribe in viewModelScope.
         // Status updates reach the UI via registry.models StateFlow; we only need to keep

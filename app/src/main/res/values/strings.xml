@@ -10,6 +10,10 @@
   <string name="model_size_gb_format">%1$.1f ГБ</string>
   <string name="model_download_progress_format">%1$d / %2$d МБ</string>
   <string name="model_error_prefix">Ошибка: %1$s</string>
+  <!-- Phase 3.5 Slice 1: pre-flight gate secondary text. Source-of-truth in Phase 3.5
+       is the pure-fun `formatRamShortage(totalBytes, minGb)`; this resource is reserved
+       for future locale support. Both must match verbatim. -->
+  <string name="model_gate_secondary">Недостаточно RAM (%1$s ГБ устройство, нужно %2$d ГБ)</string>
 
   <!-- Buttons (generic) -->
   <string name="btn_download">Скачать</string>

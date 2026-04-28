@@ -67,7 +67,7 @@ fun ModelManagerScreen(
     onAbout: () -> Unit,
     viewModel: ModelManagerViewModel = hiltViewModel(),
 ) {
-    val models by viewModel.models.collectAsStateWithLifecycle()
+    val rows by viewModel.rows.collectAsStateWithLifecycle()
     val hasUnresolvedCrash by viewModel.hasUnresolvedCrash.collectAsStateWithLifecycle()
     val defaultModelId by viewModel.defaultModelId.collectAsStateWithLifecycle()
 
@@ -140,7 +140,7 @@ fun ModelManagerScreen(
                 )
             }
             ModelList(
-                models = models,
+                rows = rows,
                 defaultModelId = defaultModelId,
                 contentPadding = PaddingValues(0.dp),
                 onDownload = viewModel::onDownload,
@@ -154,7 +154,7 @@ fun ModelManagerScreen(
 
 @Composable
 private fun ModelList(
-    models: List<ModelEntry>,
+    rows: List<ModelRowState>,
     defaultModelId: String,
     contentPadding: PaddingValues,
     onDownload: (ModelEntry) -> Unit,
@@ -169,9 +169,11 @@ private fun ModelList(
     ) {
         // Compose identity keys on Model.name (guaranteed unique in the registry); isDefault/onSetDefault
         // below operate on Model.modelId (HF path, empty string pre-Task-2).
-        items(models, key = { it.model.name }) { entry ->
+        items(rows, key = { it.entry.model.name }) { row ->
+            val entry = row.entry
             ModelCard(
                 entry = entry,
+                gate = row.gate,
                 isDefault = entry.model.modelId.isNotEmpty() &&
                     entry.model.modelId == defaultModelId,
                 onDownload = { onDownload(entry) },
@@ -187,6 +189,7 @@ private fun ModelList(
 @Composable
 private fun ModelCard(
     entry: ModelEntry,
+    gate: GateDecision,
     isDefault: Boolean,
     onDownload: () -> Unit,
     onCancel: () -> Unit,
@@ -254,6 +257,7 @@ private fun ModelCard(
             )
             ModelStatusSection(
                 downloadStatus = entry.downloadStatus,
+                gate = gate,
                 onDownload = onDownload,
                 onCancel = onCancel,
                 onLoad = onLoad,
@@ -265,6 +269,7 @@ private fun ModelCard(
 @Composable
 private fun ModelStatusSection(
     downloadStatus: ModelDownloadStatus,
+    gate: GateDecision,
     onDownload: () -> Unit,
     onCancel: () -> Unit,
     onLoad: () -> Unit,
@@ -273,8 +278,21 @@ private fun ModelStatusSection(
         ModelDownloadStatusType.NOT_DOWNLOADED,
         ModelDownloadStatusType.PARTIALLY_DOWNLOADED -> {
             StatusBadge(text = stringResource(R.string.model_status_not_downloaded))
-            Button(onClick = onDownload) {
-                Text(stringResource(R.string.btn_download))
+            if (gate.allowed) {
+                Button(onClick = onDownload) {
+                    Text(stringResource(R.string.btn_download))
+                }
+            } else {
+                // Hardcoded onClick = {} matches the disabled visual; defence-in-depth lives in
+                // ModelManagerViewModel.onDownload, which short-circuits the same predicate.
+                Button(onClick = {}, enabled = false) {
+                    Text(stringResource(R.string.btn_download))
+                }
+                Text(
+                    text = formatRamShortage(gate.totalBytes, gate.minGb),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
         ModelDownloadStatusType.IN_PROGRESS,
