@@ -51,7 +51,7 @@ class DeviceInfoCollectorTest {
             append("version: 0.1.0 (1), debug=true\n")
             append("device: Honor / HONOR 200 / Android 14 (API 34)\n")
             append("memory: total=11.7 GB, available=6.2 GB, threshold=0.4 GB, lowMemory=false\n")
-            append("process: java=0.1 GB, native=0.2 GB, totalPss=0.4 GB\n")
+            append("process: javaHeap=76 MB, nativeHeap=209 MB, totalPss=362 MB\n")
             append("last init: пока не было\n")
             append("active model: litert-community/gemma-4-E2B-it-litert-lm\n")
             append("downloaded models:\n")
@@ -116,7 +116,7 @@ class DeviceInfoCollectorTest {
 
         val line = processLine(DeviceInfoCollector(provider).buildHeader())
 
-        assertEquals("process: java=0.1 GB, native=0.2 GB, totalPss=0.4 GB", line)
+        assertEquals("process: javaHeap=76 MB, nativeHeap=209 MB, totalPss=362 MB", line)
     }
 
     @Test
@@ -132,7 +132,7 @@ class DeviceInfoCollectorTest {
 
         val line = processLine(DeviceInfoCollector(provider).buildHeader())
 
-        assertEquals("process: java=n/a, native=0.2 GB, totalPss=0.4 GB", line)
+        assertEquals("process: javaHeap=n/a, nativeHeap=209 MB, totalPss=362 MB", line)
     }
 
     @Test
@@ -145,7 +145,7 @@ class DeviceInfoCollectorTest {
 
         val line = processLine(DeviceInfoCollector(provider).buildHeader())
 
-        assertEquals("process: java=0.1 GB, native=n/a, totalPss=0.4 GB", line)
+        assertEquals("process: javaHeap=76 MB, nativeHeap=n/a, totalPss=362 MB", line)
     }
 
     @Test
@@ -158,7 +158,7 @@ class DeviceInfoCollectorTest {
 
         val line = processLine(DeviceInfoCollector(provider).buildHeader())
 
-        assertEquals("process: java=0.1 GB, native=0.2 GB, totalPss=n/a", line)
+        assertEquals("process: javaHeap=76 MB, nativeHeap=209 MB, totalPss=n/a", line)
     }
 
     @Test
@@ -253,7 +253,7 @@ class DeviceInfoCollectorTest {
             memoryLine(header)
         )
         assertEquals(
-            "process: java=0.1 GB, native=0.2 GB, totalPss=0.4 GB",
+            "process: javaHeap=76 MB, nativeHeap=209 MB, totalPss=362 MB",
             processLine(header)
         )
     }

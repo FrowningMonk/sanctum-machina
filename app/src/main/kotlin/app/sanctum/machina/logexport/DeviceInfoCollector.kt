@@ -36,7 +36,7 @@ import javax.inject.Inject
  * version: <versionName> (<versionCode>), debug=<true|false>
  * device: <manufacturer> / <model> / Android <release> (API <level>)
  * memory: total=<G.G> GB, available=<G.G> GB, threshold=<G.G> GB, lowMemory=<true|false>
- * process: java=<G.G> GB, native=<G.G> GB, totalPss=<G.G> GB    # `n/a` per-field on source error
+ * process: javaHeap=<M> MB, nativeHeap=<M> MB, totalPss=<M> MB    # `n/a` per-field on source error
  * last init: <Ok|Failed|InProgress|пока не было>                # see [formatLastInit]
  * active model: <id or "none">
  * downloaded models:
@@ -62,9 +62,9 @@ class DeviceInfoCollector @Inject constructor(
             .append(", threshold=").append(formatGb(provider.thresholdMemoryBytes()))
             .append(", lowMemory=").append(provider.isLowMemory())
             .append('\n')
-        append("process: java=").append(formatGbOrNa(provider.processJavaHeapBytes()))
-            .append(", native=").append(formatGbOrNa(provider.processNativeHeapBytes()))
-            .append(", totalPss=").append(formatGbOrNa(provider.processTotalPssBytes()))
+        append("process: javaHeap=").append(formatMbOrNa(provider.processJavaHeapBytes()))
+            .append(", nativeHeap=").append(formatMbOrNa(provider.processNativeHeapBytes()))
+            .append(", totalPss=").append(formatMbOrNa(provider.processTotalPssBytes()))
             .append('\n')
         append("last init: ").append(formatLastInit(provider.lastInitSnapshot())).append('\n')
         append("active model: ").append(provider.activeModelId() ?: "none").append('\n')
@@ -86,13 +86,19 @@ class DeviceInfoCollector @Inject constructor(
 
     private fun formatGbOrNa(bytes: Long): String =
         if (bytes == NA_SENTINEL) "n/a" else formatGb(bytes)
+
+    private fun formatMbOrNa(bytes: Long): String {
+        if (bytes == NA_SENTINEL) return "n/a"
+        val mb = bytes / (1024L * 1024L)
+        return "$mb MB"
+    }
 }
 
 /**
  * Sentinel returned by [DeviceInfoProvider]'s process-memory getters when the
  * underlying source threw — `Debug.MemoryInfo` reads can fail on some OEMs.
  * `buildHeader` renders the offending field as `n/a` while sibling fields keep
- * their normal `X.X GB` rendering.
+ * their normal `<M> MB` rendering.
  */
 internal const val NA_SENTINEL: Long = Long.MIN_VALUE
 
@@ -105,8 +111,9 @@ internal const val NA_SENTINEL: Long = Long.MIN_VALUE
  *
  * Russian `ГБ` (with floor-precision via [formatGbFloor]) is intentional and
  * matches the same units used on the diagnostics screen (Decision 12). The
- * `memory:` and `process:` rows use English `GB` via `formatGb` instead — those
- * are two different formatters and must not be confused.
+ * `memory:` row uses English `GB` via `formatGb`; `process:` row uses English
+ * `MB` via `formatMbOrNa` (java-heap is typically tens of MB — GB-floor would
+ * collapse it to `0.0`). Three separate formatters; do not confuse.
  *
  * `zone` defaults to system default — production wants whatever the device user
  * sees when they read the export. Tests pin an explicit zone for determinism.
