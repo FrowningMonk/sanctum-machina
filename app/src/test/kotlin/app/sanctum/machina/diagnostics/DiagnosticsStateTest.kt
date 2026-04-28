@@ -6,6 +6,7 @@ import org.junit.Assert.fail
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -72,6 +73,15 @@ class DiagnosticsStateTest {
         )
     }
 
+    /**
+     * Guards visibility + immutable-snapshot atomicity: the reader must never see a
+     * snapshot whose fields are blended from two different attempts. Because every
+     * mutation goes through `data class copy` (a fresh object), this test does not
+     * exercise CAS lost-update — that property is structural to `AtomicReference`
+     * itself and is the reason Decision 7 picked it over `@Volatile var`. The
+     * `observedNonNull` counter ensures the race window was actually exercised
+     * (i.e. the reader did not miss every write under unfortunate scheduling).
+     */
     @Test
     fun concurrentWriterReaderNeverSeesMixedState() {
         val state = DiagnosticsState()
@@ -79,6 +89,7 @@ class DiagnosticsStateTest {
         val start = CountDownLatch(1)
         val done = CountDownLatch(2)
         val readerFailure = AtomicReference<AssertionError?>(null)
+        val observedNonNull = AtomicInteger(0)
 
         val writer = Thread {
             start.await()
@@ -102,6 +113,7 @@ class DiagnosticsStateTest {
             try {
                 repeat(iterations) {
                     val snap = state.lastInitSnapshot() ?: return@repeat
+                    observedNonNull.incrementAndGet()
                     val valid = when (snap.modelName) {
                         "modelA" -> snap.freeRamBytes == FREE_RAM_A &&
                             snap.atEpochMs == AT_A &&
@@ -133,6 +145,9 @@ class DiagnosticsStateTest {
         }
 
         readerFailure.get()?.let { throw it }
+        if (observedNonNull.get() == 0) {
+            fail("reader observed only null — race window was not exercised, test is vacuous")
+        }
     }
 
     private companion object {
