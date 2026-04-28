@@ -211,6 +211,23 @@ Audit Wave — auditor is the review. Per-task reviewers absent by design (`revi
 - Shared resources ownership (`DiagnosticsState`, `DeviceInfoProvider`, `ActivityManager`) — matches Architecture § Shared resources table.
 - No duplicate heavy-resource init — production has exactly the prescribed singletons / system-service lookup sites.
 
+## Task 11: Test Audit
+
+**Status:** Done
+**Commit:** (this commit)
+**Agent:** main agent
+**Summary:** White-box test-quality audit of Tasks 1-8 final state on `phase/3.5-diagnostics`. Verdict: **PASS — GO for Pre-deploy QA**. All nine AC-T criteria (AC-T1..AC-T9) covered with concrete, asserting tests across 12 test classes and 114 `@Test` methods (+ 2 hand-rolled `InitDiagnostics` fakes). Mock-framework scan: zero `org.mockito` / `io.mockk` imports anywhere in the repo. Pyramid: 5 pure-JVM files / 39 tests; 7 Robolectric files / 75 tests with per-file justifications (Android `Process.myPid` / `ActivityManager` shadow / `Uri.parse` / `Context`); 0 instrumented. Concurrency test in `DiagnosticsStateTest::concurrentWriterReaderNeverSeesMixedState` uses raw `Thread`+`CountDownLatch` at 10 000 iterations with the spec'd attempt-set assertion plus a vacuous-race guard (positive deviation over spec). Fixture-table coverage for `formatRamShortage`, `gateAllowsDownload`, `gitVersionParse` matches tech-spec § Testing Strategy. Existing-tests-still-passing list reconciled: `AboutViewModelTest` no longer exists because `buildAndWrite` migrated into `DiagnosticsViewModel` per tech-spec note; `AppCorruptionStateTest` lives at `app/engine/` (path drift from tech-spec listing, not a regression). Zero CRITICAL/MAJOR/MINOR findings. Full report: [logs/audit/test-audit.md](logs/audit/test-audit.md).
+**Deviations:** None.
+
+**Reviews:**
+
+Audit Wave — auditor is the review. Per-task reviewers absent by design (`reviewers: []`).
+
+**Verification:**
+- `test -f work/phase-3.5-diagnostics/logs/audit/test-audit.md` → report exists.
+- `grep -c "^- AC-T[1-9]:" …/test-audit.md` → 9 (matches the smoke-required count).
+- `grep -E "^## Mock-framework scan" -A 4 …/test-audit.md` → section present with explicit `<empty>` lines for both Mockito and MockK scans.
+
 ## Task 10: Security Audit
 
 **Status:** Done
