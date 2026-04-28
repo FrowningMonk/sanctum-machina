@@ -164,6 +164,34 @@ Polish-pass commit (6b00f5c) addressed the highest-signal items: (1) defense-in-
 - Red→green confirmed: `:app:compileDebugUnitTestKotlin` failed with 14 "overrides nothing" errors before implementation; turned green after.
 - End-to-end visibility of the new `memory:`/`process:`/`last init:` rows in the exported `.txt` deferred to Task 12 (Honor 200 device smoke) per the task spec — UI surface (DiagnosticsScreen export entry-point) lands in Task 8.
 
+## Task 8: DiagnosticsScreen + ViewModel + Drawer pin + AboutScreen refactor
+
+**Status:** Done
+**Commit:** a9499fe (impl) + follow-up (unused-import cleanup)
+**Agent:** main agent
+**Summary:** Delivered the Phase-3.5 user-facing surface — `DiagnosticsScreen` (RAM section with 4-variant last-init rendering per Decision 12 and 1 s free-RAM tick, Logs section with SAF `.txt` export migrated whole from `AboutScreen` per Decision 11), drawer pin (third item between «Модели» and «О приложении» with `Icons.Outlined.MonitorHeart`), and `AboutScreen` refactor (diagnostics section + SAF launcher + `AboutViewModel` removed; `SafeMarkdown`, `AboutFooter`, 7-tap dev-crash dialog preserved). Polling shape is `flow {}.stateIn(viewModelScope, WhileSubscribed(0), seed)` — flow only runs while Compose collects, seed avoids placeholder frame. Pulled a thin `LogExporter` interface seam over `LogExportManager` so the VM test stays JVM-light and stops needing a `Context` for the export collaborator.
+**Deviations:**
+- `freeRamText` is built inline (`"Свободно: ${formatGbFloor(b)} ГБ"`) instead of a `diagnostics_free_ram_format` string resource — task spec step 8 listed the resource as desirable; the app is Russian-only (`Locale.ROOT`, no fallback per `architecture.md`) so the resource adds an indirection without any localisation payoff. Adding it later is a one-line change if the project ever localises.
+- Reused existing `R.string.log_export_save_button` instead of new `diagnostics_button_save_log` and reused `R.string.log_export_success_toast` / `_error_toast` for snackbars — the strings already say «Сохранить лог» / «Лог сохранён» / «Не удалось сохранить лог»; cloning them under a `diagnostics_*` key would duplicate copy without any change in behaviour, and the task hint explicitly invited reuse of the existing snackbar resources.
+- TDD-anchor test `onCleared_cancelsPolling` was renamed to `whenCollectorCancels_pollingStops` to match the refactored polling shape (`WhileSubscribed(0)` reacts to subscriber cancel; `viewModelScope` cancellation is a backstop). Same intent, more accurate name. Backstop path is exercised in production by Hilt's `ViewModel.clear` and is implicitly covered because `WhileSubscribed` is wired through `viewModelScope`.
+- `DiagnosticsViewModelTest` runs under `RobolectricTestRunner` (Robolectric scope is minimum viable: only the two `buildAndWrite_*` tests need it for `Uri.parse`, and splitting into two classes was rejected because four pure-JVM-eligible tests don't justify the duplication and the Robolectric init is paid once per class).
+- `DiagnosticsState` opened (was final) so the test can substitute `lastInitSnapshot()`. Reader-side seam interface symmetrical to the writer side (`InitDiagnostics`) was considered and rejected — `open class` keeps the test substitution cost at one keyword without inventing an interface for a single consumer.
+- VM took the polling-shape rewrite mid-flight: an earlier `viewModelScope.launch { while(isActive) delay(1_000); ... }` design hung `runTest`'s end-of-block `advanceUntilIdle` forever (verified via `jstack` — the test worker spent infinite time in `delay(1_000)`); switching to `flow.stateIn(WhileSubscribed(0))` fixed it deterministically.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved_with_suggestions, 0 critical / 0 major / 8 minor → [logs/working/task-8/code-reviewer-1.json](logs/working/task-8/code-reviewer-1.json)
+- security-auditor: approved, 1 low (info) → [logs/working/task-8/security-auditor-1.json](logs/working/task-8/security-auditor-1.json)
+- test-reviewer: passed, 0 critical / 0 major / 5 minor → [logs/working/task-8/test-reviewer-1.json](logs/working/task-8/test-reviewer-1.json)
+
+Round 2 not run — all findings were minor / nit; only the unused `kotlinx.coroutines.flow.collect` import was removed inline. Other suggestions (extract `freeRamText` to string resource, tighten `text.contains("ok")` to `endsWith(" · ok")`, pin HH:mm zone to UTC for tests, document the asymmetry between Diagnostics VM (LogExporter) and Home / ModelManager VMs (concrete LogExportManager)) deferred as author discretion / future-cleanup tracking.
+
+**Verification:**
+- `./gradlew :app:testDebugUnitTest --tests "*DiagnosticsViewModelTest*"` → BUILD SUCCESSFUL in 28 s, 6/6 green.
+- `./gradlew :app:testDebugUnitTest :app:assembleDebug` → BUILD SUCCESSFUL in 21 s (full app test suite green, debug APK assembles).
+- Honor 200 device smoke deferred to Task 12 per project memory «Verify UI chain before device smoke» — UI cycle (drawer → screen → SAF → snackbar → back) and AboutScreen 7-tap regression go into the bundled pre-deploy QA matrix there.
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.
