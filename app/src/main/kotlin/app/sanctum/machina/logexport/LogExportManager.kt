@@ -27,6 +27,21 @@ private const val CRASH_REPORT_LOGCAT_PLACEHOLDER = "[logcat available only via 
 enum class ExportSource { About, CrashReport }
 
 /**
+ * Minimal seam over [LogExportManager] for callers that only need the export
+ * pipeline (no `Context` / Hilt graph required to instantiate a fake). Phase
+ * 3.5 Task 8 — `DiagnosticsViewModel` was the first VM to inject the export
+ * manager, and the existing class-only Robolectric pattern made its tests
+ * minutes-slow on a cold cache. Switching the VM dependency to this two-method
+ * interface keeps `DiagnosticsViewModelTest` pure-JVM (per `architecture.md §
+ * Testing` — pure-JVM priority) while leaving the production graph unchanged
+ * (Hilt @Binds in [LogExportModule]).
+ */
+interface LogExporter {
+    suspend fun buildExport(source: ExportSource): String
+    suspend fun writeTo(uri: Uri, content: String)
+}
+
+/**
  * Assembles the exported `.txt` (header + `crash.log` + `errors.log` +
  * `errors.log.1` + `logcat`) as a single UTF-8 [String] on [Dispatchers.IO]
  * and writes it to a SAF-picked `content://` URI.
@@ -53,7 +68,7 @@ open class LogExportManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val deviceInfo: DeviceInfoCollector,
     private val logcat: LogcatReader,
-) {
+) : LogExporter {
 
     /**
      * Test seam for the SAF write path. Production code goes through
@@ -74,7 +89,7 @@ open class LogExportManager @Inject constructor(
         logcat = LogcatReader(DefaultCommandRunner()),
     )
 
-    open suspend fun buildExport(source: ExportSource): String = withContext(Dispatchers.IO) {
+    override suspend fun buildExport(source: ExportSource): String = withContext(Dispatchers.IO) {
         val logsDir = File(context.filesDir, LOG_DIR)
         buildString {
             append(deviceInfo.buildHeader())
@@ -96,7 +111,7 @@ open class LogExportManager @Inject constructor(
         }
     }
 
-    open suspend fun writeTo(uri: Uri, content: String) = withContext(Dispatchers.IO) {
+    override suspend fun writeTo(uri: Uri, content: String) = withContext(Dispatchers.IO) {
         val stream = openOutputStreamForTest(uri)
             ?: throw IOException("openOutputStream returned null")
         stream.use { it.write(content.toByteArray(Charsets.UTF_8)) }

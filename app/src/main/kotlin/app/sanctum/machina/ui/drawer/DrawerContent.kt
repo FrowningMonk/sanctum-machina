@@ -22,6 +22,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.MonitorHeart
 import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -83,6 +84,7 @@ fun DrawerContent(
     onNewChat: () -> Unit,
     onNavigateToModelManager: (modelId: String) -> Unit,
     onOpenModelManager: () -> Unit,
+    onNavigateToDiagnostics: () -> Unit,
     onNavigateToAbout: () -> Unit,
     onPopCurrentChat: () -> Unit,
     viewModel: DrawerViewModel = hiltViewModel(),
@@ -145,6 +147,7 @@ fun DrawerContent(
             }
             DrawerFooter(
                 onOpenModelManager = onOpenModelManager,
+                onNavigateToDiagnostics = onNavigateToDiagnostics,
                 onNavigateToAbout = onNavigateToAbout,
             )
         }
@@ -190,6 +193,7 @@ fun DrawerContent(
 @Composable
 private fun DrawerFooter(
     onOpenModelManager: () -> Unit,
+    onNavigateToDiagnostics: () -> Unit,
     onNavigateToAbout: () -> Unit,
 ) {
     HorizontalDivider()
@@ -204,6 +208,19 @@ private fun DrawerFooter(
             },
             selected = false,
             onClick = onOpenModelManager,
+            modifier = Modifier.padding(horizontal = 12.dp),
+            colors = NavigationDrawerItemDefaults.colors(),
+        )
+        NavigationDrawerItem(
+            label = { Text(stringResource(R.string.drawer_nav_diagnostics)) },
+            icon = {
+                Icon(
+                    imageVector = Icons.Outlined.MonitorHeart,
+                    contentDescription = null,
+                )
+            },
+            selected = false,
+            onClick = onNavigateToDiagnostics,
             modifier = Modifier.padding(horizontal = 12.dp),
             colors = NavigationDrawerItemDefaults.colors(),
         )

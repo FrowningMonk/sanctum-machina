@@ -84,7 +84,7 @@ constructor(
     /**
      * Builds an About-path export and writes it to the SAF-picked URI. Returns
      * [Result.failure] wrapping the [IOException] so the caller renders one snackbar
-     * without leaking exceptions into UI state. Mirrors `AboutViewModel.buildAndWrite`.
+     * without leaking exceptions into UI state. Mirrors `DiagnosticsViewModel.buildAndWrite`.
      */
     suspend fun buildAndWrite(uri: Uri): Result<Unit> = try {
         val content = logExportManager.buildExport(ExportSource.About)

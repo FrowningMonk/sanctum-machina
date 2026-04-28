@@ -139,7 +139,7 @@ constructor(
     fun dismissCrashBanner() = crashState.markDismissed()
 
     /**
-     * Builds the About-path export (live logcat, matches [app.sanctum.machina.ui.about.AboutViewModel])
+     * Builds the About-path export (live logcat, matches [app.sanctum.machina.ui.diagnostics.DiagnosticsViewModel])
      * and writes it to the SAF-picked URI. On success, clears the crash state so
      * the banner goes away. Returns [Result.failure] on [IOException] — the caller
      * shows the failure Snackbar and leaves `crash.log` on disk for a retry.

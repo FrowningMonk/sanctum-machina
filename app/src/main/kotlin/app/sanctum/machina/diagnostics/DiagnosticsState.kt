@@ -18,7 +18,7 @@ import javax.inject.Singleton
  * See Phase 3.5 tech-spec Decision 7.
  */
 @Singleton
-class DiagnosticsState @Inject constructor() : InitDiagnostics {
+open class DiagnosticsState @Inject constructor() : InitDiagnostics {
 
     private val ref = AtomicReference<InitSnapshot?>(null)
 
@@ -32,5 +32,5 @@ class DiagnosticsState @Inject constructor() : InitDiagnostics {
         }
     }
 
-    fun lastInitSnapshot(): InitSnapshot? = ref.get()
+    open fun lastInitSnapshot(): InitSnapshot? = ref.get()
 }
