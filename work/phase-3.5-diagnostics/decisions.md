@@ -192,6 +192,25 @@ Round 2 not run — all findings were minor / nit; only the unused `kotlinx.coro
 - `./gradlew :app:testDebugUnitTest :app:assembleDebug` → BUILD SUCCESSFUL in 21 s (full app test suite green, debug APK assembles).
 - Honor 200 device smoke deferred to Task 12 per project memory «Verify UI chain before device smoke» — UI cycle (drawer → screen → SAF → snackbar → back) and AboutScreen 7-tap regression go into the bundled pre-deploy QA matrix there.
 
+## Task 9: Code Audit
+
+**Status:** Done
+**Commit:** (this commit)
+**Agent:** main agent
+**Summary:** Single-pass cross-component audit of Tasks 1-8 final state on `phase/3.5-diagnostics`. Verdict: **pass** — all 6 cross-component smoke checks green, zero blocker / major / minor findings. Three minor observations (dual-API readers of `lastInitSnapshot`, two private `LOG_TAG_DOWNLOAD` constants, 4× `memoryInfo()` invocations in `buildHeader`) are recorded as deliberate trade-offs already accepted in upstream task decisions; none rise to a finding. Final Wave (Task 12) is unblocked. Full report: [logs/audit/code-audit.md](logs/audit/code-audit.md).
+**Deviations:** None.
+
+**Reviews:**
+
+Audit Wave — auditor is the review. Per-task reviewers absent by design (`reviewers: []`).
+
+**Verification:**
+- `grep -rEn "app\.sanctum\.machina\.diagnostics" core-runtime/src/main` → 0 matches.
+- `grep -rEn "androidx.compose|androidx.activity" core-runtime/src/main` → 0 matches.
+- `ErrorLog.ALLOWED_COMPONENTS` (`core-runtime/.../log/ErrorLog.kt:32-50`) — 14 components verbatim, identical to `patterns.md` whitelist.
+- Shared resources ownership (`DiagnosticsState`, `DeviceInfoProvider`, `ActivityManager`) — matches Architecture § Shared resources table.
+- No duplicate heavy-resource init — production has exactly the prescribed singletons / system-service lookup sites.
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.
