@@ -84,11 +84,11 @@ class AllowlistLoader @Inject constructor(
         }
         val minMemory = m.minDeviceMemoryInGb
         require(minMemory != null) {
-          "model ${m.modelId} rejected: minDeviceMemoryInGb is null/missing"
+          "minDeviceMemoryInGb is null/missing: ${m.modelId}"
         }
         require(minMemory in MIN_DEVICE_MEMORY_GB_RANGE_LO..MIN_DEVICE_MEMORY_GB_RANGE_HI) {
-          "model ${m.modelId} rejected: minDeviceMemoryInGb=$minMemory not in " +
-            "$MIN_DEVICE_MEMORY_GB_RANGE_LO..$MIN_DEVICE_MEMORY_GB_RANGE_HI"
+          "minDeviceMemoryInGb=$minMemory not in " +
+            "$MIN_DEVICE_MEMORY_GB_RANGE_LO..$MIN_DEVICE_MEMORY_GB_RANGE_HI: ${m.modelId}"
         }
         require(m.toModel().url.startsWith(URL_PREFIX)) {
           "Download URL must start with '$URL_PREFIX' for ${m.modelId}"

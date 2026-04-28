@@ -202,7 +202,9 @@ class AllowlistLoaderTest {
     val json = minimalModelJson(minDeviceMemoryInGb = -1)
     val result = parseRaw(json)
     assertTrue(result.isFailure)
-    assertTrue(result.exceptionOrNull()?.message.orEmpty().contains("1..64"))
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected modelId in message: $msg", msg.contains("litert-community/ok"))
+    assertTrue("expected range marker in message: $msg", msg.contains("1..64"))
   }
 
   @Test
@@ -210,7 +212,9 @@ class AllowlistLoaderTest {
     val json = minimalModelJson(minDeviceMemoryInGb = 65)
     val result = parseRaw(json)
     assertTrue(result.isFailure)
-    assertTrue(result.exceptionOrNull()?.message.orEmpty().contains("1..64"))
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected modelId in message: $msg", msg.contains("litert-community/ok"))
+    assertTrue("expected range marker in message: $msg", msg.contains("1..64"))
   }
 
   @Test
@@ -253,7 +257,7 @@ class AllowlistLoaderTest {
     val lines = errorLogFile.readLines()
     assertEquals("expected exactly one log entry, got: $lines", 1, lines.size)
     val entry = lines.single()
-    assertTrue("missing [download] component tag in: $entry", entry.contains("[download]"))
+    assertTrue("missing 'download' component tag in: $entry", entry.contains("download"))
     assertTrue("missing 'model rejected' in: $entry", entry.contains("model rejected"))
     assertTrue("missing rejected modelId in: $entry", entry.contains("litert-community/ok"))
   }
