@@ -34,7 +34,7 @@ class LogcatReader @Inject constructor(
             "-v",
             "threadtime",
             "--pid=${Process.myPid()}",
-            "*:E",
+            "*:W",
         )
         val result = runner.run(argv, LOGCAT_TIMEOUT_MS)
         return when {

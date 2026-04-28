@@ -99,7 +99,7 @@ class LogcatReaderTest {
             "argv[4] must match ^--pid=\\d+$, got '${argv[4]}'",
             argv[4].matches(Regex("^--pid=\\d+$"))
         )
-        assertEquals("*:E", argv[5])
+        assertEquals("*:W", argv[5])
     }
 
     private class StubCommandRunner(private val result: LogcatResult) : CommandRunner {
