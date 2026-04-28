@@ -28,6 +28,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 /**
@@ -80,35 +81,35 @@ class DefaultModelRegistryTest {
 
   @Test
   fun initialize_recordsExactlyOneOnInitStartBeforeFirstAwaitInitialize() = runBlocking {
+    // Inject a known non-zero `availMem` via ShadowActivityManager so the assertion would catch
+    // a regression that hardcoded `0L` (which Robolectric's default getMemoryInfo also returns).
+    val expectedAvailMem = 7_654_321_000L
+    val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+    val seedInfo = ActivityManager.MemoryInfo().apply { availMem = expectedAvailMem }
+    shadowOf(am).setMemoryInfo(seedInfo)
+
     val recording = RecordingInitDiagnostics()
     val helper = QueuedLlmModelHelper(listOf(Response.Success))
     val registry = buildRegistry(helper, recording)
     registry.awaitEntry(modelName)
 
+    val before = System.currentTimeMillis()
     val result = registry.initialize(modelName)
+    val after = System.currentTimeMillis()
 
     assertTrue("init must succeed for this arm", result.isSuccess)
     assertEquals(1, recording.starts.size)
     val first = recording.starts.first()
     assertEquals(modelName, first.first)
-    // The recorded `freeRamBytes` must equal what `ActivityManager.MemoryInfo.availMem` reports
-    // at the moment the test runs. Robolectric's default `availMem` is 0; on a real device it is
-    // non-zero. We assert equality with a fresh read against the same API so this test pins
-    // "registry reads availMem via ActivityManager", independent of host-OS / shadow defaults.
-    val expectedAvailMem = run {
-      val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-      val info = ActivityManager.MemoryInfo()
-      am.getMemoryInfo(info)
-      info.availMem
-    }
     assertEquals(
       "freeRamBytes must come from ActivityManager.MemoryInfo.availMem",
       expectedAvailMem,
       first.second,
     )
-    // `atEpochMs` must be a sane epoch-ms value taken near now (not 0L, not the future).
-    val now = System.currentTimeMillis()
-    assertTrue("atEpochMs must be near `now`", first.third in (now - 60_000)..now)
+    assertTrue(
+      "atEpochMs must be sampled inside the initialize() call",
+      first.third in before..after,
+    )
     // The registry must call `onInitStart` before any `onInitEnd`. With a queued helper the
     // helper invocation has already happened by this point, so `callOrder()` is fully populated.
     val order = recording.callOrder()
