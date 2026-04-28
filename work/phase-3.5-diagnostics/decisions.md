@@ -211,6 +211,25 @@ Audit Wave — auditor is the review. Per-task reviewers absent by design (`revi
 - Shared resources ownership (`DiagnosticsState`, `DeviceInfoProvider`, `ActivityManager`) — matches Architecture § Shared resources table.
 - No duplicate heavy-resource init — production has exactly the prescribed singletons / system-service lookup sites.
 
+## Task 10: Security Audit
+
+**Status:** Done
+**Commit:** (this commit)
+**Agent:** main agent
+**Summary:** Single-pass security audit of Tasks 1-8 final state on `phase/3.5-diagnostics` against OWASP Top 10 (2021). Verdict: **pass** — zero critical / high / medium / low findings. All 10 OWASP categories covered (A01-A10) with explicit verdicts (5× ok, 5× n/a — n/a's are server/auth/crypto categories that don't apply to a local Android-on-device-LLM app). All 7 targeted checks (input validation, path traversal, command injection, sensitive data in `.txt`, `DiagnosticsState` thread-safety, `:crash` degradation, `MemoryInfo.availMem` privilege) closed as ok. Three info-level future-hardening recommendations recorded (`version`-field regex, `runCatching(Throwable)` on async boundaries, `versionName` mirror) — none blocking deploy. Final Wave (Task 12, Pre-deploy QA) is unblocked from a security perspective. Full report: [logs/audit/security-audit.md](logs/audit/security-audit.md).
+**Deviations:** None.
+
+**Reviews:**
+
+Audit Wave — auditor is the review. Per-task reviewers absent by design (`reviewers: []`).
+
+**Verification:**
+- `work/phase-3.5-diagnostics/logs/audit/security-audit.md` exists.
+- Report contains OWASP Top 10 section with all A01-A10 verdicts.
+- Report contains targeted checks 4.1-4.7 with explicit per-check verdict.
+- Findings section explicitly states "no security findings"; reasoning enumerates checked surfaces (bundled signed allowlist, argv-list ProcessBuilder, AtomicReference snapshot scalars, SAF system-mediated user gesture).
+- Cross-reference matrix vs. per-task auditor passes confirms no regression between per-task and integrated-state audits.
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.
