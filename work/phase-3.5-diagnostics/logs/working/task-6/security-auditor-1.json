@@ -1,0 +1,78 @@
+{
+  "status": "approved",
+  "verdict": "approve",
+  "summary": {
+    "totalFindings": 0,
+    "critical": 0,
+    "major": 0,
+    "minor": 0,
+    "scope": "Phase 3.5 Task 6 — wiring InitDiagnostics into DefaultModelRegistry.initialize (commit 207c30b). Audited DefaultModelRegistry.kt diff hunk, RecordingInitDiagnostics.kt test fake, and DefaultModelRegistryTest.kt under OWASP Mobile Top 10 framing per task brief.",
+    "owaspCoverage": {
+      "M1_improperCredentialUsage": "n/a — no credentials touched",
+      "M2_inadequateSupplyChainSecurity": "n/a — no new dependencies",
+      "M3_insecureAuthAuthz": "n/a — no auth surface",
+      "M4_insufficientInputOutputValidation": "clean — modelName flows from internal allowlist registry, not user input; freeRamBytes and atEpochMs are JNI/clock primitives, not parsed",
+      "M5_insecureCommunication": "n/a — no IPC, no network, no IO",
+      "M6_inadequatePrivacyControls": "reviewed — see notes below; no finding",
+      "M7_insufficientBinaryProtections": "n/a",
+      "M8_securityMisconfiguration": "clean — no new config surface, no exported components, no new permissions",
+      "M9_insecureDataStorage": "n/a — DiagnosticsState is in-memory AtomicReference, not persisted",
+      "M10_insufficientCryptography": "n/a"
+    }
+  },
+  "findings": [],
+  "notes": [
+    {
+      "topic": "PII / sensitive data leakage via modelName in `.txt` export (M6)",
+      "assessment": "not a finding",
+      "rationale": "modelName is the registry-internal `Model.name` (e.g. `Gemma-4-E2B-it`) — a curated string from `core-runtime/src/main/assets/model_allowlist.json`, the same string already exposed in: (a) the existing `active model:` line in DeviceInfoCollector header (LogExportManager has been writing it pre-Task-6), (b) the user-visible Model Manager UI, (c) ErrorLog entries via LOG_TAG_INIT. The Task 6 wiring adds exactly the same identifier into the same `.txt` export with no new exposure surface. The HF model id (e.g. `litert-community/gemma-4-E2B-it-litert-lm`) is not what's recorded — the registry passes `modelName` (the local name field), and that's the curated allowlist string. No new PII channel."
+    },
+    {
+      "topic": "freeRamBytes as fingerprinting input (M6)",
+      "assessment": "not a finding",
+      "rationale": "ActivityManager.MemoryInfo.availMem is dynamic device-state telemetry, not a stable identifier. It changes by the second and is the same class of data the existing DeviceInfoCollector header already exposes (`available=`, `total=`, `threshold=` are siblings landing in the same `.txt`). Adding a single per-init snapshot of the same field does not expand fingerprintability beyond what the `.txt` export already provides. The export is user-initiated SAF write — user controls destination; no implicit transmission."
+    },
+    {
+      "topic": "Concurrency / write-write race on the registry seam",
+      "assessment": "not a finding",
+      "rationale": "Both `onInitStart` (line 245) and the three `onInitEnd` call-sites (258, 274, 280) execute under `lifecycleMutex.withLock` on Dispatchers.Default. `DefaultModelRegistry` is `@Singleton` so there is exactly one writer-process-wide. The reader-side (DiagnosticsState — AtomicReference per Decision 7) lives in `:app` and is exercised by the diagnostics ViewModel on Main; visibility is guaranteed by AtomicReference's volatile semantics. The seam itself only forwards plain values (String, Long, Long, Boolean) — no shared mutable object handed across threads, so no partial-state leak is reachable from the registry side."
+    },
+    {
+      "topic": "Resource handling — ActivityManager.MemoryInfo allocation per init",
+      "assessment": "not a finding",
+      "rationale": "`ActivityManager.MemoryInfo()` is a small POJO holding 5 longs + 1 boolean (~50 bytes). Allocated once per `initialize()` call (init runs 5-30s), referenced only by the local `memInfo` val for the duration of `getMemoryInfo()`, then becomes GC-eligible after `onInitStart` reads `availMem` into a primitive Long. No retained reference: the seam takes Long-by-value, RecordingInitDiagnostics stores Triple<String, Long, Long> (boxed but harmless), AtomicReference in DiagnosticsState wraps an InitSnapshot data class with primitive fields. Bounded — at most one MemoryInfo instance per init attempt × a handful of attempts per session. ActivityManager itself is a system service handle, no close() obligation. No leak."
+    },
+    {
+      "topic": "Cancellation arm skips onInitEnd — invariant analysis",
+      "assessment": "not a finding (matches Decision 8 contract)",
+      "rationale": "The `catch (CancellationException)` arm at line 282-287 deliberately omits `onInitEnd`. This leaves the AtomicReference snapshot in `Outcome.InProgress`. Per Decision 7, the next `onInitStart` does `ref.set(...)` which unconditionally replaces the prior snapshot — including a stale InProgress one. So the chain is: (a) cancel → InProgress retained, (b) user retries → next initialize() calls onInitStart which overwrites via AtomicReference.set, returning the snapshot to a fresh InProgress. No state-machine deadlock, no leaked monitor. Diagnostics UI renders the stale InProgress verbatim (Decision 12 — fourth render variant exists by design). No security invariant violated. The registry-side `model.initStatus` is correctly reset to Idle on cancellation (line 286), so the runtime invariant (initStatus consistency) is preserved independent of the diagnostics seam."
+    },
+    {
+      "topic": "Test fake security — RecordingInitDiagnostics scope",
+      "assessment": "not a finding",
+      "rationale": "Verified via Grep across the repo: `RecordingInitDiagnostics` and `NoOpInitDiagnostics` are present only in `core-runtime/src/test/kotlin/...` (test source-set). No production source imports them. Gradle's source-set isolation prevents `src/main/` from accessing `src/test/` types — Kotlin compiler would fail. Hilt graph in `:app` binds `InitDiagnostics → DiagnosticsState` (Task 4 module), which is the production binding; the test fakes are never reachable from a release build. No accidental production wiring risk."
+    },
+    {
+      "topic": "Attack surface delta",
+      "assessment": "not a finding",
+      "rationale": "The change adds: one `getSystemService` call (read-only system API), one `MemoryInfo()` allocation, one method call into an injected interface. No new IPC (the seam is a plain Kotlin interface inside the same process), no file IO, no network, no SharedPreferences, no Intent, no exported component, no new permission, no inter-process state (DiagnosticsState is `@Singleton` in main process only — :crash process gets `null` per Task 4 contract). Surface is strictly internal to the main app process."
+    },
+    {
+      "topic": "Hardcoded secrets scan",
+      "assessment": "clean",
+      "rationale": "No API keys, tokens, passwords, or credentials in the diff. The model-name string `Gemma-4-E2B-it` in tests is a public allowlist identifier, not a secret."
+    },
+    {
+      "topic": "Time source `System.currentTimeMillis()`",
+      "assessment": "not a finding (informational)",
+      "rationale": "Wall-clock time is correct for the diagnostic use-case (epoch-ms displayed to user as HH:mm). It is wall-clock-jump-sensitive (NTP / user manual change can move it backward) — but for human-readable diagnostic display this is the desired behavior. Not security-relevant."
+    }
+  ],
+  "auditedFiles": [
+    "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt (constructor + initialize hunk)",
+    "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistryTest.kt (new)",
+    "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/RecordingInitDiagnostics.kt (new)",
+    "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/ModelRegistryActiveModelTest.kt (1-line edit — adds NoOpInitDiagnostics() to ctor)"
+  ],
+  "decision": "approved"
+}

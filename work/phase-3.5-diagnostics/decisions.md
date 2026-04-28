@@ -116,6 +116,30 @@ Polish-pass commit (7542c2d) picked up the highest-signal items: dropped the now
 - Red→green confirmed: `:app:compileDebugUnitTestKotlin` failed with 33 unresolved references (`gateAllowsDownload`, `vm.rows`, `gate`, new ctor signature) before implementation; turned green after.
 - User-facing smoke (sub-threshold path with `model_allowlist.json` E4B `minDeviceMemoryInGb = 99` override on Honor 200) deferred to Pre-deploy QA Task 12 per the Honor-200 device-matrix policy and the project-memory note "Verify UI chain before device smoke".
 
+## Task 6: Wire InitDiagnostics into DefaultModelRegistry.initialize
+
+**Status:** Done
+**Commit:** 207c30b (impl) + 1c92b48 (review polish)
+**Agent:** main agent
+**Summary:** Plumbed the `InitDiagnostics` seam from Task 4 into `DefaultModelRegistry.initialize`. Added `@Inject`-injected `initDiagnostics: InitDiagnostics` parameter; under `lifecycleMutex.withLock` — after `releaseEngine(model)` and before the first `awaitInitialize` — the registry reads `availMem` via the already-injected `@ApplicationContext` (Decision 9, no new DI seam) and emits exactly one `onInitStart(modelName, freeRamBytes, atEpochMs)` per init attempt. `onInitEnd(true)` fires on the GPU and CPU-fallback success arms — one snapshot per attempt, never two (Decision 8); `onInitEnd(false)` fires on the full-failure arm after `errorLog.e` and `updateEntry { Failed }`. The `CancellationException` arm intentionally skips `onInitEnd` so the snapshot stays in `Outcome.InProgress` until the next `onInitStart` replaces it. Added `RecordingInitDiagnostics` test fake (positive call-order assertions) and `DefaultModelRegistryTest` covering all five TDD-anchor cases, plus a one-line ctor update in `ModelRegistryActiveModelTest` to match the new signature.
+**Deviations:** None.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved, zero findings → [logs/working/task-6/code-reviewer-1.json](logs/working/task-6/code-reviewer-1.json)
+- security-auditor: approved, zero findings → [logs/working/task-6/security-auditor-1.json](logs/working/task-6/security-auditor-1.json)
+- test-reviewer: passed, two minor advisory tightenings → [logs/working/task-6/test-reviewer-1.json](logs/working/task-6/test-reviewer-1.json)
+
+Polish-pass commit (1c92b48) addressed both test-reviewer suggestions: pinned `freeRamBytes` to a known non-zero value via `ShadowActivityManager.setMemoryInfo` (the prior equality-with-fresh-read assertion would also have passed against a hardcoded `0L` since Robolectric's default `availMem` is 0), and tightened the `atEpochMs` window from a 60-second band relative to `now` to brackets captured immediately around the `registry.initialize()` call.
+
+**Verification:**
+- `./gradlew :core-runtime:testDebugUnitTest --tests "*DefaultModelRegistryTest*"` → BUILD SUCCESSFUL; 5/5 TDD-anchor tests green (start placement + availMem + atEpochMs window, GPU success arm, CPU-fallback success arm == one end(true), full-failure arm == one end(false), cancellation == zero ends).
+- `./gradlew :core-runtime:testDebugUnitTest` → BUILD SUCCESSFUL — full `:core-runtime` suite, no regressions in pre-existing tests (`ModelRegistryActiveModelTest` updated minimally with `initDiagnostics = NoOpInitDiagnostics()`).
+- `./gradlew :core-runtime:compileDebugKotlin :app:compileDebugKotlin` → BUILD SUCCESSFUL — confirms Hilt graph resolves the new `InitDiagnostics` constructor parameter through the Task-4 `@Binds DiagnosticsState` in `DiagnosticsModule`.
+- `./gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL — `:app` tests unaffected by the registry-side plumbing change.
+- End-to-end visibility of the snapshot in the `.txt` export header (Task 7) and on the diagnostics screen (Task 8) deferred to Task 12 (Honor 200 device smoke) per the task spec — UI chain not yet built.
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.
