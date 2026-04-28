@@ -45,6 +45,7 @@ data class AllowedModel(
   val llmSupportImage: Boolean = false,
   val llmSupportAudio: Boolean = false,
   val llmSupportThinking: Boolean = false,
+  val minDeviceMemoryInGb: Int? = null,
 ) {
   fun toModel(): Model {
     val downloadUrl = "https://huggingface.co/$modelId/resolve/$commitHash/$modelFile?download=true"
@@ -91,6 +92,7 @@ data class AllowedModel(
       llmSupportImage = llmSupportImage,
       llmSupportAudio = llmSupportAudio,
       llmSupportThinking = llmSupportThinking,
+      minDeviceMemoryInGb = minDeviceMemoryInGb,
       isLlm = isLlmModel,
       runtimeType = RuntimeType.LITERT_LM,
     )

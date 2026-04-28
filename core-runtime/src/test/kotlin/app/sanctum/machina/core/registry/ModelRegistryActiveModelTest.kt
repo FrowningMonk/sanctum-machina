@@ -211,7 +211,7 @@ class ModelRegistryActiveModelTest {
         DefaultModelRegistry(
           downloadRepository = NoOpDownloadRepository,
           llmModelHelper = NoOpLlmModelHelper,
-          allowlistLoader = AllowlistLoader(context),
+          allowlistLoader = AllowlistLoader(context, ErrorLog(context)),
           errorLog = ErrorLog(context),
           context = context,
         )
