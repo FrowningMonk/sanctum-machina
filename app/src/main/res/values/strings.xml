@@ -1,4 +1,4 @@
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
   <string name="app_name">Sanctum Machina</string>
 
   <!-- ModelManager screen -->
@@ -12,8 +12,9 @@
   <string name="model_error_prefix">Ошибка: %1$s</string>
   <!-- Phase 3.5 Slice 1: pre-flight gate secondary text. Source-of-truth in Phase 3.5
        is the pure-fun `formatRamShortage(totalBytes, minGb)`; this resource is reserved
-       for future locale support. Both must match verbatim. -->
-  <string name="model_gate_secondary">Недостаточно RAM (%1$s ГБ устройство, нужно %2$d ГБ)</string>
+       for future locale support and is not read by the UI yet, hence UnusedResources
+       is suppressed. Both must match verbatim once the locale path lands. -->
+  <string name="model_gate_secondary" tools:ignore="UnusedResources">Недостаточно RAM (%1$s ГБ устройство, нужно %2$d ГБ)</string>
 
   <!-- Buttons (generic) -->
   <string name="btn_download">Скачать</string>

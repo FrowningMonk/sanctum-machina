@@ -29,7 +29,6 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -192,9 +191,9 @@ class ModelManagerViewModelTest {
 
         val rows = vm.rows.value
         assertEquals(1, rows.size)
-        assertTrue(
-            "Above-threshold device should not be gated, got allowed=${rows[0].gate.allowed}",
-            rows[0].gate.allowed,
+        assertEquals(
+            GateDecision(allowed = true, totalBytes = 12_000_000_000L, minGb = 6),
+            rows[0].gate,
         )
     }
 

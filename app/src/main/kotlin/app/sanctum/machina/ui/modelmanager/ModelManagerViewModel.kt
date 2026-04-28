@@ -52,45 +52,30 @@ constructor(
 
     /**
      * Phase 3.5 Slice 1: reactive view of [registry.models] paired with a per-row
-     * [GateDecision]. UI consumes this directly — the legacy [models] alias below is
-     * kept as a deprecated read-only path for any consumer outside this screen.
+     * [GateDecision]. UI consumes this directly; the gate (`totalBytes`, `minGb`,
+     * `allowed`) is materialized at every emission so a Compose recomposition picks
+     * up registry changes without re-reading device memory.
      */
     val rows: StateFlow<List<ModelRowState>> =
         registry.models
-            .map { entries ->
-                entries.map { entry ->
-                    val minGb = entry.model.minDeviceMemoryInGb
-                    ModelRowState(
-                        entry = entry,
-                        gate = GateDecision(
-                            allowed = gateAllowsDownload(totalBytes, minGb),
-                            totalBytes = totalBytes,
-                            minGb = minGb ?: 0,
-                        ),
-                    )
-                }
-            }
+            .map { entries -> entries.map(::toRowState) }
             .stateIn(
                 scope = viewModelScope,
                 started = SharingStarted.Eagerly,
-                initialValue = registry.models.value.map { entry ->
-                    val minGb = entry.model.minDeviceMemoryInGb
-                    ModelRowState(
-                        entry = entry,
-                        gate = GateDecision(
-                            allowed = gateAllowsDownload(totalBytes, minGb),
-                            totalBytes = totalBytes,
-                            minGb = minGb ?: 0,
-                        ),
-                    )
-                },
+                initialValue = registry.models.value.map(::toRowState),
             )
 
-    @Deprecated(
-        message = "Use rows: StateFlow<List<ModelRowState>>; legacy callers without gate access only.",
-        replaceWith = ReplaceWith("rows"),
-    )
-    val models: StateFlow<List<ModelEntry>> = registry.models
+    private fun toRowState(entry: ModelEntry): ModelRowState {
+        val minGb = entry.model.minDeviceMemoryInGb
+        return ModelRowState(
+            entry = entry,
+            gate = GateDecision(
+                allowed = gateAllowsDownload(totalBytes, minGb),
+                totalBytes = totalBytes,
+                minGb = minGb ?: 0,
+            ),
+        )
+    }
 
     /**
      * Flow-backed view of `crash.log` existence (Flow B / US-B, Decision 6).

@@ -1,7 +1,6 @@
 package app.sanctum.machina.ui.modelmanager
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -32,19 +31,13 @@ class FormatRamShortageTest {
     fun format_exactly_5GB_yields_5_0() {
         // 5_368_709_120 = 5 * 1_073_741_824. Trailing ".0" must be present (locks "5 ГБ" regression).
         val actual = formatRamShortage(totalBytes = 5_368_709_120L, minGb = 6)
-        assertTrue(
-            "expected '5.0 ГБ' substring, got: $actual",
-            actual.contains("5.0 ГБ"),
-        )
+        assertEquals("Недостаточно RAM (5.0 ГБ устройство, нужно 6 ГБ)", actual)
     }
 
     @Test
     fun format_just_below_4GB_floors_to_3_9() {
         // 4_294_967_295 = (4 GB - 1 byte). Must floor to "3.9", never round up to "4.0".
         val actual = formatRamShortage(totalBytes = 4_294_967_295L, minGb = 4)
-        assertTrue(
-            "expected '3.9 ГБ' substring (floor, not round), got: $actual",
-            actual.contains("3.9 ГБ"),
-        )
+        assertEquals("Недостаточно RAM (3.9 ГБ устройство, нужно 4 ГБ)", actual)
     }
 }
