@@ -82,3 +82,26 @@ Added regression test `bootstrapPersistent_draftCommit_resetsBeforeAutoResumeRun
 - Smoke grep `resetConversation\(` in `ChatViewModel.kt` → 4 production call sites (lines 334, 463, 480, 910), each with explicit `reason = ResetReason.<NAME>`; no implicit defaults.
 - Smoke grep `MAX_TOKENS` in `ChatViewModel.kt` → only in `classifyApplyLevel` HEAVY locals (lines 1383-1384) and a justification comment in the `LIGHT_FIELD_LABELS` block (line 1597); not in the Light set.
 - User-on-device verification (Honor 200 a/b/c per task spec) deferred to Task 10 pre-deploy QA per memory rule `feedback_smoke_verification.md` — bundled with Task 4/6 device smoke for one Honor 200 sweep instead of three.
+
+---
+
+## Task 4: `enableEdgeToEdge()` in `MainActivity` and `CrashReportActivity`
+
+**Status:** Done
+**Commit:** c713498
+**Agent:** main agent
+**Summary:** Added `androidx.activity.enableEdgeToEdge` import and call to both hosted Activities per Decision 7. In `MainActivity.onCreate` it sits immediately after `super.onCreate(...)` and before the POST_NOTIFICATIONS block / `setContent`. In `CrashReportActivity.onCreate` it sits AFTER the existing `window.setFlags(FLAG_SECURE, FLAG_SECURE)` and BEFORE `logExportManager = ...` / `setContent`, so FLAG_SECURE remains set first and is unaffected by the AndroidX call (which only touches `SystemBarStyle` + `setDecorFitsSystemWindows(false)`). No manual `setDecorFitsSystemWindows` / `statusBarColor` / `navigationBarColor` introduced; no `Build.VERSION.SDK_INT` guard (minSdk=31, API 21+).
+**Deviations:** None.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approve, 0 findings — all Decision 7 constraints verified (call ordering before `setContent`, no forbidden APIs, no version-guard, FLAG_SECURE ordered before `enableEdgeToEdge`, scope limited to two files) → [logs/working/task-4/code-reviewer-1.json](logs/working/task-4/code-reviewer-1.json)
+- security-auditor: approve, 0 blocker / 0 major / 0 minor, 1 info note (suggest a future instrumentation assertion that `FLAG_SECURE` survives on `CrashReportActivity` — deferred to Audit Wave Task 8, not a Task 4 blocker) → [logs/working/task-4/security-auditor-1.json](logs/working/task-4/security-auditor-1.json)
+
+**Verification:**
+- `./gradlew :app:lintDebug` → BUILD SUCCESSFUL; only pre-existing warnings (`-Xcontext-receivers` deprecation, `DeviceInfoCollector.kt:213` annotation-target migration) — unrelated to this task.
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL; debug APK packaged. Confirms `androidx.activity.enableEdgeToEdge` resolves from `activity-compose 1.10.1` already on classpath.
+- Smoke grep `setDecorFitsSystemWindows|statusBarColor|navigationBarColor|fitsSystemWindows` in the two modified files → 0 hits.
+- AC-3.1 verified statically by code-reviewer: call present in both `onCreate` before `setContent`.
+- AC-3.2 / AC-3.3 (Honor 200 visual smoke on 6 screens + IME-gap check) and FLAG_SECURE on-device check deferred to Task 10 pre-deploy QA per memory rule `feedback_smoke_verification.md` — bundled with Task 3 + Task 6 into a single Honor 200 sweep once the full UI chain (Bug 1, Bug 2, Bug 3) is in place.

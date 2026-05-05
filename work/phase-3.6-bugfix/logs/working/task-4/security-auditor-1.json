@@ -1,0 +1,82 @@
+{
+  "status": "approved",
+  "verdict": "approved",
+  "summary": {
+    "totalFindings": 0,
+    "critical": 0,
+    "major": 0,
+    "minor": 0,
+    "info": 1
+  },
+  "scope": {
+    "branch": "phase/3.6-bugfix",
+    "commit": "c713498e7c2856a5733f01e158909131c970f449",
+    "files": [
+      "app/src/main/kotlin/app/sanctum/machina/MainActivity.kt",
+      "app/src/main/kotlin/app/sanctum/machina/crash/CrashReportActivity.kt"
+    ],
+    "linesChanged": 4
+  },
+  "checklist": {
+    "flagSecurePreserved": {
+      "status": "pass",
+      "evidence": "CrashReportActivity.onCreate calls window.setFlags(FLAG_SECURE, FLAG_SECURE) at line 84, then enableEdgeToEdge() at line 85. androidx.activity.enableEdgeToEdge (activity-compose 1.10.1) sets SystemBarStyle via WindowInsetsControllerCompat and calls WindowCompat.setDecorFitsSystemWindows(window, false); none of these paths call Window.setFlags with FLAG_SECURE in the mask, so the secure flag bit is not cleared. Crash screen will continue to be excluded from Recents thumbnails and OEM screen-capture collectors."
+    },
+    "noNewPermissions": {
+      "status": "pass",
+      "evidence": "AndroidManifest.xml not modified in HEAD. Diff in MainActivity does not touch the existing POST_NOTIFICATIONS permission flow, only inserts enableEdgeToEdge() before it."
+    },
+    "noNewLogging": {
+      "status": "pass",
+      "evidence": "Diff adds one import + one extension call per file. No Log.*, println, Timber, or PII-emitting statements introduced."
+    },
+    "noNewExportedComponents": {
+      "status": "pass",
+      "evidence": "AndroidManifest.xml unchanged. No new <activity>, <service>, <receiver>, <provider>, or intent-filter exports."
+    },
+    "noVersionGuardManipulation": {
+      "status": "pass",
+      "evidence": "enableEdgeToEdge() called unconditionally in both Activities. minSdk=31 and the AndroidX API is available from API 21+, so a Build.VERSION.SDK_INT guard is unnecessary and (correctly) absent. No surface for silent regression on EMUI."
+    },
+    "dependencyA05A06": {
+      "status": "pass",
+      "evidence": "gradle/libs.versions.toml and app/build.gradle.kts unchanged in HEAD. androidx.activity:activity-compose 1.10.1 already on classpath; enableEdgeToEdge() is the documented public entry point. No new transitive dependency surface."
+    },
+    "hardcodedSecrets": {
+      "status": "pass",
+      "evidence": "No string literals, API keys, tokens, or credentials in the 4-line code diff."
+    },
+    "owaspTop10": {
+      "A01_BrokenAccessControl": "n/a — no auth or authorization surface in diff",
+      "A02_CryptographicFailures": "n/a — no cryptography in diff",
+      "A03_Injection": "n/a — no user-input handling, no SQL, no command/URL construction",
+      "A04_InsecureDesign": "pass — FLAG_SECURE-before-enableEdgeToEdge ordering preserves secure-by-default invariant for the crash recovery screen",
+      "A05_SecurityMisconfiguration": "pass — no manual setDecorFitsSystemWindows override, no statusBarColor/navigationBarColor override that could conflict with FLAG_SECURE; uses documented AndroidX entry point",
+      "A06_VulnerableComponents": "pass — no new or upgraded dependency",
+      "A07_AuthFailures": "n/a",
+      "A08_SoftwareDataIntegrity": "n/a — no deserialization, no CI/CD changes",
+      "A09_LoggingMonitoring": "n/a — no logging changes",
+      "A10_SSRF": "n/a — no outbound URL handling"
+    }
+  },
+  "findings": [
+    {
+      "severity": "info",
+      "category": "best-practice",
+      "owasp_category": "A04: Insecure Design (defense-in-depth observation, not a defect)",
+      "title": "Consider an instrumentation-test guard for FLAG_SECURE on CrashReportActivity",
+      "description": "The current ordering (window.setFlags(FLAG_SECURE, FLAG_SECURE) at line 84, then enableEdgeToEdge() at line 85) correctly preserves FLAG_SECURE because androidx.activity 1.10.1's enableEdgeToEdge does not touch the FLAG_SECURE bit. This invariant is contract-stable today but is not asserted by any test. A future AndroidX release that adds e.g. a Window.setFlags call on the secure-flag mask could silently regress the crash-screen privacy guarantee.",
+      "location": "app/src/main/kotlin/app/sanctum/machina/crash/CrashReportActivity.kt:84-85",
+      "impact": "If FLAG_SECURE is ever cleared after enableEdgeToEdge, the crash report screen could appear in Recents thumbnails or OEM screen-capture collectors, leaking the crashing-state UI (which may include partial chat content, model name, etc.).",
+      "recommendation": "Add a one-line androidTest assertion on CrashReportActivity launch: `assertTrue((scenario.activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE) != 0)`. Treat as a backlog item for the broader Audit Wave (Task 8), not a blocker for Task 4.",
+      "cwe": "CWE-200 (defense-in-depth context)",
+      "blocking": false
+    }
+  ],
+  "blockingIssues": [],
+  "notes": [
+    "Patch is 4 lines of source (+ 2 imports). Outside the scope of the diff was treated as N/A per audit instructions.",
+    "FLAG_SECURE behavior verified against the documented AndroidX 1.10.1 contract for enableEdgeToEdge: it manipulates SystemBarStyle and WindowCompat.setDecorFitsSystemWindows only; FLAG_SECURE bit is not in any mask used by that code path.",
+    "No hardcoded secrets, no new permissions, no new exported components, no new dependencies, no new logging, no version-guard regression surface."
+  ]
+}
