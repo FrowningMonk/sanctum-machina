@@ -1648,6 +1648,15 @@ class ChatViewModelTest {
         fakeWarmupCoordinator.isWarmupInProgressState.value = false
         advanceUntilIdle()
         assertEquals("Ready+no-warmup → engineReady=true", true, vm.engineReady.value)
+
+        // 6th cell — registry drops the pinned entry while the chat is open
+        // (e.g. transient miss during a rapid model-delete + re-add window).
+        // The combine must observe `entry == null` and short-circuit to false.
+        // Without this assertion a regression that defaults missing-entry to
+        // true (e.g. `entry?.initStatus is Ready ?: true`) would slip through.
+        fakeRegistry.publishEntries()
+        advanceUntilIdle()
+        assertEquals("missing entry → engineReady=false", false, vm.engineReady.value)
     }
 
     @Test
