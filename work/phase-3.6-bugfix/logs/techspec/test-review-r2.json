@@ -1,0 +1,20 @@
+{
+  "status": "passed",
+  "summary": "Round-2 re-validation: all 4 major and all 5 minor findings from round-1 are addressed in the Testing Strategy. The 5-state engineReady combinatorics is now a parameterised test covering Idle/Initializing/Failed/Ready+warmup/Ready+no-warmup. The flipped applyLightOverrides test explicitly KEEPS the no-cleanup/no-init regression guard (cleanupCalls=0, initializeCalls=0) protecting against silent reclassification to Heavy. applyMaxTokens_followsHeavyDialogSequence pins the full ordered sequence [heavyDialogShown, userConfirmed, reinitDialogShown, cleanup, initialize] via fakeRegistry.sharedCalls — sufficient for AC-1.3b's user-contract that a dialog appears before reinit. ErrorLog coverage now includes whitelistCount_is15 (size pin), inferenceResetComponent_acceptedByAllLevels (e+i+w positive), unknownComponent_stillRejected_negative (suffix rejection), and iAndW_lengthBoundingMatchesE (verifies Decision 5 shared write() helper inherits length-bounding). Cold-start race is now a two-phase test: phase (a) Initializing → resetReasons empty (gate works), phase (b) Ready → resetReasons == [CHAT_SWITCH] exactly once. SYSTEM_PROMPT and USER reasons get one-line assertions in existing tests. Mutex serialisation moved to runTest with explicit sequence numbers AND delay-injected helper — disambiguates from dispatcher serialisation artifact. resetConversation_propagatesHelperException added. Litmus test outcomes: every test now asserts on observable state (configValues, lastResetReason, resetReasons list, sharedCalls sequence, errorLog level/component) rather than mock-call counters alone — removing core logic line would fail the assertion. Pyramid remains unit-only, healthy for size-S phase. No new findings.",
+  "findings": [],
+  "metrics": {
+    "filesReviewed": 1,
+    "litmusTest": {
+      "checked": 14,
+      "passed": 14,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 18,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

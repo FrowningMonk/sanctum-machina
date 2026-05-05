@@ -1,0 +1,48 @@
+{
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "tasks",
+      "issue": "Wave 2 conflict: Tasks 3, 4, and 5 all modify `app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt` in the same wave. Tasks within one wave run in parallel, so three concurrent edits to the same file will produce merge/edit conflicts — `ChatViewModel.kt` is touched by `bootstrapChatModelId`/`applyLightOverrides` rewiring (Task 3), `LIGHT_FIELD_LABELS` + `classifyApplyLevel` reclassification (Task 4), and the new `engineReady` StateFlow (Task 5).",
+      "fix": "Either (a) sequence Tasks 3 → 4 → 5 across separate waves (Wave 2a/2b/2c), or (b) merge them into a single ChatViewModel rework task with multiple bullets, or (c) explicitly mark this wave as sequential-by-orchestrator and document who applies edits in what order. Recommended: split into Wave 2 (Task 3 — bootstrap+light reset, the structural change) and Wave 3 (Task 4 — reclassify, Task 5 — engineReady; these can run parallel because they touch disjoint regions, but only after Task 3 lands)."
+    },
+    {
+      "severity": "minor",
+      "category": "tasks",
+      "issue": "Wave 2/Wave 3 cross-wave file overlap: Task 5 (Wave 2) and Task 6 (Wave 3) both modify `ChatScreen.kt`. Wave 3 is described as 'independent of Wave 2', but Task 6 includes a 'comment cleanup only' edit that could collide with Task 5's gating rewire if both branches are open in parallel.",
+      "fix": "Either move Task 6's `ChatScreen.kt` comment cleanup into Task 5, or explicitly state that Wave 3 starts after Wave 2 lands. Current 'independent of Wave 2' wording is misleading."
+    },
+    {
+      "severity": "minor",
+      "category": "tasks",
+      "issue": "Task 4 reviewers `[code-reviewer, test-reviewer]` and Task 5 reviewers `[code-reviewer, test-reviewer]` omit `security-auditor`, which is in the default reviewer set for `code-writing` per `skills-and-reviewers.md`. While neither task touches authentication/network/persistence directly, the catalog default set is the published convention.",
+      "fix": "Either add `security-auditor` to align with the documented default for `code-writing`, or briefly justify the omission inline (e.g., 'pure in-memory classification — security review covered by full-feature audit in Wave 4 / Task 9')."
+    },
+    {
+      "severity": "minor",
+      "category": "tasks",
+      "issue": "Task 6 reviewers `[code-reviewer]` only — for a `code-writing` task that modifies two `Activity.onCreate` paths and the windowing surface, the default set (`code-reviewer, security-auditor, test-reviewer`) is recommended. Edge-to-edge changes can intersect with `FLAG_SECURE` and IME inset semantics, both of which benefit from a security pass (Task 9 already covers it as full-feature audit, but per-task default is broader).",
+      "fix": "Either add `security-auditor` (cheap, given Task 9 already plans to audit `FLAG_SECURE` interaction), or note explicitly that security/test review is deferred to the Audit Wave."
+    },
+    {
+      "severity": "minor",
+      "category": "task_quality",
+      "issue": "Task 6 description references a concrete line range (`ChatScreen.kt line 327-330`). Line-number references are implementation detail that drifts as the file changes and belongs in task-decomposition output, not in the tech-spec.",
+      "fix": "Replace 'line 327-330 about MainActivity dependency' with an anchor that survives edits, e.g., 'the now-stale comment in `ChatScreen.kt` describing MainActivity edge-to-edge dependency (search for `MainActivity` in the gating block)'."
+    },
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "issue": "Frontmatter `branch: phase/3.6-bugfix` does not match the generic template's `branch: dev` requirement. This project deliberately uses phase branches per CLAUDE.md (`Для активной работы — phase/N-name`), so this is a project-convention override rather than a defect — flagging for visibility only.",
+      "fix": "No action required if the project convention is intentional. Consider documenting in the tech-spec template that `branch` accepts `phase/<N>-<name>` for this codebase, so future validators do not re-flag it."
+    },
+    {
+      "severity": "minor",
+      "category": "task_quality",
+      "issue": "Task 1 description carries a small embedded rationale phrase: 'remove silent skip on missing model only (keep silent for unknown name — defensive)'. Decision-like content ('defensive' as justification) should live in the Decisions section, not in task descriptions.",
+      "fix": "Move the 'unknown-name silent vs not-Ready warning' choice into a brief addendum to Decision 5 (or a new short Decision), and shorten the task to: 'Update `DefaultModelRegistry.resetConversation` per Decision 5 (info on success, warning on non-Ready, behaviour on unknown name).'"
+    }
+  ],
+  "summary": "Tech-spec is well-structured: all template sections present and non-empty, frontmatter valid (with one project-convention deviation on `branch`), Decisions complete with Rationale + Alternatives + user-spec links, Risks realistic with mitigations, AVP present, User-Spec Deviations filled, Audit Wave correctly populated with three audits and `reviewers: none`, Final Wave QA present and Deploy/Post-deploy explicitly excluded with CLAUDE.md justification, task count 11 (≤15), task descriptions are scope-level (no AC/TDD anchors). One critical wave-conflict blocks approval: Wave 2 Tasks 3, 4, 5 all modify ChatViewModel.kt and cannot safely run in parallel. Several minor issues around reviewer-default alignment and a line-number reference in Task 6."
+}
