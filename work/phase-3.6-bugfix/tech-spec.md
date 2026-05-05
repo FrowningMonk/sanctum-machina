@@ -1,6 +1,6 @@
 ---
 created: 2026-05-05
-status: draft
+status: approved
 branch: phase/3.6-bugfix
 size: S
 ---
