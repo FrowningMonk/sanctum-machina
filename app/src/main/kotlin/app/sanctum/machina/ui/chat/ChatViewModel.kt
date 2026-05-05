@@ -18,6 +18,7 @@ import app.sanctum.machina.core.log.ErrorLog
 import app.sanctum.machina.core.registry.ModelEntry
 import app.sanctum.machina.core.registry.ModelInitStatus
 import app.sanctum.machina.core.registry.ModelRegistry
+import app.sanctum.machina.core.registry.ResetReason
 import app.sanctum.machina.core.runtime.LlmModelHelper
 import app.sanctum.machina.core.settings.AppSettingsRepository
 import app.sanctum.machina.core.settings.proto.PerModelSettings
@@ -330,7 +331,11 @@ constructor(
         viewModelScope.launch {
             val model = currentReadyModel() ?: return@launch
             val effective = effectiveSystemPrompt(model)
-            registry.resetConversation(model.name, systemPrompt = effective)
+            registry.resetConversation(
+                model.name,
+                systemPrompt = effective,
+                reason = ResetReason.USER,
+            )
             _messages.value = emptyList()
             _streamingMessage.value = null
             _attachments.value = emptyList()
@@ -445,7 +450,21 @@ constructor(
             val model = currentReadyModel() ?: return@launch
             val overrides = settingsRepository.observePerModelSettings(modelId).first()
             val defaults = computeDefaults(model)
-            model.configValues = EffectiveConfig.merge(defaults, overrides)
+            val merged = EffectiveConfig.merge(defaults, overrides)
+            model.configValues = merged
+            // Sampler params (topK/topP/temperature) are baked into the
+            // engine's `Conversation` at creation time (LiteRT-LM 0.10.0):
+            // mutating `configValues` alone is a silent no-op until the
+            // Conversation is recreated. registry.resetConversation re-reads
+            // the merged values when constructing the new ConversationConfig.
+            // UI history is NOT touched — Light tier is a sampler refresh,
+            // not a context wipe.
+            val effective = effectiveSystemPrompt(merged)
+            registry.resetConversation(
+                model.name,
+                systemPrompt = effective,
+                reason = ResetReason.LIGHT_OVERRIDE,
+            )
         }
     }
 
@@ -458,7 +477,11 @@ constructor(
             val merged = EffectiveConfig.merge(defaults, overrides)
             model.configValues = merged
             val effective = effectiveSystemPrompt(merged)
-            registry.resetConversation(model.name, systemPrompt = effective)
+            registry.resetConversation(
+                model.name,
+                systemPrompt = effective,
+                reason = ResetReason.SYSTEM_PROMPT,
+            )
             _messages.value = emptyList()
             _streamingMessage.value = null
             _attachments.value = emptyList()
@@ -744,6 +767,20 @@ constructor(
                 val lastMsg = runCatching { messageDao.lastByChat(id.id) }
                     .onFailure { errorLog.e("history-read", "lastByChat failed for id=${id.id}", it) }
                     .getOrNull()
+                // Phase 3.6 Bug-1 fix: every Persistent VM bootstrap must
+                // recreate the engine's Conversation so KV-cache from the
+                // prior chat does not leak into this one. The reset is
+                // gated on first Ready — DefaultModelRegistry would
+                // warning-skip a non-Ready engine and leave the cache dirty.
+                // Reuses `lastMsg` (already read for AC-R3 auto-resume) to
+                // distinguish DRAFT_COMMIT (unpaired USER tail = handover
+                // from Draft) from CHAT_SWITCH (any other state).
+                val resetReason = if (lastMsg?.role == ROLE_USER) {
+                    ResetReason.DRAFT_COMMIT
+                } else {
+                    ResetReason.CHAT_SWITCH
+                }
+                viewModelScope.launch { observeFirstReadyThenReset(resetReason) }
                 if (lastMsg?.role == ROLE_USER) {
                     autoResumeTarget = lastMsg
                     viewModelScope.launch { observeFirstReadyThenResume(id) }
@@ -834,6 +871,34 @@ constructor(
         val target = autoResumeTarget ?: return
         if (autoResumeAttempted) return
         resumePendingAssistantPersistent(identity, target)
+    }
+
+    /**
+     * Persistent-mode Phase 3.6 Bug-1 hook (AC-1.1, AC-1.2). Suspends until
+     * the pinned engine first reaches [ChatUiState.Ready], then issues a
+     * single [registry.resetConversation] call so the next user turn starts
+     * with a fresh KV-cache and the merged sampler/system-prompt picked up
+     * by [applyEffectiveConfigToModel].
+     *
+     * Mirrors [observeFirstReadyThenResume]: a single `first { Ready }` call
+     * latches on the very first Ready emission. Subsequent flutters
+     * (Ready → Initializing → Ready, e.g. after [applyHeavySetting]) do NOT
+     * re-trigger — the heavy reinit creates a new engine and a new
+     * Conversation by construction, so a second reset would be redundant.
+     *
+     * Intentionally does NOT clear UI history — the chat's persisted Room
+     * rows must remain visible across the reset; only the engine-internal
+     * Conversation is recreated.
+     */
+    private suspend fun observeFirstReadyThenReset(reason: ResetReason) {
+        _uiState.first { it is ChatUiState.Ready }
+        val model = currentReadyModel() ?: return
+        val effective = effectiveSystemPrompt(model)
+        registry.resetConversation(
+            model.name,
+            systemPrompt = effective,
+            reason = reason,
+        )
     }
 
     /**
@@ -1297,9 +1362,14 @@ constructor(
         current: Map<String, Any>,
         target: Map<String, Any>,
     ): ApplyLevel {
-        val heavyChanged = current[ConfigKeys.ACCELERATOR.label] !=
+        val acceleratorChanged = current[ConfigKeys.ACCELERATOR.label] !=
             target[ConfigKeys.ACCELERATOR.label]
-        if (heavyChanged) return ApplyLevel.HEAVY
+        // Phase 3.6 Decision 4: `max_tokens` lives in `EngineConfig`,
+        // applied only at engine creation — must take the HEAVY path
+        // (cleanup+initialize), the same one accelerator uses.
+        val maxTokensChanged = current[ConfigKeys.MAX_TOKENS.label] !=
+            target[ConfigKeys.MAX_TOKENS.label]
+        if (acceleratorChanged || maxTokensChanged) return ApplyLevel.HEAVY
         val semiChanged = SEMI_LIGHT_FIELD_LABELS.any {
             current[it] != target[it]
         }
@@ -1511,11 +1581,15 @@ constructor(
         private const val MAX_IMAGES: Int = 10
         private const val MAX_IMAGE_EDGE: Int = 1024
 
+        // MAX_TOKENS is intentionally NOT here (Phase 3.6 Decision 4):
+        // `maxNumTokens` is a field of LiteRT-LM `EngineConfig`, not
+        // `ConversationConfig`. Light-tier Conversation recreation does not
+        // change the engine's token cap — only HEAVY (cleanup+initialize)
+        // does. See classifyApplyLevel HEAVY condition.
         private val LIGHT_FIELD_LABELS: Set<String> = setOf(
             ConfigKeys.TEMPERATURE.label,
             ConfigKeys.TOPK.label,
             ConfigKeys.TOPP.label,
-            ConfigKeys.MAX_TOKENS.label,
         )
 
         private val SEMI_LIGHT_FIELD_LABELS: Set<String> = setOf(

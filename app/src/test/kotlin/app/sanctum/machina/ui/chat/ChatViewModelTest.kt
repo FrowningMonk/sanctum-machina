@@ -17,6 +17,7 @@ import app.sanctum.machina.core.log.ErrorLog
 import app.sanctum.machina.core.registry.ModelEntry
 import app.sanctum.machina.core.registry.ModelInitStatus
 import app.sanctum.machina.core.registry.ModelRegistry
+import app.sanctum.machina.core.registry.ResetReason
 import app.sanctum.machina.core.runtime.CleanUpListener
 import app.sanctum.machina.core.runtime.LlmModelHelper
 import app.sanctum.machina.core.runtime.ResultListener
@@ -1121,7 +1122,7 @@ class ChatViewModelTest {
     }
 
     @Test
-    fun applyLightOverrides_updatesConfigValues_noCleanup() = runTest(dispatcher) {
+    fun applyLightOverrides_callsResetConversation_withLightOverrideReason() = runTest(dispatcher) {
         val model = Model(name = "m", modelId = "id-m", configs = createLlmChatConfigs())
         model.preProcess()
         fakeRegistry.setModel(model)
@@ -1141,8 +1142,180 @@ class ChatViewModelTest {
 
         assertEquals(0.2f, model.configValues[ConfigKeys.TEMPERATURE.label])
         assertEquals(512, model.configValues[ConfigKeys.MAX_TOKENS.label])
+        // Light tier is a sampler refresh, not a context wipe — must not
+        // invoke the heavy cleanup+initialize path.
         assertEquals(cleanupCountBefore, fakeRegistry.cleanupCalls)
         assertEquals(initCountBefore, fakeRegistry.initializeCalls)
+        // After Phase 3.6 Bug-1 fix, Light tier MUST recreate Conversation
+        // through registry.resetConversation tagged LIGHT_OVERRIDE so the
+        // engine actually re-reads topK/topP/temperature from configValues.
+        assertEquals(ResetReason.LIGHT_OVERRIDE, fakeRegistry.lastResetReason)
+        // Default system prompt is blank — effectiveSystemPrompt collapses
+        // it to null, so the reset propagates null (no system instruction
+        // change).
+        assertEquals(null, fakeRegistry.lastResetSystemPrompt)
+    }
+
+    @Test
+    fun bootstrapPersistent_chatSwitchReset_waitsForReady() = runTest(dispatcher) {
+        // Cold-start race regression guard: if the reset fires before the
+        // engine reaches Ready, DefaultModelRegistry's non-Ready skip path
+        // logs a warning and leaves the KV cache dirty (Bug 1).
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        // ASSISTANT tail → CHAT_SWITCH (not DRAFT_COMMIT).
+        fakeMessageDao.emit(
+            listOf(
+                MessageEntity(id = 1L, chatId = 7L, role = "user", text = "q", createdAt = 10L),
+                MessageEntity(id = 2L, chatId = 7L, role = "assistant", text = "a", createdAt = 20L),
+            ),
+        )
+        fakeRegistry.publishEntry(model, ModelInitStatus.Initializing)
+
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        assertEquals(
+            "reset must be deferred while engine is Initializing",
+            emptyList<ResetReason>(),
+            fakeRegistry.resetReasons,
+        )
+
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        advanceUntilIdle()
+
+        assertEquals(
+            "exactly one CHAT_SWITCH reset emitted on first Ready",
+            listOf(ResetReason.CHAT_SWITCH),
+            fakeRegistry.resetReasons,
+        )
+    }
+
+    @Test
+    fun bootstrapPersistent_emitsDraftCommitReset_whenLastIsUnpairedUser() = runTest(dispatcher) {
+        // Draft→Persistent handover: USER row persisted, no ASSISTANT yet.
+        // Heuristic must classify as DRAFT_COMMIT to surface the difference
+        // in inference-reset diagnostics.
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeMessageDao.emit(
+            listOf(
+                MessageEntity(id = 1L, chatId = 7L, role = "user", text = "q", createdAt = 10L),
+            ),
+        )
+        fakeRegistry.publishEntry(model, ModelInitStatus.Initializing)
+
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+        assertEquals(emptyList<ResetReason>(), fakeRegistry.resetReasons)
+
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        advanceUntilIdle()
+
+        assertEquals(
+            "USER tail → DRAFT_COMMIT exactly once",
+            listOf(ResetReason.DRAFT_COMMIT),
+            fakeRegistry.resetReasons,
+        )
+    }
+
+    @Test
+    fun classifyApplyLevel_returnsHeavy_forMaxTokens() = runTest(dispatcher) {
+        // After Decision 4, max_tokens lives in EngineConfig (not
+        // ConversationConfig) and must trigger the HEAVY reinit dialog —
+        // not the Light no-op path.
+        val model = Model(name = "m", modelId = "id-m", configs = createLlmChatConfigs())
+        model.preProcess()
+        fakeRegistry.setModel(model)
+        val vm = buildViewModel(ChatIdentityArg.Quick)
+        advanceUntilIdle()
+
+        val target = PerModelSettings.newBuilder().setMaxTokens(2048).build()
+
+        assertTrue(
+            "max_tokens delta must be classified HEAVY",
+            vm.needsHeavyApply(target),
+        )
+    }
+
+    @Test
+    fun classifyApplyLevel_returnsHeavy_forAccelerator() = runTest(dispatcher) {
+        // Baseline Heavy guard — accelerator must remain HEAVY after the
+        // Phase 3.6 reclassification of max_tokens (no regression on the
+        // pre-existing condition).
+        val model = Model(name = "m", modelId = "id-m", configs = createLlmChatConfigs())
+        model.preProcess()
+        fakeRegistry.setModel(model)
+        val vm = buildViewModel(ChatIdentityArg.Quick)
+        advanceUntilIdle()
+
+        val target = PerModelSettings.newBuilder()
+            .setAccelerator(Accelerator.CPU.label)
+            .build()
+
+        assertTrue(
+            "accelerator delta must remain HEAVY",
+            vm.needsHeavyApply(target),
+        )
+    }
+
+    @Test
+    fun classifyApplyLevel_returnsLight_forTemperature() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m", configs = createLlmChatConfigs())
+        model.preProcess()
+        fakeRegistry.setModel(model)
+        val vm = buildViewModel(ChatIdentityArg.Quick)
+        advanceUntilIdle()
+
+        val target = PerModelSettings.newBuilder().setTemperature(0.5f).build()
+
+        assertFalse(
+            "temperature delta must NOT be HEAVY",
+            vm.needsHeavyApply(target),
+        )
+
+        // Drive the LIGHT path through saveAndApplySettings to confirm the
+        // dispatch is Light, not Heavy: no cleanup/init, reset tagged
+        // LIGHT_OVERRIDE.
+        val cleanupBefore = fakeRegistry.cleanupCalls
+        val initBefore = fakeRegistry.initializeCalls
+        vm.saveAndApplySettings(target)
+        advanceUntilIdle()
+        assertEquals(cleanupBefore, fakeRegistry.cleanupCalls)
+        assertEquals(initBefore, fakeRegistry.initializeCalls)
+        assertEquals(ResetReason.LIGHT_OVERRIDE, fakeRegistry.lastResetReason)
+    }
+
+    @Test
+    fun applyMaxTokens_followsHeavyDialogSequence() = runTest(dispatcher) {
+        // Mirrors `applyHeavySetting_sequencing_stopCleanupInitialize`:
+        // proves max_tokens now flows through the same stop→cleanup→
+        // initialize sequence as accelerator (i.e. via applyHeavySetting),
+        // not through a Light-tier silent no-op.
+        val model = Model(name = "m", modelId = "id-m", configs = createLlmChatConfigs())
+        model.preProcess()
+        fakeRegistry.setModel(model)
+        val vm = buildViewModel(ChatIdentityArg.Quick)
+        advanceUntilIdle()
+
+        vm.send("hi")
+        advanceUntilIdle()
+        sharedCalls.clear()
+
+        fakeRepo.save(
+            "id-m",
+            PerModelSettings.newBuilder().setMaxTokens(2048).build(),
+        )
+
+        vm.applyHeavySetting()
+        advanceUntilIdle()
+
+        val sequence = sharedCalls.filter {
+            it == "stopResponse" || it == "cleanup" || it == "initialize"
+        }
+        assertEquals(listOf("stopResponse", "cleanup", "initialize"), sequence)
+        assertEquals(2048, model.configValues[ConfigKeys.MAX_TOKENS.label])
+        assertFalse(vm.reinitInProgress.value)
     }
 
     @Test
@@ -1223,6 +1396,7 @@ class ChatViewModelTest {
 
         assertEquals("be terse", model.configValues[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label])
         assertEquals("be terse", fakeRegistry.lastResetSystemPrompt)
+        assertEquals(ResetReason.SYSTEM_PROMPT, fakeRegistry.lastResetReason)
         assertTrue(vm.messages.value.isEmpty())
         assertTrue(vm.attachments.value.isEmpty())
         assertEquals(listOf(R.string.settings_semilight_applied_snackbar), events)
@@ -1256,6 +1430,7 @@ class ChatViewModelTest {
         assertTrue(vm.messages.value.isEmpty())
         assertTrue(vm.attachments.value.isEmpty())
         assertEquals("be helpful", fakeRegistry.lastResetSystemPrompt)
+        assertEquals(ResetReason.USER, fakeRegistry.lastResetReason)
         assertEquals(cleanupBefore, fakeRegistry.cleanupCalls)
         assertEquals(initBefore, fakeRegistry.initializeCalls)
     }
@@ -1786,6 +1961,8 @@ private class FakeModelRegistry(
 ) : ModelRegistry {
     var initResult: Result<Unit> = Result.success(Unit)
     var lastResetSystemPrompt: String? = null
+    var lastResetReason: ResetReason? = null
+    val resetReasons: MutableList<ResetReason> = mutableListOf()
     var cleanupCalls = 0
     var initializeCalls = 0
 
@@ -1844,8 +2021,14 @@ private class FakeModelRegistry(
         cleanupCalls += 1
         sharedCalls += "cleanup"
     }
-    override suspend fun resetConversation(modelName: String, systemPrompt: String?) {
+    override suspend fun resetConversation(
+        modelName: String,
+        systemPrompt: String?,
+        reason: ResetReason,
+    ) {
         lastResetSystemPrompt = systemPrompt
+        lastResetReason = reason
+        resetReasons += reason
         sharedCalls += "resetConversation"
     }
     override fun getModel(modelName: String): Model? =

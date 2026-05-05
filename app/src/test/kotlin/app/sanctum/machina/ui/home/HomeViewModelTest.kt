@@ -8,6 +8,7 @@ import app.sanctum.machina.core.data.ModelDownloadStatusType
 import app.sanctum.machina.core.registry.ModelEntry
 import app.sanctum.machina.core.registry.ModelInitStatus
 import app.sanctum.machina.core.registry.ModelRegistry
+import app.sanctum.machina.core.registry.ResetReason
 import app.sanctum.machina.core.settings.AppSettingsRepository
 import app.sanctum.machina.core.settings.proto.PerModelSettings
 import app.sanctum.machina.engine.AppCorruptionState
@@ -342,7 +343,11 @@ private class FakeModelRegistry : ModelRegistry {
   override suspend fun delete(modelName: String) = Unit
   override suspend fun initialize(modelName: String): Result<Unit> = Result.success(Unit)
   override suspend fun cleanup(modelName: String) = Unit
-  override suspend fun resetConversation(modelName: String, systemPrompt: String?) = Unit
+  override suspend fun resetConversation(
+    modelName: String,
+    systemPrompt: String?,
+    reason: ResetReason,
+  ) = Unit
   override fun getModel(modelName: String): Model? = null
 }
 
