@@ -128,3 +128,31 @@ Added regression test `bootstrapPersistent_draftCommit_resetsBeforeAutoResumeRun
 - `grep -n "15 values are allowed" .claude/.../patterns.md` → 1 hit; `"14 values are allowed"` → 0 hits.
 - `grep -n "LIGHT_OVERRIDE" .claude/.../patterns.md` → 2 hits (Light bullet + reset-reason enumeration).
 - Diff scope (read-verified, since `.claude/` is gitignored): edits confined to lines 16, 18, 20 (§ ErrorLog component strings) and line 64 (§ D15 Light bullet). Semi-light/Heavy bullets and § D15 closing paragraph at line 68 untouched.
+
+---
+
+## Task 6: `engineReady` StateFlow + Settings gating switch in `ChatScreen` (+ stale comment cleanup)
+
+**Status:** Done
+**Commit:** 2d85ca1 (impl `d7685e9` + review-fix `2d85ca1`)
+**Agent:** main agent
+**Summary:** Added public `val engineReady: StateFlow<Boolean>` to `ChatViewModel`, derived from the same three source flows that feed `topAppBarState` (`registry.models`, `_chatModelId`, `warmupCoordinator.isWarmupInProgress`); emits `true` iff the entry for the chat-pinned model is `ModelInitStatus.Ready` AND `!warmupInFlight`, `false` otherwise (including `modelId == null` and missing-entry cases). `ChatScreen` collects it once in `ChatScreenBody`, threads it as a `Boolean` parameter into `ReadyContent`, and replaces the existing `engineUsable = topAppBarState is TopAppBarState.Ready` derivation — Settings gate `enabled = engineReady && !isGenerating && !reinitInProgress`, Reset gate `enabled = engineReady && !isGenerating`. `deriveTopAppBarState` is untouched, so the Draft model picker dropdown continues to ride on `TopAppBarState.Draft`. Stale 5-line comment near `ChatScreen.kt` `.imePadding()` (about `WindowCompat.setDecorFitsSystemWindows` "already set by MainActivity") removed — Task 4's `enableEdgeToEdge()` makes the contract implicit.
+**Deviations:** Sharing strategy is `SharingStarted.Eagerly` instead of the task hint `SharingStarted.WhileSubscribed(5_000)`. Reason: `engineReady` is a peer of `topAppBarState`, which uses `Eagerly` for the same source flows and the same TopAppBar surface. `WhileSubscribed` would let `.value` lag behind the registry during the 5-second grace window after the last collector unsubscribes — exactly the failure mode of Bug 2 if a sheet open/close cycle straddled the gap. Inline comment in `ChatViewModel.kt` documents the choice. The deviation is noted here so reviewers tracking against tech-spec Decision 6 (silent on the start mode) see the rationale.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approve, 0 blocker / 0 major / 0 minor / 7 info (sharing-strategy rationale, `activeModelId`-fallback omission as deliberate, single-collection placement, race-avoidance ordering in test, `:core-runtime` UI-free invariant intact) → [logs/working/task-6/code-reviewer-1.json](logs/working/task-6/code-reviewer-1.json)
+- security-auditor: approve, 0 findings across all severities. Defense-in-depth confirmed — primary authorization is `ChatViewModel.currentReadyModel()` at every apply-* / reset call site; `engineReady` is the UI gate only. No new attack surface, no Honor-lock, no `:core-runtime` boundary breach → [logs/working/task-6/security-auditor-1.json](logs/working/task-6/security-auditor-1.json)
+- test-reviewer: approve, 3 minor (single-@Test layout vs split, same-VM threading vs fresh-VM-per-cell, `entry==null` cell not explicitly asserted) → [logs/working/task-6/test-reviewer-1.json](logs/working/task-6/test-reviewer-1.json)
+
+Applied the third minor by adding a 6th assertion to `engineReady_combinatorics`: drop the registry to empty (`fakeRegistry.publishEntries()`) after Ready+no-warmup, pin `engineReady=false`. Closes the regression vector where a missing-entry default of `true` (e.g. `?: true`) would slip past the original 5-cell layout. The first two minors are stylistic and explicitly permitted by the task spec ("параметризованный (или 5 ассертов в одном @Test с reset state)"); kept the single-@Test layout for parity with the existing `topAppBarState_*` tests.
+
+**Verification:**
+- `./gradlew :app:testDebugUnitTest --tests "*ChatViewModelTest.engineReady_combinatorics*"` → green (6 assertions, all cells pass).
+- `./gradlew :app:testDebugUnitTest` (full module) → green; no regressions in `topAppBarState_*` (warmup-gate path), `applyLightOverrides_*`, `bootstrapPersistent_*`.
+- `./gradlew :app:lintDebug` → green; only pre-existing `Bitmap.createScaledBitmap` UseKtx warning at `ChatViewModel.kt:1492` (carried over from Task 3, line shifted by the new `engineReady` block — unrelated).
+- `./gradlew :app:assembleDebug` → debug APK built (sanity check after the new public StateFlow declaration + Compose-side parameter threading).
+- Module boundary: `Grep "androidx\.(compose|activity)"` over `core-runtime/src/main` → 0 hits. Engine-ready flag stays in `:app/ui/chat/`.
+- Stale-comment removal verified: `Grep "setDecorFitsSystemWindows" app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatScreen.kt` → 0 hits.
+- User-on-device verification (Honor 200 AC-2.1 / AC-2.3 sweep) deferred to Task 10 pre-deploy QA per memory rule `feedback_smoke_verification.md` — bundled with Task 3 + Task 4 device smoke into a single Honor 200 pass once the full UI chain (Bug 1, Bug 2, Bug 3) is in place. Same approach used in Tasks 3 and 4.
