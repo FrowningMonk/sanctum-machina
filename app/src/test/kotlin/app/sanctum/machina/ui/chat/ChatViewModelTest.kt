@@ -1192,6 +1192,38 @@ class ChatViewModelTest {
     }
 
     @Test
+    fun bootstrapPersistent_draftCommit_resetsBeforeAutoResumeRunInference() = runTest(dispatcher) {
+        // Ordering regression guard for the race surfaced by
+        // security-auditor-1: if the reset coroutine and the auto-resume
+        // coroutine were launched as siblings, the reset's
+        // `withContext(Dispatchers.Default)` hop inside DefaultModelRegistry
+        // would release Main and the resume's `helper.runInference` could
+        // fire against a still-dirty Conversation. Pinning the order in
+        // `sharedCalls` (which records both `resetConversation` and
+        // `runInference` from the test fakes) prevents a future refactor
+        // from re-introducing the race by un-chaining the two coroutines.
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeMessageDao.emit(
+            listOf(MessageEntity(id = 1L, chatId = 7L, role = "user", text = "q", createdAt = 10L)),
+        )
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        val resetIdx = sharedCalls.indexOf("resetConversation")
+        val runIdx = sharedCalls.indexOf("runInference")
+        assertTrue("bootstrap must call resetConversation", resetIdx >= 0)
+        assertTrue("bootstrap must auto-resume runInference", runIdx >= 0)
+        assertTrue(
+            "reset must precede runInference (reset=$resetIdx, run=$runIdx) — " +
+                "otherwise the auto-resumed first answer inherits KV from the prior chat",
+            resetIdx < runIdx,
+        )
+    }
+
+    @Test
     fun bootstrapPersistent_emitsDraftCommitReset_whenLastIsUnpairedUser() = runTest(dispatcher) {
         // Draft→Persistent handover: USER row persisted, no ASSISTANT yet.
         // Heuristic must classify as DRAFT_COMMIT to surface the difference

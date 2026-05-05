@@ -780,10 +780,23 @@ constructor(
                 } else {
                     ResetReason.CHAT_SWITCH
                 }
-                viewModelScope.launch { observeFirstReadyThenReset(resetReason) }
-                if (lastMsg?.role == ROLE_USER) {
-                    autoResumeTarget = lastMsg
-                    viewModelScope.launch { observeFirstReadyThenResume(id) }
+                val pendingAutoResume = lastMsg?.takeIf { it.role == ROLE_USER }
+                if (pendingAutoResume != null) {
+                    autoResumeTarget = pendingAutoResume
+                }
+                // Reset and auto-resume run in a single coroutine so the
+                // resume's `helper.runInference` is invoked strictly AFTER
+                // `helper.resetConversation` has returned. Two sibling
+                // coroutines awaiting the same Ready edge would race: the
+                // reset's `withContext(Dispatchers.Default)` hop inside
+                // DefaultModelRegistry releases Main, letting the resume
+                // siblings fire against the still-dirty Conversation —
+                // exactly the KV leak Bug-1 closes.
+                viewModelScope.launch {
+                    observeFirstReadyThenReset(resetReason)
+                    if (pendingAutoResume != null) {
+                        observeFirstReadyThenResume(id)
+                    }
                 }
             }
             ChatIdentity.Quick, ChatIdentity.Draft -> {
