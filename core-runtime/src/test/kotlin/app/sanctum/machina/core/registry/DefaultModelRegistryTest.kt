@@ -236,12 +236,13 @@ class DefaultModelRegistryTest {
     assertTrue("warn-log file must exist", logFile.exists())
     val lines = logFile.readLines()
     assertEquals(1, lines.size)
-    val line = lines.single()
-    assertTrue("expected WARN [inference-reset] prefix, got: $line",
-      line.startsWith("WARN [inference-reset] "))
-    assertTrue("description must contain 'skipped': $line", line.contains("skipped"))
-    assertTrue("description must contain reason CHAT_SWITCH: $line", line.contains("CHAT_SWITCH"))
-    assertTrue("description must contain status Idle: $line", line.contains("Idle"))
+    // Idle is the canonical skip-arm format pin: keeps the `skipped reason=… status=…` token
+    // order stable, so a future re-order (e.g. `status=… reason=…`) doesn't slip through the
+    // looser substring checks used in the Initializing / Failed siblings.
+    assertEquals(
+      "WARN [inference-reset] skipped reason=CHAT_SWITCH status=Idle",
+      lines.single(),
+    )
   }
 
   @Test
@@ -281,6 +282,11 @@ class DefaultModelRegistryTest {
     assertTrue("description must contain reason SYSTEM_PROMPT: $line",
       line.contains("SYSTEM_PROMPT"))
     assertTrue("description must contain status Failed: $line", line.contains("Failed"))
+    // Pin that the Failed message text actually survives into the description (not just the
+    // literal "Failed" status keyword). A regression dropping the message entirely
+    // (e.g. status=Failed without `: <msg>`) would slip past the substring check above.
+    assertTrue("description must include the Failed cause text (boom): $line",
+      line.contains("boom"))
     val description = line.substringAfter("WARN [inference-reset] ")
     assertEquals("description must be capped to 500 chars by the shared write() pipeline",
       500, description.length)
@@ -412,9 +418,9 @@ class DefaultModelRegistryTest {
     assertEquals("helper must have been invoked twice", 2, helper.resetCalls.size)
     // First reset: threw before INFO log → no INFO line for the first call.
     // Second reset: succeeded → exactly one INFO line.
-    val infoLines = if (logFile.exists()) {
-      logFile.readLines().filter { it.startsWith("INFO [inference-reset] ") }
-    } else emptyList()
+    val allLines = if (logFile.exists()) logFile.readLines() else emptyList()
+    val infoLines = allLines.filter { it.startsWith("INFO [inference-reset] ") }
+    val warnLines = allLines.filter { it.startsWith("WARN [inference-reset] ") }
     assertEquals(
       "exactly one INFO line — only the successful second reset emits one",
       1,
@@ -423,6 +429,13 @@ class DefaultModelRegistryTest {
     assertTrue(
       "INFO line must reference the second reset's reason (HEAVY): ${infoLines.single()}",
       infoLines.single().contains("HEAVY"),
+    )
+    // Pin: the throw arm must NOT emit a WARN — both calls hit the Ready branch, so the skip
+    // path is never taken. Catches a future drift that adds warn-on-throw.
+    assertEquals(
+      "throw path must not emit a WARN line: $warnLines",
+      0,
+      warnLines.size,
     )
   }
 
