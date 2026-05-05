@@ -257,29 +257,29 @@ Per-task verification is via Gradle unit tests (every task with code changes) an
 
 ## Implementation Tasks
 
-Wave structure avoids parallel edits to the same file. `ChatViewModel.kt` is touched by Tasks 3 and 5 — they sit in different waves to serialise. `ChatScreen.kt` is touched only by Task 5 (gating + comment cleanup folded in).
+Wave structure avoids parallel edits to the same file. `ChatViewModel.kt` is touched by Tasks 3 (Wave 3) and 6 (Wave 4) — they serialise across waves. `ChatScreen.kt` is touched only by Task 6 (gating + stale-comment cleanup folded in). `ErrorLog.kt` (Task 1, Wave 1) must land before `DefaultModelRegistry` calls `errorLog.i/w` (Task 2, Wave 2).
 
-### Wave 1 — :core-runtime foundation
+### Wave 1 — `ErrorLog` levels (prerequisite for Wave 2 Task 2)
 
-Tasks 1 and 2 are parallel — different files in `:core-runtime`.
-
-#### Task 1: `ResetReason` enum + `ModelRegistry.resetConversation` signature + `DefaultModelRegistry` logging
-- **Description:** Create `ResetReason` enum (CHAT_SWITCH, DRAFT_COMMIT, LIGHT_OVERRIDE, SYSTEM_PROMPT, HEAVY, USER) in `:core-runtime/.../core/registry/`. Extend `ModelRegistry.resetConversation` interface with `reason: ResetReason` parameter (no default — every caller must pick). Replace silent non-Ready skip in `DefaultModelRegistry.resetConversation` with `errorLog.w("inference-reset", ...)`; on success path, `errorLog.i("inference-reset", ...)`. Unknown-model name remains silent (rationale in Decisions § 1).
-- **Skill:** code-writing
-- **Reviewers:** code-reviewer, security-auditor, test-reviewer
-- **Files to modify:** `core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/ModelRegistry.kt`, `core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt`, `core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/ResetReason.kt` (new)
-- **Files to read:** `core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt`, `work/phase-3.6-bugfix/code-research.md`
-
-#### Task 2: `ErrorLog` refactor — shared `write(level, ...)` helper + add `i()` / `w()` + whitelist `"inference-reset"`
-- **Description:** Refactor `ErrorLog` so that `e()`, `i()`, `w()` all route through a private `write(level, component, description, cause)` helper owning the existing length-bounding (description ≤500, cause ≤200) and `sanitize()` whitespace collapse. Add `"inference-reset"` to `ALLOWED_COMPONENTS` (size 14 → 15). Update tests to cover all three levels and the closed-whitelist invariant.
+#### Task 1: `ErrorLog` refactor — shared `write(level, ...)` helper + add `i()` / `w()` + whitelist `"inference-reset"`
+- **Description:** Refactor `ErrorLog` so that `e()`, `i()`, `w()` all route through a private `write(level, component, description, cause)` helper owning the existing length-bounding and `sanitize()` whitespace collapse (limits in Decision 5). Add `"inference-reset"` to `ALLOWED_COMPONENTS` (size 14 → 15). Update tests to cover all three levels and the closed-whitelist invariant.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Files to modify:** `core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt`, `core-runtime/src/test/kotlin/app/sanctum/machina/core/log/ErrorLogTest.kt`
 - **Files to read:** `.claude/skills/project-knowledge/references/patterns.md` (§ ErrorLog component strings + § ErrorLog length bounding)
 
-### Wave 2 — Bug 1 wiring + edge-to-edge + docs
+### Wave 2 — `ResetReason` + `ModelRegistry` logging (depends on Task 1)
 
-Tasks 3, 6, 7 in parallel — disjoint file sets. Task 3 owns `ChatViewModel.kt` for this wave.
+#### Task 2: `ResetReason` enum + `ModelRegistry.resetConversation` signature + `DefaultModelRegistry` logging
+- **Description:** Create `ResetReason` enum (CHAT_SWITCH, DRAFT_COMMIT, LIGHT_OVERRIDE, SYSTEM_PROMPT, HEAVY, USER) in `:core-runtime/.../core/registry/`. Extend `ModelRegistry.resetConversation` interface with `reason: ResetReason` parameter (no default — every caller must pick). Replace silent non-Ready skip in `DefaultModelRegistry.resetConversation` with `errorLog.w("inference-reset", ...)`; on success path, `errorLog.i("inference-reset", ...)`. Unknown-model name remains silent (rationale in Decisions § 1).
+- **Skill:** code-writing
+- **Reviewers:** code-reviewer, security-auditor, test-reviewer
+- **Files to modify:** `core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/ModelRegistry.kt`, `core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt`, `core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/ResetReason.kt` (new)
+- **Files to read:** `core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt` (note new `i`/`w` from Task 1), `work/phase-3.6-bugfix/code-research.md`
+
+### Wave 3 — Bug 1 wiring + edge-to-edge + docs
+
+Tasks 3, 4, 5 in parallel — disjoint file sets. Task 3 owns `ChatViewModel.kt` for this wave.
 
 #### Task 3: Wire reset reasons across `ChatViewModel` and reclassify `MAX_TOKENS` to Heavy
 - **Description:** Combined Bug-1 fix in `ChatViewModel`. Persistent branch of `bootstrapChatModelId` waits for first Ready signal (mirror `observeFirstReadyThenResume`), then issues `registry.resetConversation(reason)` with reason chosen by `lastByChat` heuristic (USER tail → DRAFT_COMMIT, else CHAT_SWITCH). `applyLightOverrides` calls reset with `LIGHT_OVERRIDE` after the `model.configValues = merged` mutation; UI history is preserved. `applySystemPromptAndReset` passes `SYSTEM_PROMPT`; existing user-tap reset passes `USER`. Remove `ConfigKeys.MAX_TOKENS.label` from `LIGHT_FIELD_LABELS`; update `classifyApplyLevel` so HEAVY fires on `acceleratorChanged || maxTokensChanged`.
@@ -300,14 +300,14 @@ Tasks 3, 6, 7 in parallel — disjoint file sets. Task 3 owns `ChatViewModel.kt`
 #### Task 5: Update `patterns.md` § D15 Light bullet and § ErrorLog component strings
 - **Description:** Rewrite the Light bullet of `patterns.md` § Three-tier settings application classification (D15) per code-research.md § 8 — Conversation-recreation reality, MAX_TOKENS migrated to Heavy. Append `"inference-reset"` to the whitelist enumeration in § ErrorLog component strings with a one-paragraph rationale.
 - **Skill:** documentation-writing
-- **Reviewers:** code-reviewer
+- **Reviewers:** code-reviewer, documentation-reviewer
 - **Files to modify:** `.claude/skills/project-knowledge/references/patterns.md`
 - **Files to read:** `work/phase-3.6-bugfix/code-research.md` (§ 8), `work/phase-3.6-bugfix/tech-spec.md` (Decision 4, Decision 5)
 
-### Wave 3 — Bug 2 wiring (depends on Task 3 landing in `ChatViewModel`)
+### Wave 4 — Bug 2 wiring (depends on Task 3 landing in `ChatViewModel`)
 
 #### Task 6: `engineReady` StateFlow + Settings gating switch in `ChatScreen` (+ stale comment cleanup)
-- **Description:** Expose `val engineReady: StateFlow<Boolean>` in `ChatViewModel` — `true` iff the entry for the current model is `ModelInitStatus.Ready` AND `!warmupInFlight`. In `ChatScreen.kt`, replace the existing `topAppBarState is TopAppBarState.Ready` boolean (source for `engineUsable`/`settingsEnabled`) with `engineReady` collected as state. `deriveTopAppBarState` keeps returning `TopAppBarState.Draft` for Draft (model picker dropdown unchanged). Also remove the now-stale comment in `ChatScreen.kt` (the line about MainActivity setting decorFitsSystemWindows — becomes implicit after Task 6).
+- **Description:** Expose `val engineReady: StateFlow<Boolean>` in `ChatViewModel` — `true` iff the entry for the current model is `ModelInitStatus.Ready` AND `!warmupInFlight`. In `ChatScreen.kt`, replace the existing `topAppBarState is TopAppBarState.Ready` boolean (source for `engineUsable`/`settingsEnabled`) with `engineReady` collected as state. `deriveTopAppBarState` keeps returning `TopAppBarState.Draft` for Draft (model picker dropdown unchanged). Also remove the now-stale comment in `ChatScreen.kt` (the line about MainActivity setting decorFitsSystemWindows — becomes implicit after Task 4).
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Verify-user:** На Honor 200: создать новый persistent чат → дождаться прогрева модели → НЕ отправляя сообщение, тапнуть по иконке Settings — sheet открывается. До прогрева — кнопка серая.
