@@ -156,3 +156,24 @@ Applied the third minor by adding a 6th assertion to `engineReady_combinatorics`
 - Module boundary: `Grep "androidx\.(compose|activity)"` over `core-runtime/src/main` → 0 hits. Engine-ready flag stays in `:app/ui/chat/`.
 - Stale-comment removal verified: `Grep "setDecorFitsSystemWindows" app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatScreen.kt` → 0 hits.
 - User-on-device verification (Honor 200 AC-2.1 / AC-2.3 sweep) deferred to Task 10 pre-deploy QA per memory rule `feedback_smoke_verification.md` — bundled with Task 3 + Task 4 device smoke into a single Honor 200 pass once the full UI chain (Bug 1, Bug 2, Bug 3) is in place. Same approach used in Tasks 3 and 4.
+
+---
+
+## Task 7: Code Audit
+
+**Status:** Done
+**Commit:** _this commit_
+**Agent:** main agent
+**Summary:** Cross-component code audit of Tasks 1–6. All 8 acceptance-checklist items pass; report at [logs/audit/code-audit.md](logs/audit/code-audit.md). Overall verdict **APPROVE** — 0 BLOCKER / 0 MAJOR / 0 MINOR / 4 NIT (style consistency on `is` vs `===` for `ModelInitStatus.Ready`, optional snackbar in `applyLightOverrides`, comment-vs-decision-doc duplication on `MAX_TOKENS`, `formatStatus`-then-sanitize ordering noted for security audit). No deviations from tech-spec discovered. `:core-runtime` UI-free invariant, mutex discipline on every `resetConversation` path, and the no-Honor-specific-code rule are all preserved.
+**Deviations:** None.
+
+**Reviews:**
+
+Audit task — auditor IS the review (no secondary reviewers per task spec).
+
+**Verification:**
+- `grep -rE "androidx.compose|androidx.activity" core-runtime/src/main` → 0 hits.
+- `git diff main...HEAD -- '*.kt' | grep -iE "Honor|EMUI|MANUFACTURER|BRAND"` → 0 hits in phase diff (pre-existing `Build.MANUFACTURER` in `DeviceInfoCollector.kt:246` and `Honor 200` *comment* in `MediaUtils.kt:120` were not modified by Tasks 1–6).
+- `grep -n "setDecorFitsSystemWindows\|MainActivity" ChatScreen.kt` → 0 hits (stale comment removed; new comment block describes `consumeWindowInsets`/`imePadding` ordering).
+- 4 production `registry.resetConversation` call sites in `ChatViewModel.kt` (368, 497, 514, 944) — all pass explicit `reason = ResetReason.<NAME>`; interface signature has no default value.
+- Audit report `work/phase-3.6-bugfix/logs/audit/code-audit.md` exists with Summary + Checklist results + Findings + Overall verdict.
