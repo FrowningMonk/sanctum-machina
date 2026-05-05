@@ -44,7 +44,8 @@ size: S
 **Bug 1 — KV-cache reset:**
 - [ ] AC-1.1: При переключении на другой persistent-чат через drawer Conversation пересоздаётся (KV-cache очищен).
 - [ ] AC-1.2: При commit draft → новый persistent-чат Conversation пересоздаётся.
-- [ ] AC-1.3: При изменении temperature / topK / topP / max_tokens в settings sheet изменения применяются к следующему ответу того же чата (Conversation пересоздаётся с новым SamplerConfig).
+- [ ] AC-1.3a: При изменении temperature / topK / topP в settings sheet изменения применяются к следующему ответу того же чата (Conversation пересоздаётся с новым SamplerConfig — Light tier).
+- [ ] AC-1.3b: При изменении max_tokens срабатывает Heavy-путь (`HeavyChangeDialog` → подтверждение → `ReinitProgressDialog` → cleanup+initialize), потому что `maxNumTokens` баксается в `EngineConfig` при создании движка, не в `ConversationConfig`. После переинита новый лимит активен.
 - [ ] AC-1.4: Если `resetConversation` вызван при non-Ready engine — логируется warning, не молчаливый skip.
 - [ ] AC-1.5: Каждый `resetConversation` логируется с тегом причины (`chat-switch` | `draft-commit` | `light-override` | `system-prompt` | `heavy`).
 
@@ -78,6 +79,8 @@ size: S
 - Мы решили **не выкидывать silent-skip из `DefaultModelRegistry.resetConversation` молча**, а заменить на warning-лог + явный путь возврата — диагностируемость важнее тишины (см. AC-1.4).
 - Мы решили **диагностические теги для reset вынести в enum** (`chat-switch`/`draft-commit`/`light-override`/`system-prompt`/`heavy`) — единая точка источника при логировании и тестировании.
 - Мы решили **не трогать Bug 4** (audit inference settings) — отсутствующие в LiteRT-LM 0.10.0 параметры (`repetition_penalty`, `min_p` и т.п.) не существуют в API; вернёмся, если движок их добавит или мы заменим LiteRT-LM.
+- Мы решили **переклассифицировать `max_tokens` из Light в Heavy** — выявленный в code research баг: поле физически живёт в `EngineConfig`, не в `ConversationConfig`. Перенос в Heavy-путь делает слайдер реально работающим (через `cleanup + initialize`); UX-цена — `HeavyChangeDialog` + 5–30 сек переинита, как у переключения акселератора.
+- Мы решили **обновить `patterns.md` L62** в `.claude/skills/project-knowledge/references/`: текущий текст «Light — applies from next send() without engine touch» неверен для LiteRT-LM 0.10.0; SamplerConfig запекается в `Conversation` при создании. Новая формулировка: Light = `model.configValues = merged` + `registry.resetConversation(reason = LIGHT_OVERRIDE)`; UI history сохраняется, движок не выгружается.
 
 ## Тестирование
 
