@@ -13,16 +13,26 @@ import app.sanctum.machina.core.runtime.LlmModelHelper
 import app.sanctum.machina.core.runtime.ResultListener
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ToolProvider
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -55,10 +65,22 @@ class DefaultModelRegistryTest {
   private val modelName = "Gemma-4-E2B-it"
 
   private lateinit var context: Context
+  private lateinit var logsDir: File
+  private lateinit var logFile: File
 
   @Before
   fun setUp() {
     context = ApplicationProvider.getApplicationContext()
+    logsDir = File(context.filesDir, "logs")
+    logFile = File(logsDir, "errors.log")
+    // Tests below assert against `errors.log` contents; reset before each test to keep them
+    // independent of order and of any in-class fixture residue.
+    logsDir.deleteRecursively()
+  }
+
+  @After
+  fun tearDown() {
+    logsDir.deleteRecursively()
   }
 
   /** Wait for the init-block allowlist scan to surface our entry into `_models`. */
@@ -189,7 +211,275 @@ class DefaultModelRegistryTest {
     assertTrue("ends must remain empty on cancellation", recording.ends.isEmpty())
   }
 
+  // --- Phase 3.6 Task 2: resetConversation logging + reason routing ----------
+
+  /**
+   * Mutate the seeded entry's [ModelInitStatus] without going through the lifecycle methods.
+   * `_models` is `internal` + `@VisibleForTesting`; same-module access is intentional so the
+   * tests in this file can drive states (Idle / Initializing / Failed / Ready) deterministically.
+   */
+  private fun DefaultModelRegistry.setStatus(name: String, status: ModelInitStatus) {
+    _models.update { list ->
+      list.map { if (it.model.name == name) it.copy(initStatus = status) else it }
+    }
+  }
+
+  @Test
+  fun resetConversation_skipsAndLogsWarning_whenEngineIdle() = runBlocking {
+    val helper = RecordingLlmModelHelper()
+    val registry = buildRegistry(helper, RecordingInitDiagnostics())
+    registry.awaitEntry(modelName) // entry seeds with ModelInitStatus.Idle by default
+
+    registry.resetConversation(modelName, systemPrompt = null, reason = ResetReason.CHAT_SWITCH)
+
+    assertEquals("helper must NOT be invoked when engine is not Ready", 0, helper.resetCalls.size)
+    assertTrue("warn-log file must exist", logFile.exists())
+    val lines = logFile.readLines()
+    assertEquals(1, lines.size)
+    val line = lines.single()
+    assertTrue("expected WARN [inference-reset] prefix, got: $line",
+      line.startsWith("WARN [inference-reset] "))
+    assertTrue("description must contain 'skipped': $line", line.contains("skipped"))
+    assertTrue("description must contain reason CHAT_SWITCH: $line", line.contains("CHAT_SWITCH"))
+    assertTrue("description must contain status Idle: $line", line.contains("Idle"))
+  }
+
+  @Test
+  fun resetConversation_skipsAndLogsWarning_whenEngineInitializing() = runBlocking {
+    val helper = RecordingLlmModelHelper()
+    val registry = buildRegistry(helper, RecordingInitDiagnostics())
+    registry.awaitEntry(modelName)
+    registry.setStatus(modelName, ModelInitStatus.Initializing)
+
+    registry.resetConversation(modelName, systemPrompt = null, reason = ResetReason.HEAVY)
+
+    assertEquals(0, helper.resetCalls.size)
+    val line = logFile.readLines().single()
+    assertTrue(line.startsWith("WARN [inference-reset] "))
+    assertTrue("description must contain 'skipped': $line", line.contains("skipped"))
+    assertTrue("description must contain reason HEAVY: $line", line.contains("HEAVY"))
+    assertTrue("description must contain status Initializing: $line", line.contains("Initializing"))
+  }
+
+  @Test
+  fun resetConversation_skipsAndLogsWarning_whenEngineFailed() = runBlocking {
+    val helper = RecordingLlmModelHelper()
+    val registry = buildRegistry(helper, RecordingInitDiagnostics())
+    registry.awaitEntry(modelName)
+    // Long, control-whitespace-laden cause text — pins that the description goes through the
+    // shared `write(level, ...)` pipeline (sanitize + 500-char bound from Task 1) rather than
+    // a parallel formatter (Decision 5).
+    val rawCause = "boom\n\tline2\rrest" + "x".repeat(600)
+    registry.setStatus(modelName, ModelInitStatus.Failed(rawCause))
+
+    registry.resetConversation(modelName, systemPrompt = null, reason = ResetReason.SYSTEM_PROMPT)
+
+    assertEquals(0, helper.resetCalls.size)
+    val line = logFile.readLines().single()
+    assertTrue(line.startsWith("WARN [inference-reset] "))
+    assertTrue("description must contain 'skipped': $line", line.contains("skipped"))
+    assertTrue("description must contain reason SYSTEM_PROMPT: $line",
+      line.contains("SYSTEM_PROMPT"))
+    assertTrue("description must contain status Failed: $line", line.contains("Failed"))
+    val description = line.substringAfter("WARN [inference-reset] ")
+    assertEquals("description must be capped to 500 chars by the shared write() pipeline",
+      500, description.length)
+    assertFalse("description must not contain raw newline (sanitize() in write() pipeline)",
+      description.contains("\n"))
+    assertFalse("description must not contain raw tab (sanitize() in write() pipeline)",
+      description.contains("\t"))
+    assertFalse("description must not contain raw CR (sanitize() in write() pipeline)",
+      description.contains("\r"))
+  }
+
+  @Test
+  fun resetConversation_dispatchesAndLogsInfo_whenReady() = runBlocking {
+    val helper = RecordingLlmModelHelper()
+    val registry = buildRegistry(helper, RecordingInitDiagnostics())
+    registry.awaitEntry(modelName)
+    registry.setStatus(modelName, ModelInitStatus.Ready)
+
+    registry.resetConversation(
+      modelName,
+      systemPrompt = "stay concise",
+      reason = ResetReason.LIGHT_OVERRIDE,
+    )
+
+    assertEquals("helper must be invoked exactly once on Ready arm", 1, helper.resetCalls.size)
+    val call = helper.resetCalls.single()
+    assertEquals(modelName, call.modelName)
+    assertTrue("systemInstruction must be non-null when prompt provided",
+      call.systemInstruction != null)
+    val line = logFile.readLines().single()
+    assertTrue(line.startsWith("INFO [inference-reset] "))
+    assertTrue("description must contain reason LIGHT_OVERRIDE: $line",
+      line.contains("LIGHT_OVERRIDE"))
+    assertFalse("Ready arm must not emit a 'skipped' entry: $line", line.contains("skipped"))
+  }
+
+  @Test
+  fun resetConversation_skipsSilently_whenModelMissing() = runBlocking {
+    val helper = RecordingLlmModelHelper()
+    val registry = buildRegistry(helper, RecordingInitDiagnostics())
+    registry.awaitEntry(modelName) // seed completes; "unknown-name" deliberately has no entry
+
+    registry.resetConversation(
+      "unknown-name-${UUID.randomUUID()}",
+      systemPrompt = null,
+      reason = ResetReason.USER,
+    )
+
+    assertEquals("helper must NOT be invoked for unknown model", 0, helper.resetCalls.size)
+    assertFalse(
+      "unknown-model path must not write to errors.log (Decision 1: silent to avoid log spam)",
+      logFile.exists() && logFile.readLines().isNotEmpty(),
+    )
+  }
+
+  @OptIn(ExperimentalCoroutinesApi::class)
+  @Test
+  fun resetConversation_isSerializedByLifecycleMutex() =
+    runTest(StandardTestDispatcher()) {
+      // Peak-concurrency check — robust under any dispatcher: if `lifecycleMutex.withLock`
+      // serialises calls, two concurrent resets can never both be inside the helper at once,
+      // so `peak` stays at 1. Stronger than asserting an `[1, 2]` order, which `incrementAndGet`
+      // would make trivially `[1, 2]` even without the mutex.
+      val active = AtomicInteger(0)
+      val peak = AtomicInteger(0)
+      val helper = RecordingLlmModelHelper(onResetCalled = {
+        val cur = active.incrementAndGet()
+        peak.updateAndGet { prev -> if (cur > prev) cur else prev }
+        // helper is non-suspend (LlmModelHelper.resetConversation), so use Thread.sleep.
+        // 50ms is enough wall time for a second concurrent entry to be observed if the mutex is
+        // broken; mutex serialisation pins peak == 1 regardless.
+        Thread.sleep(50)
+        active.decrementAndGet()
+      })
+      val registry = buildRegistry(helper, RecordingInitDiagnostics())
+
+      // The init-block scan publishes _models from a real Dispatchers.Default scope; poll on a
+      // real-thread context so virtual time stays untouched (`withTimeout` would race with
+      // virtual-time advances under StandardTestDispatcher).
+      withContext(Dispatchers.Default) {
+        val deadline = System.currentTimeMillis() + 5_000
+        while (registry.models.value.none { it.model.name == modelName } &&
+          System.currentTimeMillis() < deadline) {
+          Thread.sleep(10)
+        }
+      }
+      registry.setStatus(modelName, ModelInitStatus.Ready)
+
+      val j1 = launch { registry.resetConversation(modelName, null, ResetReason.USER) }
+      val j2 = launch { registry.resetConversation(modelName, null, ResetReason.USER) }
+      advanceUntilIdle()
+      j1.join()
+      j2.join()
+
+      assertEquals("both resets must complete", 2, helper.resetCalls.size)
+      assertEquals(
+        "lifecycleMutex must serialise: peak concurrency must remain 1",
+        1,
+        peak.get(),
+      )
+    }
+
+  @Test
+  fun resetConversation_propagatesHelperException() = runBlocking {
+    var throwOnNextCall = true
+    val helper = RecordingLlmModelHelper(onResetCalled = {
+      if (throwOnNextCall) {
+        throwOnNextCall = false
+        throw IllegalStateException("boom")
+      }
+    })
+    val registry = buildRegistry(helper, RecordingInitDiagnostics())
+    registry.awaitEntry(modelName)
+    registry.setStatus(modelName, ModelInitStatus.Ready)
+
+    // First call: helper throws → exception propagates out, info-log NOT written.
+    var thrown: Throwable? = null
+    try {
+      registry.resetConversation(modelName, null, ResetReason.LIGHT_OVERRIDE)
+    } catch (t: IllegalStateException) {
+      thrown = t
+    }
+    assertTrue("helper exception must propagate to caller", thrown != null)
+    assertEquals("boom", thrown!!.message)
+
+    // Second call: helper succeeds → mutex was released after throw, so this call gets the lock.
+    registry.resetConversation(modelName, null, ResetReason.HEAVY)
+
+    assertEquals("helper must have been invoked twice", 2, helper.resetCalls.size)
+    // First reset: threw before INFO log → no INFO line for the first call.
+    // Second reset: succeeded → exactly one INFO line.
+    val infoLines = if (logFile.exists()) {
+      logFile.readLines().filter { it.startsWith("INFO [inference-reset] ") }
+    } else emptyList()
+    assertEquals(
+      "exactly one INFO line — only the successful second reset emits one",
+      1,
+      infoLines.size,
+    )
+    assertTrue(
+      "INFO line must reference the second reset's reason (HEAVY): ${infoLines.single()}",
+      infoLines.single().contains("HEAVY"),
+    )
+  }
+
   // --- helpers ---------------------------------------------------------------
+
+  /**
+   * Records [LlmModelHelper.resetConversation] invocations. [onResetCalled] is invoked synchronously
+   * inside the override and lets individual tests inject behaviour (sleep / throw / etc).
+   */
+  private class RecordingLlmModelHelper(
+    private val onResetCalled: () -> Unit = {},
+  ) : LlmModelHelper {
+    data class ResetCall(val modelName: String, val systemInstruction: Contents?)
+    val resetCalls: MutableList<ResetCall> = java.util.Collections.synchronizedList(mutableListOf())
+
+    override fun initialize(
+      context: Context,
+      model: Model,
+      supportImage: Boolean,
+      supportAudio: Boolean,
+      onDone: (String) -> Unit,
+      systemInstruction: Contents?,
+      tools: List<ToolProvider>,
+      enableConversationConstrainedDecoding: Boolean,
+      coroutineScope: CoroutineScope?,
+    ) = onDone("not used in resetConversation tests")
+
+    override fun resetConversation(
+      model: Model,
+      supportImage: Boolean,
+      supportAudio: Boolean,
+      systemInstruction: Contents?,
+      tools: List<ToolProvider>,
+      enableConversationConstrainedDecoding: Boolean,
+    ) {
+      resetCalls.add(ResetCall(model.name, systemInstruction))
+      onResetCalled()
+    }
+
+    override fun cleanUp(model: Model, onDone: () -> Unit) = onDone()
+
+    override fun runInference(
+      model: Model,
+      input: String,
+      resultListener: ResultListener,
+      cleanUpListener: CleanUpListener,
+      onError: (message: String) -> Unit,
+      images: List<Bitmap>,
+      audioClips: List<ByteArray>,
+      coroutineScope: CoroutineScope?,
+      extraContext: Map<String, String>?,
+    ) = Unit
+
+    override fun stopResponse(model: Model) = Unit
+  }
+
+  // --- existing helpers ------------------------------------------------------
 
   private sealed interface Response {
     object Success : Response

@@ -85,8 +85,16 @@ interface ModelRegistry {
    * Reset the LiteRT-LM conversation for [modelName] without rebuilding the engine. The string
    * [systemPrompt] (null = no system instruction) is converted internally to LiteRT-LM `Contents`.
    * Runs under the registry lifecycle mutex.
+   *
+   * [reason] classifies the call site for diagnostics (Phase 3.6 Decision 1) — there is **no
+   * default**, so each caller must pick one explicitly. The reason flows into the
+   * `inference-reset` `ErrorLog` channel as `reason=<NAME>`.
    */
-  suspend fun resetConversation(modelName: String, systemPrompt: String? = null)
+  suspend fun resetConversation(
+    modelName: String,
+    systemPrompt: String? = null,
+    reason: ResetReason,
+  )
 
   /**
    * Read-only accessor used by Task 9 `ChatViewModel` to obtain a ready-to-run [Model] (with
