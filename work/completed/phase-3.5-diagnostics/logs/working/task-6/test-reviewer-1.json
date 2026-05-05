@@ -1,0 +1,91 @@
+{
+  "status": "passed",
+  "verdict": "approve",
+  "summary": "All five TDD anchor cases are present, named per project convention, and assertively pin the InitDiagnostics call-order contract on DefaultModelRegistry.initialize. Each test passes the litmus test: removing the corresponding production line (onInitStart, onInitEnd(true) on GPU arm, onInitEnd(true) on CPU fallback arm, onInitEnd(false) on full fail, omission on cancellation) breaks at least one assertion. Decision 8 (one-snapshot-per-attempt) is pinned by asserting starts.size == 1 on the CPU-fallback arm. Determinism is sound — the cancellation test uses CountDownLatch to gate cancellation on helper invocation; awaitEntry uses StateFlow.first to settle the allowlist-scan race before driving initialize; the chosen model name 'Gemma-4-E2B-it' exists in core-runtime/src/main/assets/model_allowlist.json. The QueuedLlmModelHelper accurately models the registry's success predicate (err.isEmpty() && model.instance != null) by writing a non-null sentinel on Success and leaving instance null on Failure. RecordingInitDiagnostics is minimal, single-threaded, and matches the tech-spec Testing Strategy block. ModelRegistryActiveModelTest update is a strict one-line ctor addition with no regression to existing assertions. One minor advisory below on tightening the availMem assertion via ShadowActivityManager — the user explicitly asked for an opinion. Not blocking.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistryTest.kt:98-108",
+      "issue": "The freeRamBytes assertion compares the recorded value against a fresh ActivityManager.MemoryInfo.availMem read at test time. Under default Robolectric, availMem is 0 for both reads, so the equality holds even if the registry sent a hardcoded 0L (or any code path that coincidentally returned 0). The test pins 'whatever ActivityManager reports' but does not pin 'the registry actually called ActivityManager.getMemoryInfo'. On a real device the values are non-zero and could drift between the registry's read and the test's re-read, producing a flake risk if availMem changes between the two reads (rare but possible under GC pressure). The current invariant is correct but loose.",
+      "recommendation": "Strengthen by injecting a known availMem via ShadowActivityManager before initialize: `Shadows.shadowOf(am).setMemoryInfo(MemoryInfo().apply { availMem = 1_234_567_890L; totalMem = ...; threshold = ...; lowMemory = false })`. Then assertEquals(1_234_567_890L, recording.starts.first().second). This pins 'registry routes through ActivityManager' deterministically, eliminates the second-read drift window, and works on both Robolectric default and CI hosts. Keep the existing test or replace — either is fine; the shadow-based variant is strictly stronger.",
+      "litmusTestFailed": false,
+      "blocking": false
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistryTest.kt:110-111",
+      "issue": "atEpochMs assertion uses a 60-second window `(now - 60_000)..now`. Generous range is acceptable for a single-shot test but does not tightly pin 'the registry called System.currentTimeMillis() at the snapshot site'. A regression that captured time at construction (e.g. lazily) and reused it would still fall within 60s for any reasonable test duration.",
+      "recommendation": "Capture before/after brackets: `val before = System.currentTimeMillis(); registry.initialize(modelName); val after = System.currentTimeMillis(); assertTrue(first.third in before..after)`. This pins the call site to the initialize() interval to within milliseconds. Trivial change, strictly stronger assertion.",
+      "litmusTestFailed": false,
+      "blocking": false
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 5,
+    "litmusTest": {
+      "checked": 5,
+      "passed": 5,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "tddAnchorCoverage": {
+      "required": 5,
+      "present": 5,
+      "missing": []
+    },
+    "pyramidBalance": {
+      "unit": 5,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    },
+    "determinismCheck": {
+      "cancellationGate": "ok — CountDownLatch ensures helper.initialize was hit before job.cancel()",
+      "allowlistScanRace": "ok — awaitEntry suspends on StateFlow.first until the scan emits a list containing the model; allowlist contains 'Gemma-4-E2B-it' (verified)",
+      "successPredicateModeling": "ok — QueuedLlmModelHelper writes non-null model.instance on Success and leaves null on Failure, matching `err.isEmpty() && model.instance != null`"
+    },
+    "tddAnchorMapping": [
+      {
+        "anchor": "initialize_recordsExactlyOneOnInitStartBeforeFirstAwaitInitialize",
+        "testLine": "DefaultModelRegistryTest.kt:82",
+        "litmusPasses": true,
+        "notes": "Asserts starts.size==1, modelName equality, freeRamBytes equality with ActivityManager re-read, atEpochMs in (now-60s..now), and callOrder shows start: before any end:. Removing the onInitStart line in production → all assertions fail. See minor findings for tightening availMem and atEpochMs."
+      },
+      {
+        "anchor": "initialize_recordsOnInitEndTrue_onGpuSuccessArm",
+        "testLine": "DefaultModelRegistryTest.kt:123",
+        "litmusPasses": true,
+        "notes": "Asserts ends == listOf(true). Single Response.Success drives GPU arm. Removing onInitEnd(true) on GPU success branch → ends becomes empty, test fails."
+      },
+      {
+        "anchor": "initialize_recordsOnInitEndTrue_onCpuFallbackArm_notTwo",
+        "testLine": "DefaultModelRegistryTest.kt:136",
+        "litmusPasses": true,
+        "notes": "Pins Decision 8: single attempt across GPU+CPU fallback. Asserts both starts.size==1 (no duplicate onInitStart on fallback) and ends == listOf(true) (single onInitEnd, not two). A regression that re-snapshotted before the CPU retry would fail starts.size==1; a regression that emitted onInitEnd on both arms would fail ends size."
+      },
+      {
+        "anchor": "initialize_recordsOnInitEndFalse_onFullFailArm",
+        "testLine": "DefaultModelRegistryTest.kt:152",
+        "litmusPasses": true,
+        "notes": "Both arms return Response.Failure. Asserts result.isFailure, starts.size==1, ends == listOf(false). Removing the onInitEnd(false) line before Result.failure → ends becomes empty, test fails."
+      },
+      {
+        "anchor": "initialize_doesNotCallOnInitEnd_onCancellation",
+        "testLine": "DefaultModelRegistryTest.kt:168",
+        "litmusPasses": true,
+        "notes": "SuspendingLlmModelHelper signals invocation via CountDownLatch then never calls onDone. Test gates job.cancel() on the latch, ensuring onInitStart already ran. After job.join, asserts starts.size==1 and ends.isEmpty(). A regression that added onInitEnd in catch (ce: CancellationException) would fail ends.isEmpty()."
+      }
+    ],
+    "modelRegistryActiveModelTestRegression": {
+      "change": "Single-line ctor addition: `initDiagnostics = NoOpInitDiagnostics()` at line 217",
+      "regressionRisk": "none — additive ctor parameter wired with the existing test fake from Task 4; no existing assertion or fixture touched"
+    },
+    "recordingInitDiagnosticsShape": {
+      "fields": "starts: MutableList<Triple<String, Long, Long>>, ends: MutableList<Boolean>, private order: MutableList<String>",
+      "callOrderHelper": "callOrder() returns immutable snapshot",
+      "threadSafety": "none — registry writers are serialised by lifecycleMutex per Decision 8; rationale documented in KDoc and matches tech-spec line 286-287"
+    }
+  }
+}

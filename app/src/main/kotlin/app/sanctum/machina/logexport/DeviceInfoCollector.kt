@@ -4,13 +4,20 @@ import android.app.ActivityManager
 import android.content.Context
 import android.content.pm.PackageInfo
 import android.os.Build
+import android.os.Debug
 import app.sanctum.machina.BuildConfig
 import app.sanctum.machina.core.data.ModelDownloadStatusType
 import app.sanctum.machina.core.registry.ModelEntry
 import app.sanctum.machina.core.registry.ModelInitStatus
 import app.sanctum.machina.core.registry.ModelRegistry
+import app.sanctum.machina.diagnostics.DiagnosticsState
+import app.sanctum.machina.diagnostics.InitSnapshot
+import app.sanctum.machina.diagnostics.Outcome
+import app.sanctum.machina.ui.modelmanager.formatGbFloor
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.time.Instant
 import java.time.OffsetDateTime
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import javax.inject.Inject
@@ -28,7 +35,9 @@ import javax.inject.Inject
  * applicationId: <fqn>
  * version: <versionName> (<versionCode>), debug=<true|false>
  * device: <manufacturer> / <model> / Android <release> (API <level>)
- * memory: total=<G.G> GB, available=<G.G> GB
+ * memory: total=<G.G> GB, available=<G.G> GB, threshold=<G.G> GB, lowMemory=<true|false>
+ * process: javaHeap=<M> MB, nativeHeap=<M> MB, totalPss=<M> MB    # `n/a` per-field on source error
+ * last init: <Ok|Failed|InProgress|пока не было>                # see [formatLastInit]
  * active model: <id or "none">
  * downloaded models:
  *   - <id> (<size>)         # or "  (none)" when the list is empty
@@ -50,7 +59,14 @@ class DeviceInfoCollector @Inject constructor(
             .append(" (API ").append(provider.apiLevel()).append(")\n")
         append("memory: total=").append(formatGb(provider.totalMemoryBytes()))
             .append(", available=").append(formatGb(provider.availableMemoryBytes()))
+            .append(", threshold=").append(formatGb(provider.thresholdMemoryBytes()))
+            .append(", lowMemory=").append(provider.isLowMemory())
             .append('\n')
+        append("process: javaHeap=").append(formatMbOrNa(provider.processJavaHeapBytes()))
+            .append(", nativeHeap=").append(formatMbOrNa(provider.processNativeHeapBytes()))
+            .append(", totalPss=").append(formatMbOrNa(provider.processTotalPssBytes()))
+            .append('\n')
+        append("last init: ").append(formatLastInit(provider.lastInitSnapshot())).append('\n')
         append("active model: ").append(provider.activeModelId() ?: "none").append('\n')
         append("downloaded models:\n")
         val downloaded = provider.downloadedModels()
@@ -67,11 +83,84 @@ class DeviceInfoCollector @Inject constructor(
         val gb = bytes.toDouble() / (1024.0 * 1024.0 * 1024.0)
         return String.format(Locale.ROOT, "%.1f GB", gb)
     }
+
+    private fun formatGbOrNa(bytes: Long): String =
+        if (bytes == NA_SENTINEL) "n/a" else formatGb(bytes)
+
+    private fun formatMbOrNa(bytes: Long): String {
+        if (bytes == NA_SENTINEL) return "n/a"
+        val mb = bytes / (1024L * 1024L)
+        return "$mb MB"
+    }
 }
+
+/**
+ * Sentinel returned by [DeviceInfoProvider]'s process-memory getters when the
+ * underlying source threw — `Debug.MemoryInfo` reads can fail on some OEMs.
+ * `buildHeader` renders the offending field as `n/a` while sibling fields keep
+ * their normal `<M> MB` rendering.
+ */
+internal const val NA_SENTINEL: Long = Long.MIN_VALUE
+
+/**
+ * Pure renderer for the `last init:` line. Four branches per AC-D6 + Decision 12:
+ *  * `null` → `пока не было`
+ *  * `Ok` → `<X.X> ГБ RAM · HH:mm · <modelName> · ok`
+ *  * `Failed` → `<X.X> ГБ RAM · HH:mm · <modelName> · ошибка`
+ *  * `InProgress` → `Идёт инициализация: <X.X> ГБ RAM · HH:mm · <modelName>`
+ *
+ * Russian `ГБ` (with floor-precision via [formatGbFloor]) is intentional and
+ * matches the same units used on the diagnostics screen (Decision 12). The
+ * `memory:` row uses English `GB` via `formatGb`; `process:` row uses English
+ * `MB` via `formatMbOrNa` (java-heap is typically tens of MB — GB-floor would
+ * collapse it to `0.0`). Three separate formatters; do not confuse.
+ *
+ * `zone` defaults to system default — production wants whatever the device user
+ * sees when they read the export. Tests pin an explicit zone for determinism.
+ *
+ * `modelName` is flattened via [flattenForLogLine] before interpolation. Today
+ * the value is allowlist-controlled (`DefaultModelRegistry.initialize` matches
+ * against `ModelEntry.model.name`), but a stray `\n` would forge a header line
+ * — defense-in-depth keeps that closed.
+ */
+internal fun formatLastInit(
+    snapshot: InitSnapshot?,
+    zone: ZoneId = ZoneId.systemDefault(),
+): String {
+    if (snapshot == null) return "пока не было"
+    val ramGb = formatGbFloor(snapshot.freeRamBytes)
+    val hhmm = OffsetDateTime
+        .ofInstant(Instant.ofEpochMilli(snapshot.atEpochMs), zone)
+        .format(HH_MM)
+    val name = flattenForLogLine(snapshot.modelName)
+    return when (snapshot.outcome) {
+        Outcome.Ok -> "$ramGb ГБ RAM · $hhmm · $name · ok"
+        Outcome.Failed -> "$ramGb ГБ RAM · $hhmm · $name · ошибка"
+        Outcome.InProgress -> "Идёт инициализация: $ramGb ГБ RAM · $hhmm · $name"
+    }
+}
+
+private val HH_MM: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+
+private val LINE_BREAK_OR_TAB = Regex("[\\r\\n\\t]+")
+
+/** Collapse newlines/tabs to single spaces so an untrusted token can't split a log line. */
+internal fun flattenForLogLine(raw: String): String =
+    raw.replace(LINE_BREAK_OR_TAB, " ").trim()
 
 /**
  * Header values, all read via this interface so tests stub deterministically
  * without Robolectric. Production binding is [AndroidDeviceInfoProvider].
+ *
+ * Process-memory getters ([processJavaHeapBytes], [processNativeHeapBytes],
+ * [processTotalPssBytes]) may return [NA_SENTINEL] when the underlying
+ * `Debug.MemoryInfo` / `Runtime` source throws — this is a per-field signal,
+ * not a global error: the surviving fields still render normally.
+ *
+ * [lastInitSnapshot] returns `null` in the `:crash` process where
+ * [app.sanctum.machina.diagnostics.DiagnosticsState] is unavailable; the
+ * `last init:` row degrades to `пока не было` (AC-H4) while the five other
+ * memory/process getters keep working through system APIs.
  */
 interface DeviceInfoProvider {
     fun applicationId(): String
@@ -84,44 +173,59 @@ interface DeviceInfoProvider {
     fun apiLevel(): Int
     fun totalMemoryBytes(): Long
     fun availableMemoryBytes(): Long
+    fun thresholdMemoryBytes(): Long
+    fun isLowMemory(): Boolean
+    fun processJavaHeapBytes(): Long
+    fun processNativeHeapBytes(): Long
+    fun processTotalPssBytes(): Long
+    fun lastInitSnapshot(): InitSnapshot?
     fun activeModelId(): String?
     fun downloadedModels(): List<Pair<String, Long>>
     fun nowIso(): String
 }
 
 /**
- * Production [DeviceInfoProvider]. Reads from `PackageManager`, `Build`, and
- * `ActivityManager.MemoryInfo` — all through the injected [context].
+ * Production [DeviceInfoProvider]. Reads from `PackageManager`, `Build`,
+ * `ActivityManager.MemoryInfo`, `Debug.MemoryInfo`, and `Runtime` — all through
+ * the injected [context].
  *
- * Two construction paths:
+ * Three construction paths:
  *
- *  * **Hilt primary** — `@Inject constructor(Context, ModelRegistry)`. In the
- *    main process, [ModelRegistry] drives [activeModelId] and
- *    [downloadedModels] from `registry.models.value`.
- *  * **Non-Hilt secondary** — `AndroidDeviceInfoProvider(Context)` passes
- *    `registry = null`. Used by the `:crash` process (Decision 10): the crash
- *    process has no running engine, so model data is genuinely unavailable.
- *    The export falls back to `active model: none` and
- *    `downloaded models:\n  (none)` in the header.
+ *  * **Private primary** — `private constructor(Context, () -> List<ModelEntry>,
+ *    () -> InitSnapshot?)`. Both registry and diagnostics are captured as thunks
+ *    so the secondary ctors can supply per-process fallbacks without separate
+ *    `Null*` implementations and without leaking Hilt deps into the `:crash`
+ *    path (Decision 10).
+ *  * **`@Inject` secondary (Hilt-entry-point, main process)** — receives both
+ *    [ModelRegistry] and [DiagnosticsState] from the Hilt graph and forwards
+ *    `{ registry.models.value }` + `{ state.lastInitSnapshot() }` thunks to the
+ *    primary.
+ *  * **Non-Hilt secondary `(Context)`** — `:crash` process (see
+ *    `architecture.md` § «Non-Hilt construction in :crash»). `DiagnosticsState`
+ *    is genuinely unavailable (singleton lives only in main process), so the
+ *    snapshot thunk forwards `{ null }` — `last init:` row reads `пока не было`
+ *    (AC-H4). Registry thunk likewise forwards `{ emptyList() }` — the crashed
+ *    app has no engine, so `active model:` reads `none` and `downloaded models:`
+ *    reads `(none)`. The five memory/process getters still work because they
+ *    read live system APIs that don't depend on app singletons.
  */
 class AndroidDeviceInfoProvider private constructor(
     @ApplicationContext private val context: Context,
-    // Registry is captured as a thunk so the :crash-process ctor can supply an
-    // empty-list fallback without a separate `NullModelRegistry` implementation
-    // and without leaking a Hilt dependency into that path (Decision 10).
     private val entriesProvider: () -> List<ModelEntry>,
+    private val lastInitSnapshotProvider: () -> InitSnapshot?,
 ) : DeviceInfoProvider {
 
-    // Hilt-injected path (main process) — ModelRegistry provides real state.
     @Inject constructor(
         @ApplicationContext context: Context,
         registry: ModelRegistry,
-    ) : this(context, { registry.models.value })
+        state: DiagnosticsState,
+    ) : this(context, { registry.models.value }, { state.lastInitSnapshot() })
 
-    // Non-Hilt path (:crash process, per Decision 10). Registry is genuinely
-    // unavailable — the crashed app has no engine; stubs fall back to null /
-    // empty so the header reads `active model: none`.
-    constructor(@ApplicationContext context: Context) : this(context, { emptyList() })
+    constructor(@ApplicationContext context: Context) : this(
+        context,
+        { emptyList() },
+        { null },
+    )
 
     override fun applicationId(): String = context.packageName
 
@@ -146,6 +250,24 @@ class AndroidDeviceInfoProvider private constructor(
 
     override fun totalMemoryBytes(): Long = memoryInfo().totalMem
     override fun availableMemoryBytes(): Long = memoryInfo().availMem
+    override fun thresholdMemoryBytes(): Long = memoryInfo().threshold
+    override fun isLowMemory(): Boolean = memoryInfo().lowMemory
+
+    override fun processJavaHeapBytes(): Long = runCatching {
+        val rt = Runtime.getRuntime()
+        rt.totalMemory() - rt.freeMemory()
+    }.getOrDefault(NA_SENTINEL)
+
+    override fun processNativeHeapBytes(): Long = runCatching {
+        Debug.getNativeHeapAllocatedSize()
+    }.getOrDefault(NA_SENTINEL)
+
+    override fun processTotalPssBytes(): Long = runCatching {
+        // Debug.MemoryInfo.totalPss is in KB — multiply to bytes for the shared GB formatter.
+        debugMemoryInfo().totalPss.toLong() * 1024L
+    }.getOrDefault(NA_SENTINEL)
+
+    override fun lastInitSnapshot(): InitSnapshot? = lastInitSnapshotProvider()
 
     // Stable HF repo id of the single model whose engine is Ready (single-active-engine
     // invariant). `null` when no engine is loaded OR when the registry is unavailable
@@ -174,6 +296,12 @@ class AndroidDeviceInfoProvider private constructor(
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         val info = ActivityManager.MemoryInfo()
         am.getMemoryInfo(info)
+        return info
+    }
+
+    private fun debugMemoryInfo(): Debug.MemoryInfo {
+        val info = Debug.MemoryInfo()
+        Debug.getMemoryInfo(info)
         return info
     }
 }

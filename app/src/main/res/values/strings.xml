@@ -1,4 +1,4 @@
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
   <string name="app_name">Sanctum Machina</string>
 
   <!-- ModelManager screen -->
@@ -10,6 +10,11 @@
   <string name="model_size_gb_format">%1$.1f ГБ</string>
   <string name="model_download_progress_format">%1$d / %2$d МБ</string>
   <string name="model_error_prefix">Ошибка: %1$s</string>
+  <!-- Phase 3.5 Slice 1: pre-flight gate secondary text. Source-of-truth in Phase 3.5
+       is the pure-fun `formatRamShortage(totalBytes, minGb)`; this resource is reserved
+       for future locale support and is not read by the UI yet, hence UnusedResources
+       is suppressed. Both must match verbatim once the locale path lands. -->
+  <string name="model_gate_secondary" tools:ignore="UnusedResources">Недостаточно RAM (%1$s ГБ устройство, нужно %2$d ГБ)</string>
 
   <!-- Buttons (generic) -->
   <string name="btn_download">Скачать</string>
@@ -110,9 +115,13 @@
   <string name="log_export_error_toast">Не удалось сохранить лог</string>
   <string name="crash_banner_body">Прошлый запуск завершился аварийно.</string>
   <string name="crash_banner_dismiss_description">Скрыть баннер</string>
-  <string name="about_diagnostics_title">Диагностика</string>
   <string name="dev_crash_dialog_title">Спровоцировать тест-краш?</string>
   <string name="dev_crash_dialog_confirm">Да</string>
+
+  <!-- Diagnostics screen (Phase 3.5 Task 8) -->
+  <string name="diagnostics_title">Диагностика</string>
+  <string name="diagnostics_section_ram">RAM</string>
+  <string name="diagnostics_section_logs">Логи</string>
 
   <!-- Home screen (Phase 3 Task 7) -->
   <string name="home_title">Sanctum · Home</string>
@@ -170,5 +179,6 @@
 
   <!-- Drawer footer (Phase 3 Task 18) -->
   <string name="drawer_nav_models">Модели</string>
+  <string name="drawer_nav_diagnostics">Диагностика</string>
   <string name="drawer_nav_about">О приложении</string>
 </resources>

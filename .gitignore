@@ -11,6 +11,9 @@
 # ============================================================================
 build/
 **/build/
+# Re-include Kotlin source dirs — `**/build/` would otherwise eat any
+# package path with a `build` segment (e.g. `…/sanctum/machina/build/`).
+!**/src/**
 .gradle/
 gradle.properties.local
 

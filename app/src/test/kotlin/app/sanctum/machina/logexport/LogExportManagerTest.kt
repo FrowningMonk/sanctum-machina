@@ -58,6 +58,8 @@ class LogExportManagerTest {
             "version:",
             "device:",
             "memory:",
+            "process:",
+            "last init:",
             "active model:",
             "downloaded models:",
         )) {
@@ -349,6 +351,12 @@ class LogExportManagerTest {
         override fun apiLevel() = 34
         override fun totalMemoryBytes() = 12_564_408_729L
         override fun availableMemoryBytes() = 6_657_199_718L
+        override fun thresholdMemoryBytes() = 419_430_400L
+        override fun isLowMemory() = false
+        override fun processJavaHeapBytes() = 80_000_000L
+        override fun processNativeHeapBytes() = 220_000_000L
+        override fun processTotalPssBytes() = 380_000_000L
+        override fun lastInitSnapshot() = null
         override fun activeModelId() = activeModelId
         override fun downloadedModels() = downloadedModels
         override fun nowIso() = "2026-04-18T14:25:00+05:00"

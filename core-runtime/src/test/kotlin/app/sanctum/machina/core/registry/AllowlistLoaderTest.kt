@@ -1,15 +1,43 @@
 package app.sanctum.machina.core.registry
 
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
 import app.sanctum.machina.core.data.AllowedModel
 import app.sanctum.machina.core.data.ConfigKeys
+import app.sanctum.machina.core.log.ErrorLog
 import java.io.File
+import kotlinx.coroutines.test.runTest
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [33])
 class AllowlistLoaderTest {
+
+  private lateinit var context: Context
+  private lateinit var errorLog: ErrorLog
+  private lateinit var errorLogFile: File
+
+  @Before
+  fun setUp() {
+    context = ApplicationProvider.getApplicationContext()
+    errorLog = ErrorLog(context)
+    errorLogFile = File(context.filesDir, "logs/errors.log")
+    errorLogFile.parentFile?.deleteRecursively()
+  }
+
+  @After
+  fun tearDown() {
+    errorLogFile.parentFile?.deleteRecursively()
+  }
 
   private fun loadFixture(): Result<List<AllowedModel>> {
     val stream =
@@ -83,7 +111,7 @@ class AllowlistLoaderTest {
   fun parse_rejectsDisallowedModelIdPrefix() {
     val json =
       """{"models":[{"name":"x","modelId":"attacker/evil","modelFile":"a.lm",
-      "commitHash":"abc","sizeInBytes":1,"taskTypes":["llm_chat"]}]}"""
+      "commitHash":"abc","sizeInBytes":1,"minDeviceMemoryInGb":4,"taskTypes":["llm_chat"]}]}"""
     val result = parseRaw(json)
     assertTrue(result.isFailure)
     assertTrue(
@@ -95,7 +123,7 @@ class AllowlistLoaderTest {
   fun parse_rejectsModelFilePathTraversal() {
     val json =
       """{"models":[{"name":"x","modelId":"litert-community/ok","modelFile":"../evil.lm",
-      "commitHash":"7fa1d78473894f7e736a21d920c3aa80f950c0db","sizeInBytes":1,"taskTypes":["llm_chat"]}]}"""
+      "commitHash":"7fa1d78473894f7e736a21d920c3aa80f950c0db","sizeInBytes":1,"minDeviceMemoryInGb":4,"taskTypes":["llm_chat"]}]}"""
     val result = parseRaw(json)
     assertTrue(result.isFailure)
     assertTrue(
@@ -107,7 +135,7 @@ class AllowlistLoaderTest {
   fun parse_rejectsMalformedCommitHash() {
     val json =
       """{"models":[{"name":"x","modelId":"litert-community/ok","modelFile":"a.lm",
-      "commitHash":"HEAD","sizeInBytes":1,"taskTypes":["llm_chat"]}]}"""
+      "commitHash":"HEAD","sizeInBytes":1,"minDeviceMemoryInGb":4,"taskTypes":["llm_chat"]}]}"""
     val result = parseRaw(json)
     assertTrue(result.isFailure)
     assertTrue(
@@ -120,7 +148,7 @@ class AllowlistLoaderTest {
     val json =
       """{"models":[{"name":"x","modelId":"litert-community/ok","modelFile":"a.lm",
       "commitHash":"7fa1d78473894f7e736a21d920c3aa80f950c0db","sizeInBytes":10737418241,
-      "taskTypes":["llm_chat"]}]}"""
+      "minDeviceMemoryInGb":4,"taskTypes":["llm_chat"]}]}"""
     val result = parseRaw(json)
     assertTrue(result.isFailure)
     assertTrue(
@@ -128,13 +156,120 @@ class AllowlistLoaderTest {
     )
   }
 
+  // --- Phase 3.5 Task 1: minDeviceMemoryInGb plumbing + fail-loud parser ----------------
+
+  @Test
+  fun parse_rejectsNullMinDeviceMemory() {
+    val json =
+      """{"models":[{"name":"x","modelId":"litert-community/ok","modelFile":"a.lm",
+      "commitHash":"7fa1d78473894f7e736a21d920c3aa80f950c0db","sizeInBytes":1,
+      "minDeviceMemoryInGb":null,"taskTypes":["llm_chat"]}]}"""
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected modelId in message: $msg", msg.contains("litert-community/ok"))
+    assertTrue("expected minDeviceMemoryInGb in message: $msg", msg.contains("minDeviceMemoryInGb"))
+  }
+
+  @Test
+  fun parse_rejectsMissingMinDeviceMemory() {
+    // Gson maps a missing key to null — must be rejected exactly like an explicit null.
+    val json =
+      """{"models":[{"name":"x","modelId":"litert-community/ok","modelFile":"a.lm",
+      "commitHash":"7fa1d78473894f7e736a21d920c3aa80f950c0db","sizeInBytes":1,
+      "taskTypes":["llm_chat"]}]}"""
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected modelId in message: $msg", msg.contains("litert-community/ok"))
+    assertTrue("expected minDeviceMemoryInGb in message: $msg", msg.contains("minDeviceMemoryInGb"))
+  }
+
+  @Test
+  fun parse_rejectsOutOfRangeMinDeviceMemory_zero() {
+    val json = minimalModelJson(minDeviceMemoryInGb = 0)
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected modelId in message: $msg", msg.contains("litert-community/ok"))
+    assertTrue("expected range marker in message: $msg", msg.contains("1..64"))
+  }
+
+  @Test
+  fun parse_rejectsOutOfRangeMinDeviceMemory_negative() {
+    // Defends against silent fail-open: without a range check, `totalBytes >= negative * GB`
+    // is always true and the gate would let every device through.
+    val json = minimalModelJson(minDeviceMemoryInGb = -1)
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected modelId in message: $msg", msg.contains("litert-community/ok"))
+    assertTrue("expected range marker in message: $msg", msg.contains("1..64"))
+  }
+
+  @Test
+  fun parse_rejectsOutOfRangeMinDeviceMemory_tooLarge() {
+    val json = minimalModelJson(minDeviceMemoryInGb = 65)
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected modelId in message: $msg", msg.contains("litert-community/ok"))
+    assertTrue("expected range marker in message: $msg", msg.contains("1..64"))
+  }
+
+  @Test
+  fun parse_acceptsValidMinDeviceMemory() {
+    val json = minimalModelJson(minDeviceMemoryInGb = 6)
+    val parsed = parseRaw(json).getOrThrow()
+    assertEquals(6, parsed.first().minDeviceMemoryInGb)
+    // Value must propagate through toModel() into Model.minDeviceMemoryInGb.
+    assertEquals(6, parsed.first().toModel().minDeviceMemoryInGb)
+  }
+
+  @Test
+  fun parse_acceptsBoundaryMinDeviceMemory_one() {
+    val parsed = parseRaw(minimalModelJson(minDeviceMemoryInGb = 1)).getOrThrow()
+    assertEquals(1, parsed.first().minDeviceMemoryInGb)
+  }
+
+  @Test
+  fun parse_acceptsBoundaryMinDeviceMemory_sixtyFour() {
+    val parsed = parseRaw(minimalModelJson(minDeviceMemoryInGb = 64)).getOrThrow()
+    assertEquals(64, parsed.first().minDeviceMemoryInGb)
+  }
+
+  @Test
+  fun load_logsRejectionToErrorLog() = runTest {
+    // Drives the full load→parse→log path. Invalid record (null minDeviceMemoryInGb) feeds the
+    // testable internal entry point [AllowlistLoader.loadFromStream]; the contract check is that
+    // (a) the rejected record never reaches the result, and (b) ErrorLog gets one event with
+    // component "download" mentioning the rejected modelId.
+    val invalidJson =
+      """{"models":[{"name":"x","modelId":"litert-community/ok","modelFile":"a.lm",
+      "commitHash":"7fa1d78473894f7e736a21d920c3aa80f950c0db","sizeInBytes":1,
+      "minDeviceMemoryInGb":null,"taskTypes":["llm_chat"]}]}"""
+    val loader = AllowlistLoader(context, errorLog)
+
+    val result = loader.loadFromStream(invalidJson.byteInputStream(Charsets.UTF_8))
+
+    assertTrue("rejected entries must not reach the registry", result.isFailure)
+    assertTrue("errors.log must exist after rejection", errorLogFile.exists())
+    val lines = errorLogFile.readLines()
+    assertEquals("expected exactly one log entry, got: $lines", 1, lines.size)
+    val entry = lines.single()
+    assertTrue("missing 'download' component tag in: $entry", entry.contains("download"))
+    assertTrue("missing 'model rejected' in: $entry", entry.contains("model rejected"))
+    assertTrue("missing rejected modelId in: $entry", entry.contains("litert-community/ok"))
+  }
+
   // --- Phase 2 Task 1: llmSupport* + systemPromptDefault plumbing -----------------------
 
   private fun minimalModelJson(
     llmSupportFields: String = "",
     systemPromptDefaultField: String = "",
+    minDeviceMemoryInGb: Int = 4,
   ): String =
-    """{"models":[{"name":"x","modelId":"litert-community/ok","modelFile":"a.lm","commitHash":"7fa1d78473894f7e736a21d920c3aa80f950c0db","sizeInBytes":1,"taskTypes":["llm_chat"]$llmSupportFields,"defaultConfig":{"topK":64,"temperature":1.0,"accelerators":"gpu,cpu","maxTokens":4000$systemPromptDefaultField}}]}"""
+    """{"models":[{"name":"x","modelId":"litert-community/ok","modelFile":"a.lm","commitHash":"7fa1d78473894f7e736a21d920c3aa80f950c0db","sizeInBytes":1,"minDeviceMemoryInGb":$minDeviceMemoryInGb,"taskTypes":["llm_chat"]$llmSupportFields,"defaultConfig":{"topK":64,"temperature":1.0,"accelerators":"gpu,cpu","maxTokens":4000$systemPromptDefaultField}}]}"""
 
   @Test
   fun llmSupportImage_true_parsedCorrectly() {
@@ -208,7 +343,7 @@ class AllowlistLoaderTest {
     // When `defaultConfig` is absent, the safe-call chain `defaultConfig?.systemPromptDefault`
     // short-circuits to null, then `.orEmpty()` yields "".
     val json =
-      """{"models":[{"name":"x","modelId":"litert-community/ok","modelFile":"a.lm","commitHash":"7fa1d78473894f7e736a21d920c3aa80f950c0db","sizeInBytes":1,"taskTypes":["llm_chat"]}]}"""
+      """{"models":[{"name":"x","modelId":"litert-community/ok","modelFile":"a.lm","commitHash":"7fa1d78473894f7e736a21d920c3aa80f950c0db","sizeInBytes":1,"minDeviceMemoryInGb":4,"taskTypes":["llm_chat"]}]}"""
     val model = parseRaw(json).getOrThrow().single().toModel().apply { preProcess() }
     assertEquals("", model.configValues[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label])
   }

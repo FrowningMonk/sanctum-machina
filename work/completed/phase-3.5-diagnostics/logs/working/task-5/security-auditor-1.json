@@ -1,0 +1,62 @@
+{
+  "verdict": "approved",
+  "summary": "Phase 3.5 Task 5 adds a pure-fun pre-flight RAM gate, ModelRowState plumbing, and a disabled-button + Russian secondary-text path in the Model Manager. No network, no IPC, no SAF/file IO is added beyond the pre-existing log-export path. Threshold arithmetic is overflow-safe by construction, the defence-in-depth predicate in onDownload reproduces the UI's exact check and is the only download-enqueueing public VM surface, and the secondary text interpolates only kernel-sourced bytes plus an Int already range-validated by Task 1's parser. No security findings.",
+  "findings": [],
+  "checks_performed": [
+    {
+      "concern": "Integer overflow on minGb.toLong() * BYTES_PER_GB in gateAllowsDownload",
+      "result": "no issue",
+      "evidence": "GateDecision.kt:42 performs `minGb.toLong() * BYTES_PER_GB` (1_073_741_824L). The cast happens before the multiply, so the operation is Long*Long. Even at adversarial Int.MAX_VALUE (2_147_483_647) the product is ~2.3e18, well below Long.MAX_VALUE (~9.22e18). Real range is bounded to 1..64 by AllowlistLoader.kt:85-91 (Task 1 fail-loud), tested in AllowlistLoaderTest `parse_rejectsOutOfRangeMinDeviceMemory_negative/positive` and `parse_rejectsZeroMinDeviceMemory`. formatGbFloor's `bytes * 10L / BYTES_PER_GB` is also Long*Long; overflow point ~9223 PB, far past any device."
+    },
+    {
+      "concern": "MemoryInfo.totalMem shape / negative or attacker-controlled value",
+      "result": "no issue",
+      "evidence": "DeviceInfoCollector.kt:147 reads `memoryInfo().totalMem` directly from Android's ActivityManager.MemoryInfo. The field is a kernel-sourced non-negative Long (documented contract). It is not user-controllable — no Intent extras, no IPC, no SAF input feeds this path. A hypothetical zero/negative value would simply make the gate fail-closed (`totalBytes >= positive` → false), which is the safe direction."
+    },
+    {
+      "concern": "Defence-in-depth bypass: any other public VM surface that reaches registry.download",
+      "result": "no bypass",
+      "evidence": "Enumerated all public methods on ModelManagerViewModel: onDownload (line 118 — guarded by gateAllowsDownload before launchIn), onCancel (cancels by name, no enqueue), onLoad (emits NavEvent.OpenQuickChat, no enqueue), setDefaultModel (DataStore write only), refreshCrashState/dismissCrashBanner (CrashState delegations), saveLogAndClearCrash (SAF write of log, no model download). registry.download is reached exclusively through onDownload, and the short-circuit predicate is verbatim the same `gateAllowsDownload(totalBytes, entry.model.minDeviceMemoryInGb)` the UI uses. ModelManagerViewModelTest covers the regression-protection case explicitly."
+    },
+    {
+      "concern": "internal-visibility helper formatGbFloor expanding the attack surface",
+      "result": "no expansion",
+      "evidence": "Kotlin `internal` is module-scoped to :app. The :app module is the only consumer (Task 8's diagnostics screen will live there too). No other Gradle module can link against formatGbFloor without reflection or @Suppress(\"INVISIBLE_REFERENCE\"). Function is pure, takes a Long, returns a String — no IO, no logging side-effects."
+    },
+    {
+      "concern": "Log injection / format-string injection via the Russian secondary text",
+      "result": "no issue",
+      "evidence": "GateDecision.kt:54-55 (formatRamShortage) interpolates only (a) formatGbFloor(totalBytes) — pure digit-string from kernel-sourced Long, (b) minGb — Int already constrained to 1..64 by AllowlistLoader.kt:85-91 before reaching the registry. No user-controlled string is concatenated. Sink is Compose `Text` at ModelManagerScreen.kt:292 — no HTML / Markdown / WebView rendering. Hand-rolled formatter avoids `String.format` and `Locale.getDefault()` per the doc-comment, so digits stay ASCII regardless of locale (no Arabic-numerals or RTL-mark surprises)."
+    },
+    {
+      "concern": "String resource model_gate_secondary format-spec safety (A03)",
+      "result": "no issue",
+      "evidence": "strings.xml adds `%1$s ГБ устройство, нужно %2$d ГБ` — positional arguments, types `s`/`d`. Resource is reserved-only and NOT read by the UI in Task 5 (verified: ModelManagerScreen.kt uses formatRamShortage directly, no stringResource(R.string.model_gate_secondary) call). Even if/when wired up, `%s` and `%d` are not vulnerable to format-string attacks in Android's resource formatter."
+    },
+    {
+      "concern": "Hardcoded secrets / credentials in diff",
+      "result": "none",
+      "evidence": "Diff contains only the BYTES_PER_GB integer constant, Russian display strings, structural data classes, and pure functions. No tokens, keys, URLs, or connection strings."
+    },
+    {
+      "concern": "New file / network IO surface (A10 SSRF, path traversal)",
+      "result": "no new surface",
+      "evidence": "Diff adds zero file IO, zero network primitives, zero HTTP clients, zero Context.assets calls. registry.download itself is unchanged from Phase 1; Task 5 only adds a guard in front of it. The SAF launcher in ModelManagerScreen.kt:98-112 (CreateDocument) is pre-existing crash-log export code, untouched by this commit."
+    },
+    {
+      "concern": "Insecure deserialization (A08)",
+      "result": "no change",
+      "evidence": "Diff introduces no new deserialization. ModelEntry / Model objects flow in from registry.models, which is fed by AllowlistLoader (audited in Task 1). GateDecision and ModelRowState are immutable data classes built in-process from already-validated values."
+    },
+    {
+      "concern": "Eager StateFlow re-emission leaking memory pressure information",
+      "result": "no issue",
+      "evidence": "rows uses SharingStarted.Eagerly with totalBytes captured once at VM construction. The total-RAM value is also already exposed verbatim in the About-path log export (DeviceInfoCollector.kt:51) which the user explicitly initiates via SAF. No new disclosure surface; the digit string in the secondary text is shown only on the device's own UI."
+    },
+    {
+      "concern": "Authorization / access-control regression on the Model Manager actions (A01)",
+      "result": "no issue",
+      "evidence": "App is single-user, on-device only — no auth boundary exists. The gate is a UX/pre-flight guardrail, not a security boundary; classifying it as access control would be a category error. Defence-in-depth in onDownload protects against accidental programmatic calls (tests, future deeplinks, accessibility actions), which is the stated AC."
+    }
+  ]
+}

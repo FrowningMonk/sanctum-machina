@@ -11,6 +11,8 @@ import app.sanctum.machina.core.registry.ModelRegistry
 import app.sanctum.machina.core.settings.AppSettingsRepository
 import app.sanctum.machina.core.settings.proto.PerModelSettings
 import app.sanctum.machina.crash.CrashState
+import app.sanctum.machina.diagnostics.InitSnapshot
+import app.sanctum.machina.logexport.DeviceInfoProvider
 import app.sanctum.machina.logexport.LogExportManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -27,6 +29,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -53,6 +56,7 @@ class ModelManagerViewModelTest {
     private lateinit var crashState: CrashState
     private lateinit var logExport: LogExportManager
     private lateinit var settings: FakeAppSettingsRepository
+    private lateinit var deviceInfo: FakeDeviceInfoProvider
 
     @Before
     fun setUp() {
@@ -61,6 +65,10 @@ class ModelManagerViewModelTest {
         crashState = CrashState(ApplicationProvider.getApplicationContext<Application>())
         logExport = LogExportManager(ApplicationProvider.getApplicationContext<Application>())
         settings = FakeAppSettingsRepository()
+        // Default totalMem comfortably above the highest production minGb so the legacy
+        // tests don't accidentally exercise the gate path. Per-test overrides set their
+        // own value before the VM is constructed.
+        deviceInfo = FakeDeviceInfoProvider(totalMemoryBytes = 12_000_000_000L)
     }
 
     @After
@@ -70,7 +78,7 @@ class ModelManagerViewModelTest {
 
     @Test
     fun setDefaultModel_updatesSettingsAndEmitsSnackbar() = runTest {
-        val vm = ModelManagerViewModel(registry, crashState, logExport, settings)
+        val vm = ModelManagerViewModel(registry, crashState, logExport, settings, deviceInfo)
         val events = collectNavEvents(vm)
 
         vm.setDefaultModel("model-id", "Model Name")
@@ -88,7 +96,7 @@ class ModelManagerViewModelTest {
         // Regression guard: the UI relies on the ⭐ having moved by the time the snackbar
         // appears. Swapping `emit` and `setDefaultModelId` order would pass the previous test
         // but fail this one.
-        val vm = ModelManagerViewModel(registry, crashState, logExport, settings)
+        val vm = ModelManagerViewModel(registry, crashState, logExport, settings, deviceInfo)
         val actionLog = mutableListOf<String>()
         settings.onSetDefaultModelId = { actionLog += "setDefault:$it" }
         backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -107,7 +115,7 @@ class ModelManagerViewModelTest {
     fun defaultModelId_emitsEmptyStringWhenUnset() = runTest {
         // First-launch contract from tasks/11.md 'Edge cases': proto3 default_model_id is "",
         // so no row should get a ⭐. Locks the `stateIn(initialValue = "")` seed.
-        val vm = ModelManagerViewModel(registry, crashState, logExport, settings)
+        val vm = ModelManagerViewModel(registry, crashState, logExport, settings, deviceInfo)
         backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
             vm.defaultModelId.collect { /* keep subscription alive */ }
         }
@@ -121,7 +129,7 @@ class ModelManagerViewModelTest {
         // Seed the underlying setting BEFORE VM construction so the stateIn initial collection
         // sees it — this is the "user already has a default" cold-start scenario the UI relies on.
         settings.setDefault("first-default")
-        val vm = ModelManagerViewModel(registry, crashState, logExport, settings)
+        val vm = ModelManagerViewModel(registry, crashState, logExport, settings, deviceInfo)
         // WhileSubscribed(5_000L) needs an active subscriber to collect upstream. UNDISPATCHED
         // makes that subscription take effect before the test mutates the setting.
         backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -138,7 +146,7 @@ class ModelManagerViewModelTest {
 
     @Test
     fun onLoad_emitsOpenQuickChatEvent() = runTest {
-        val vm = ModelManagerViewModel(registry, crashState, logExport, settings)
+        val vm = ModelManagerViewModel(registry, crashState, logExport, settings, deviceInfo)
         val events = collectNavEvents(vm)
 
         vm.onLoad("some-model-id")
@@ -147,6 +155,99 @@ class ModelManagerViewModelTest {
         // Exact-list assertion already enforces 'exactly one event, of type OpenQuickChat'.
         assertEquals(listOf<NavEvent>(NavEvent.OpenQuickChat("some-model-id")), events)
     }
+
+    // ---------------- Phase 3.5 Task 5: pre-flight gate ----------------
+
+    @Test
+    fun row_below_threshold_has_gate_disallowed() = runTest {
+        // Sub-threshold device (S20 FE-class, 5.3 GB) against E4B's minGb=6 — gate must block.
+        deviceInfo = FakeDeviceInfoProvider(totalMemoryBytes = 5_300_000_000L)
+        registry.setEntries(listOf(entryWithMinGb("e4b", minGb = 6)))
+        val vm = ModelManagerViewModel(registry, crashState, logExport, settings, deviceInfo)
+        backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            vm.rows.collect { /* keep subscription alive */ }
+        }
+        advanceUntilIdle()
+
+        val rows = vm.rows.value
+        assertEquals(1, rows.size)
+        assertFalse(
+            "Sub-threshold device should be gated, got allowed=${rows[0].gate.allowed}",
+            rows[0].gate.allowed,
+        )
+        assertEquals(5_300_000_000L, rows[0].gate.totalBytes)
+        assertEquals(6, rows[0].gate.minGb)
+    }
+
+    @Test
+    fun row_above_threshold_has_gate_allowed() = runTest {
+        // Honor 200-class (12 GB) against E4B's minGb=6 — gate must pass.
+        deviceInfo = FakeDeviceInfoProvider(totalMemoryBytes = 12_000_000_000L)
+        registry.setEntries(listOf(entryWithMinGb("e4b", minGb = 6)))
+        val vm = ModelManagerViewModel(registry, crashState, logExport, settings, deviceInfo)
+        backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            vm.rows.collect { /* keep subscription alive */ }
+        }
+        advanceUntilIdle()
+
+        val rows = vm.rows.value
+        assertEquals(1, rows.size)
+        assertEquals(
+            GateDecision(allowed = true, totalBytes = 12_000_000_000L, minGb = 6),
+            rows[0].gate,
+        )
+    }
+
+    @Test
+    fun onDownload_short_circuits_when_gate_disallowed() = runTest {
+        // Defence-in-depth: even if a caller bypasses the disabled UI button, the VM must not
+        // hand the model to ModelRegistry.download (which would enqueue a WorkManager job).
+        deviceInfo = FakeDeviceInfoProvider(totalMemoryBytes = 5_300_000_000L)
+        val entry = entryWithMinGb("e4b", minGb = 6)
+        registry.setEntries(listOf(entry))
+        val vm = ModelManagerViewModel(registry, crashState, logExport, settings, deviceInfo)
+        backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            vm.rows.collect { }
+        }
+        advanceUntilIdle()
+
+        vm.onDownload(entry)
+        advanceUntilIdle()
+
+        assertEquals(0, registry.downloadInvocations)
+    }
+
+    @Test
+    fun onDownload_invokes_registry_when_gate_allows() = runTest {
+        // Regression-protection: the short-circuit must only fire on disallowed gate, not always.
+        deviceInfo = FakeDeviceInfoProvider(totalMemoryBytes = 12_000_000_000L)
+        val entry = entryWithMinGb("e4b", minGb = 6)
+        registry.setEntries(listOf(entry))
+        val vm = ModelManagerViewModel(registry, crashState, logExport, settings, deviceInfo)
+        backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            vm.rows.collect { }
+        }
+        advanceUntilIdle()
+
+        vm.onDownload(entry)
+        advanceUntilIdle()
+
+        assertEquals(1, registry.downloadInvocations)
+    }
+
+    private fun entryWithMinGb(name: String, minGb: Int?): ModelEntry =
+        ModelEntry(
+            model = Model(
+                name = name,
+                modelId = "owner/$name",
+                minDeviceMemoryInGb = minGb,
+                downloadFileName = "$name.task",
+                url = "https://example/$name",
+                sizeInBytes = 1_073_741_824L,
+            ),
+            downloadStatus = ModelDownloadStatus(status = ModelDownloadStatusType.NOT_DOWNLOADED),
+            initStatus = ModelInitStatus.Idle,
+        )
 
     // UNDISPATCHED start guarantees the subscription is registered before the VM method call
     // regardless of future changes to the SharedFlow replay/buffer config — keep this even if
@@ -171,16 +272,55 @@ private class FakeModelRegistry : ModelRegistry {
     private val _activeModelName = MutableStateFlow<String?>(null)
     override val activeModelName: StateFlow<String?> = _activeModelName.asStateFlow()
 
+    /** Counts terminal subscriptions to [download]'s flow — used by gate short-circuit tests. */
+    var downloadInvocations: Int = 0
+        private set
+
+    fun setEntries(entries: List<ModelEntry>) { _models.value = entries }
+
     override suspend fun refreshAllowlist(): Result<Unit> = Result.success(Unit)
-    override fun download(model: Model): Flow<ModelDownloadStatus> =
-        MutableStateFlow(ModelDownloadStatus(status = ModelDownloadStatusType.NOT_DOWNLOADED))
+    override fun download(model: Model): Flow<ModelDownloadStatus> {
+        downloadInvocations += 1
+        return MutableStateFlow(ModelDownloadStatus(status = ModelDownloadStatusType.NOT_DOWNLOADED))
             .asStateFlow()
+    }
     override fun cancelDownload(modelName: String) = Unit
     override suspend fun delete(modelName: String) = Unit
     override suspend fun initialize(modelName: String): Result<Unit> = Result.success(Unit)
     override suspend fun cleanup(modelName: String) = Unit
     override suspend fun resetConversation(modelName: String, systemPrompt: String?) = Unit
     override fun getModel(modelName: String): Model? = null
+}
+
+/**
+ * Hand-rolled [DeviceInfoProvider] (patterns.md "Hand-rolled fakes"). Only
+ * [totalMemoryBytes] is read by [ModelManagerViewModel] in Phase 3.5 — every
+ * other accessor errors loudly so accidental new dependencies fail the test
+ * loudly instead of silently picking up a stale stub value.
+ */
+private class FakeDeviceInfoProvider(
+    private val totalMemoryBytes: Long,
+) : DeviceInfoProvider {
+    override fun totalMemoryBytes(): Long = totalMemoryBytes
+
+    override fun applicationId(): String = error("not used")
+    override fun versionName(): String = error("not used")
+    override fun versionCode(): Long = error("not used")
+    override fun isDebug(): Boolean = error("not used")
+    override fun manufacturer(): String = error("not used")
+    override fun model(): String = error("not used")
+    override fun androidRelease(): String = error("not used")
+    override fun apiLevel(): Int = error("not used")
+    override fun availableMemoryBytes(): Long = error("not used")
+    override fun thresholdMemoryBytes(): Long = error("not used")
+    override fun isLowMemory(): Boolean = error("not used")
+    override fun processJavaHeapBytes(): Long = error("not used")
+    override fun processNativeHeapBytes(): Long = error("not used")
+    override fun processTotalPssBytes(): Long = error("not used")
+    override fun lastInitSnapshot(): InitSnapshot? = error("not used")
+    override fun activeModelId(): String? = error("not used")
+    override fun downloadedModels(): List<Pair<String, Long>> = error("not used")
+    override fun nowIso(): String = error("not used")
 }
 
 private class FakeAppSettingsRepository : AppSettingsRepository {

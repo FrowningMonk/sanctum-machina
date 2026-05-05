@@ -16,6 +16,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import app.sanctum.machina.ui.about.AboutScreen
 import app.sanctum.machina.ui.chat.ChatScreen
+import app.sanctum.machina.ui.diagnostics.DiagnosticsScreen
 import app.sanctum.machina.ui.drawer.DrawerContent
 import app.sanctum.machina.ui.home.HomeScreen
 import app.sanctum.machina.ui.modelmanager.ModelManagerScreen
@@ -58,6 +59,10 @@ fun SanctumApp() {
                     onOpenModelManager = {
                         coroutineScope.launch { drawerState.close() }
                         navController.navigate("model_manager")
+                    },
+                    onNavigateToDiagnostics = {
+                        coroutineScope.launch { drawerState.close() }
+                        navController.navigate("diagnostics")
                     },
                     onNavigateToAbout = {
                         coroutineScope.launch { drawerState.close() }
@@ -169,6 +174,9 @@ fun SanctumApp() {
                 }
                 composable("about") {
                     AboutScreen(onBack = { navController.popBackStack() })
+                }
+                composable("diagnostics") {
+                    DiagnosticsScreen(onBack = { navController.popBackStack() })
                 }
             }
         }

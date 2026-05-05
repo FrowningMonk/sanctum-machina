@@ -56,6 +56,10 @@ data class Model(
   var configs: List<Config> = listOf(),
   val learnMoreUrl: String = "",
   val bestForTaskIds: List<String> = listOf(),
+  /**
+   * Phase 3.5 gate input: total RAM threshold below which the model is hidden from
+   * Model Manager. Null is rejected by the parser — see Phase 3.5 tech-spec.
+   */
   val minDeviceMemoryInGb: Int? = null,
   val url: String = "",
   val sizeInBytes: Long = 0L,

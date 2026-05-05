@@ -1,9 +1,12 @@
+import app.sanctum.machina.build.GitVersionExtension
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.hilt.application)
     alias(libs.plugins.ksp)
+    id("phonewrap.git-version")
 }
 
 android {
@@ -15,7 +18,8 @@ android {
         minSdk = 31
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = the<GitVersionExtension>().versionName.orNull
+            ?: "v0.3.5-diagnostics-fallback"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
