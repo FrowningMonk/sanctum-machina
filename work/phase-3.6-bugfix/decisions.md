@@ -50,3 +50,35 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 - Module boundary: `Get-ChildItem core-runtime/src/main -Recurse -Include *.kt | Select-String "androidx\.(compose|activity)"` → 0 hits.
 - Enum completeness: `Select-String ResetReason.kt -Pattern "CHAT_SWITCH|DRAFT_COMMIT|LIGHT_OVERRIDE|SYSTEM_PROMPT|HEAVY|USER"` → 6 hits.
 - No-default check: `Select-String ModelRegistry.kt -Pattern "reason: ResetReason\s*="` → 0 hits (Decision 1).
+
+---
+
+## Task 3: Wire `ResetReason` across `ChatViewModel` + reclassify `MAX_TOKENS` to Heavy
+
+**Status:** Done
+**Commit:** 2bb21c6 (impl `728665a` + race fix `2bb21c6`)
+**Agent:** main agent
+**Summary:** Wired `ResetReason` to all four `ChatViewModel` reset call sites (Persistent bootstrap, Light overrides, system-prompt reset, user-tap reset) and gated the bootstrap reset on first `Ready` via a new private `observeFirstReadyThenReset(reason)` mirroring `observeFirstReadyThenResume`. `lastByChat` heuristic distinguishes `DRAFT_COMMIT` from `CHAT_SWITCH` (Decision 2). Removed `ConfigKeys.MAX_TOKENS.label` from `LIGHT_FIELD_LABELS` and extended `classifyApplyLevel`'s HEAVY condition to `acceleratorChanged || maxTokensChanged` (Decision 4). Six other `FakeModelRegistry` test doubles (Sanctum/SettingsMigration/Warmup/Drawer/Home/ModelManager) updated for the post-Task-2 signature so the `:app` build is green again.
+**Deviations:** None against tech-spec scope. `engineReady` StateFlow and `deriveTopAppBarState` deliberately untouched — Task 6 owns Bug 2.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approve, 0 blocker / 0 major / 2 minor (consistency notes for Task 6 follow-up) → [logs/working/task-3/code-reviewer-1.json](logs/working/task-3/code-reviewer-1.json)
+- security-auditor: approve_with_concerns, 1 major (race between `observeFirstReadyThenReset` and `observeFirstReadyThenResume` siblings — `withContext(Dispatchers.Default)` hop releases Main, letting `runInference` fire against still-dirty Conversation) → [logs/working/task-3/security-auditor-1.json](logs/working/task-3/security-auditor-1.json)
+- test-reviewer: approve, 0 blocker / 0 major / 5 minor (cosmetic) → [logs/working/task-3/test-reviewer-1.json](logs/working/task-3/test-reviewer-1.json)
+
+*Round 2 (after fixes):*
+- security-auditor: approve, race structurally closed by chaining reset → resume in a single `viewModelScope.launch`; Round-1 minor (silent perma-Failed branch) deferred to Task 6 alongside `engineReady` → [logs/working/task-3/security-auditor-2.json](logs/working/task-3/security-auditor-2.json)
+
+Added regression test `bootstrapPersistent_draftCommit_resetsBeforeAutoResumeRunInference` pinning `resetConversation < runInference` order in `sharedCalls` so a future refactor that re-splits the chained launch fails loudly.
+
+**Verification:**
+- `./gradlew :app:testDebugUnitTest --tests ChatViewModelTest` → 72 tests pass (65 baseline + 7 new/extended).
+- `./gradlew :app:testDebugUnitTest` (full module) → 302 tests across 25 suites, 0 failures / 0 errors.
+- `./gradlew :core-runtime:testDebugUnitTest` → green; no regressions in `DefaultModelRegistryTest` after the test-double signature update propagated through the chain.
+- `./gradlew :app:lintDebug` → green; only pre-existing `Bitmap.scale` UseKtx warning at `ChatViewModel.kt:1458` (unrelated to this task).
+- `./gradlew :app:assembleDebug` → debug APK built.
+- Smoke grep `resetConversation\(` in `ChatViewModel.kt` → 4 production call sites (lines 334, 463, 480, 910), each with explicit `reason = ResetReason.<NAME>`; no implicit defaults.
+- Smoke grep `MAX_TOKENS` in `ChatViewModel.kt` → only in `classifyApplyLevel` HEAVY locals (lines 1383-1384) and a justification comment in the `LIGHT_FIELD_LABELS` block (line 1597); not in the Light set.
+- User-on-device verification (Honor 200 a/b/c per task spec) deferred to Task 10 pre-deploy QA per memory rule `feedback_smoke_verification.md` — bundled with Task 4/6 device smoke for one Honor 200 sweep instead of three.

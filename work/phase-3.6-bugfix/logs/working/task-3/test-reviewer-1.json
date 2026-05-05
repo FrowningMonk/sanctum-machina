@@ -1,0 +1,56 @@
+{
+  "status": "passed",
+  "summary": "All nine TDD anchors from Task 3 are realised in ChatViewModelTest.kt with mutation-resistant assertions. The two-phase bootstrap shape is preserved: pre-Ready advance asserts resetReasons.isEmpty() (no premature reset), post-Ready advance asserts exactly listOf(CHAT_SWITCH) / [DRAFT_COMMIT]. applyMaxTokens_followsHeavyDialogSequence mirrors the accelerator baseline byte-for-byte (same ordered slice ['stopResponse','cleanup','initialize'], same reinitInProgress=false, plus the new model.configValues[MAX_TOKENS]==2048 pin). FakeModelRegistry update is correct: signature matches the post-Task-2 interface, lastResetReason + resetReasons fields wired on every reset call. No flaky timing — all tests use runTest(dispatcher) + advanceUntilIdle(). Spot-checked seven existing Persistent+Ready tests (lines 320, 346, 380, 404, 660, 1534, 1595, 1631, 1669, 1714, 1759); none assert against fields the new bootstrap reset writes (lastResetReason / resetReasons / lastResetSystemPrompt) and none have sharedCalls assertions colliding with the new 'resetConversation' entry — the AC-R1 test (line 320) explicitly clears sharedCalls after VM construction, and the auto-resume test (line 1759) asserts runInferenceCalls only. Findings are minor and informational.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:1132-1144",
+      "issue": "applyLightOverrides_callsResetConversation_withLightOverrideReason saves PerModelSettings with setMaxTokens(512) and asserts model.configValues[MAX_TOKENS.label] == 512. After Decision 4, MAX_TOKENS is no longer a Light-tier field (LIGHT_FIELD_LABELS no longer contains it; classifyApplyLevel now routes max_tokens through HEAVY). The assertion still passes because applyLightOverrides() is invoked directly (bypassing classifyApplyLevel) and EffectiveConfig.merge(defaults, overrides) writes max_tokens into model.configValues unconditionally — the task explicitly notes this invariant survives. But the leftover setMaxTokens/MAX_TOKENS pair muddles the test's intent: a future reader auditing 'is this test still aligned with the Light-tier contract?' will trip on a max_tokens line in a Light test.",
+      "recommendation": "Drop setMaxTokens(512) from the PerModelSettings builder and the corresponding assertEquals(512, ...) line. Keep the temperature override and assertion — that's the load-bearing Light-tier behavioural pin. If the original no-cleanup regression guard relied on the merge producing a non-default max_tokens entry, replace with setTopK(20) or setTopP(0.8f) to stay strictly inside the Light surface."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:1289-1319",
+      "issue": "applyMaxTokens_followsHeavyDialogSequence invokes vm.applyHeavySetting() directly. This bypasses classifyApplyLevel — so a regression that removed maxTokensChanged from classifyApplyLevel's HEAVY condition would NOT cause this test to fail (the user would silently fall back to LIGHT). The classify path is covered by a sibling test (classifyApplyLevel_returnsHeavy_forMaxTokens), so the two tests together do pin the full mutation surface, but neither test alone exercises the end-to-end 'user changes max_tokens → HeavyChangeDialog appears' chain that user-spec AC-1.3b describes. The anchor explicitly says 'mirror applyHeavySetting_sequencing_stopCleanupInitialize', which the test does — this is a design choice, not a defect, but worth noting.",
+      "recommendation": "Optional hardening: add a third small test that drives the classify path end-to-end via saveAndApplySettings(target=PerModelSettings.newBuilder().setMaxTokens(2048).build()) on a Quick VM seeded Ready, advanceUntilIdle, and assert sharedCalls contains 'cleanup' AND 'initialize' (i.e. heavy path was selected by classification, not by direct applyHeavySetting invocation). This pins the 'classify + dispatch' wiring as a single behavioural unit."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:1262-1287",
+      "issue": "classifyApplyLevel_returnsLight_forTemperature drives saveAndApplySettings and asserts cleanupCalls/initializeCalls unchanged + lastResetReason == LIGHT_OVERRIDE. This differentiates LIGHT from HEAVY and from NONE, and from SEMI_LIGHT (which would set SYSTEM_PROMPT). However, the test does not pin lastResetSystemPrompt, so a regression that swapped the systemPrompt argument to a stale or empty value would not be caught here (it IS caught upstream by the Light anchor at line 1156). Minor symmetry gap with the Light anchor, not a coverage hole.",
+      "recommendation": "Optional: add `assertEquals(null, fakeRegistry.lastResetSystemPrompt)` after the LIGHT_OVERRIDE assertion to mirror the line-1156 pin. With default blank system prompt collapsing to null, the merged effective prompt should match."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:1160-1220",
+      "issue": "The two-phase bootstrap tests prove (a) no reset while Initializing, (b) exactly one reset on Ready. They do NOT exercise the `Ready → Initializing → Ready` flutter case that the production docstring of observeFirstReadyThenReset explicitly calls out ('Subsequent flutters do NOT re-trigger — heavy reinit creates a new engine and a new Conversation by construction, so a second reset would be redundant'). A regression that re-armed the latch on subsequent Ready emissions (e.g. switching `_uiState.first { Ready }` to a `collect { if (Ready) reset() }` loop) would emit DRAFT_COMMIT/CHAT_SWITCH twice on every applyHeavySetting cycle and dirty diagnostic logs at scale.",
+      "recommendation": "Add bootstrapPersistent_resetFiresOnceAcrossReinitFlutter: seed Ready, build VM, advanceUntilIdle, assert resetReasons.size == 1; flip to Initializing then back to Ready, advanceUntilIdle, assert resetReasons.size still == 1. Pins the single-shot `first { Ready }` semantics against a collect-loop regression."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:1124",
+      "issue": "The TDD anchor for `applySystemPromptAndReset_passesSystemPromptReason` and `userTapReset_passesUserReason` was 'extend existing test'. The commit retained the original test names (`applySystemPromptAndReset_resetsWithPrompt` line 1373, `resetConversation_clearsAll` line 1408) and added the assertEquals(ResetReason.SYSTEM_PROMPT/USER, ...) line inline. This matches the anchor literally, but a test-by-name lookup against the anchor list will not find `*_passesSystemPromptReason` / `*_passesUserReason`. Documentation drift, not a behavioural defect.",
+      "recommendation": "Optional: rename the two extended tests to the anchor names (or add the suffix as a Kotlin function comment) so tooling that audits 'is every TDD anchor present by name?' returns clean. Alternatively, leave as-is and update the Task 3 status note in decisions.md to record the rename."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 7,
+    "litmusTest": {
+      "checked": 9,
+      "passed": 9,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 9,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}
