@@ -1,0 +1,75 @@
+{
+  "validator": "reality-checker",
+  "batch": [4, 5, 6],
+  "iteration": 1,
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 6,
+      "issue": "Task 6 Details section says to derive `engineReady` from `_uiState` (\"find base flow `models: List<ModelEntry>` + `pinnedModelId` / `activeModelId` + `warmupInFlight` and build engineReady through combine\"), but the very next sentence contradicts itself by correctly listing the right sources. The opening framing in Details says \"Derive from those same source flows that feed `_uiState`\" — this is wrong. `_uiState` is `ChatUiState` (Loading / Ready / Failed) driven by `observeEngineState()` and does NOT expose `ModelInitStatus` or `warmupInFlight` directly. The correct derivation must use `registry.models`, `_chatModelId`, and `warmupCoordinator.isWarmupInProgress` — the same sources that feed `topAppBarState`. Confusingly, later in the same paragraph the task correctly lists those three sources, but the introductory sentence anchors on `_uiState` which will mislead the implementer. Risk: implementer tries to derive `engineReady` from `_uiState.value is ChatUiState.Ready` (no warmup gate) instead of from `ModelInitStatus.Ready && !warmupInFlight`.",
+      "fix": "Remove the phrase 'same source flows that feed `_uiState`' from the Details derivation description. Replace with: derive from the same three sources that feed `topAppBarState` — `registry.models`, `_chatModelId`, and `warmupCoordinator.isWarmupInProgress` — combined as `(entry?.initStatus === ModelInitStatus.Ready) && !warmupInFlight`. The tech-spec Decision 6 text is already correct; align the task Details hint to match it."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 4,
+      "issue": "Task 4 says `CrashReportActivity.onCreate` should insert `enableEdgeToEdge()` AFTER `window.setFlags(...)` and BEFORE `logExportManager = LogExportManager(applicationContext)`. In the actual source (line 83-84), `window.setFlags(...)` and `logExportManager = ...` are consecutive with no intervening code, so the insertion point is unambiguous. However, the `Details` section describes `CrashReportActivity` as '~154 lines', while the actual file is exactly 154 lines — consistent. No action needed, just confirming the description is accurate.",
+      "fix": "No fix required — description is accurate. Note for implementer: insert `enableEdgeToEdge()` between lines 83 and 84 in the actual file."
+    }
+  ],
+  "spot_checks": {
+    "task_4": {
+      "MainActivity_exists": true,
+      "MainActivity_has_onCreate": true,
+      "CrashReportActivity_exists": true,
+      "CrashReportActivity_has_onCreate": true,
+      "CrashReportActivity_FLAG_SECURE_present": true,
+      "FLAG_SECURE_uses_setFlags_not_addFlags": true,
+      "activity_compose_1_10_1_in_libs_toml": true,
+      "activity_compose_at_toml_line_8": "line 8 is activityCompose = '1.10.1' in [versions]; library entry at line 37",
+      "no_statusBarColor_in_sources": true,
+      "no_navigationBarColor_in_sources": true,
+      "no_fitsSystemWindows_in_sources": true,
+      "enableEdgeToEdge_not_yet_called_in_MainActivity": true,
+      "enableEdgeToEdge_not_yet_called_in_CrashReportActivity": true,
+      "notes": "enableEdgeToEdge import not yet present in either activity — correct pre-task state. FLAG_SECURE confirmed via window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE) at CrashReportActivity.kt:83."
+    },
+    "task_5": {
+      "patterns_md_exists": true,
+      "D15_section_exists": true,
+      "D15_Light_bullet_at_line_62": true,
+      "D15_Light_bullet_contains_stale_claim": "applies from next `send()` without engine touch — confirmed at line 62",
+      "D15_Light_field_list_includes_maxTokens": true,
+      "ErrorLog_component_strings_section_exists": true,
+      "ErrorLog_whitelist_count_is_14": true,
+      "inference_reset_NOT_yet_in_whitelist": true,
+      "notes": "All pre-task conditions confirmed. patterns.md line 16 says 'Only these 14 values are allowed'. Line 62 Light bullet still contains the stale claim and maxTokens in the field list. Both are correct pre-task states for Task 5 to fix."
+    },
+    "task_6": {
+      "ChatScreen_exists": true,
+      "ChatViewModel_exists": true,
+      "stale_comment_at_lines_328_330": "Lines 328-330: '// AC-U4: lift the input bar above the IME. Depends on / `WindowCompat.setDecorFitsSystemWindows(window, false)` / already set by MainActivity.' — confirmed",
+      "engineUsable_derivation_at_line_279": "val engineUsable = topAppBarState is TopAppBarState.Ready — confirmed",
+      "settingsEnabled_uses_engineUsable": "val settingsEnabled = engineUsable && !isGenerating && !reinitInProgress — confirmed at line 280",
+      "deriveTopAppBarState_exists_in_ChatViewModel": true,
+      "deriveTopAppBarState_returns_Draft_for_Draft_identity": true,
+      "warmupInFlight_is_from_warmupCoordinator_isWarmupInProgress": true,
+      "ModelInitStatus_Ready_is_object_not_data_class": true,
+      "ModelInitStatus_sealed_class_confirmed": true,
+      "collectAsStateWithLifecycle_already_used_in_ChatScreen": true,
+      "lifecycle_runtime_compose_in_libs_toml": true,
+      "topAppBarState_sources": "combine(registry.models, _chatModelId, warmupCoordinator.isWarmupInProgress, registry.activeModelName)",
+      "engineReady_derivation_hint_accuracy": "PARTIAL — see finding. Hint intro anchors on _uiState incorrectly; correct sources listed further down in same paragraph."
+    }
+  },
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 31,
+    "issues_found": 2,
+    "critical": 0,
+    "major": 1,
+    "minor": 1
+  }
+}
