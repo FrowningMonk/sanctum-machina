@@ -1,54 +1,56 @@
+**English** | [Русский](README.ru.md)
+
 # Sanctum Machina
 
-> Локальный мультимодальный LLM-клиент для Android. Модели работают целиком на устройстве — без облака, без сети, без телеметрии.
+> Local multimodal LLM client for Android. Models run entirely on-device — no cloud, no network, no telemetry.
 
-Форк [Google AI Edge Gallery](https://github.com/google-ai-edge/gallery) с собственным UI, persistent-историей чатов и слоем общего контекста для повседневного использования.
+A fork of [Google AI Edge Gallery](https://github.com/google-ai-edge/gallery) with a custom UI, persistent chat history, and a shared-context layer for everyday use.
 
 ---
 
-## Статус
+## Status
 
-**Pre-alpha / экспериментально.** Публикуемые в Releases APK — debug-сборки с пометкой `Pre-release`. Имя проекта, архитектура и `applicationId` могут поменяться; будущая стабильная версия **не сможет обновить** установленную сейчас APK — потребуется переустановка с потерей локальных данных (история чатов, настройки). Не для повседневного использования.
+**Pre-alpha / experimental.** APKs published in Releases are debug builds tagged `Pre-release`. The project name, architecture, and `applicationId` may still change; a future stable release **will not be able to upgrade** the currently installed APK — you will have to reinstall and lose local data (chat history, settings). Not intended for daily use.
 
-## Установка
+## Install
 
-APK-файлы — на странице [Releases](../../releases). Скачайте последний, откройте в файловом менеджере на Android и установите. Потребуется разрешение «Установка из неизвестных источников».
+APK files are on the [Releases](../../releases) page. Download the latest one, open it in a file manager on Android, and install. You will need to grant the "Install from unknown sources" permission.
 
-## Что это
+## What it is
 
-Тонкая обвязка вокруг движка [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM): discovery моделей, загрузка, lifecycle движка, UI и настройки. Движок и сами модели — бинарные артефакты от Google и сообщества; мы оркестрируем их.
+A thin wrapper around the [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) engine: model discovery, downloads, engine lifecycle, UI, and settings. The engine and the models themselves are binary artifacts shipped by Google and the community; we orchestrate them.
 
-## Возможности
+## Features
 
-- Локальный инференс LLM на устройстве (Android 12+).
-- Поддержка моделей **Gemma 4** (E2B, E4B) из репозитория HuggingFace [`litert-community`](https://huggingface.co/litert-community).
-- Мультимодальный ввод: текст, изображение (галерея / камера), короткий аудио-клип.
-- Отдельный канал рассуждений (thinking) у моделей, которые его поддерживают.
-- Настройки инференса per-model: temperature, top-K, top-P, max tokens, ускоритель, системный промпт.
-- Persistent история чатов (Room).
-- Восстановление после крэшей, фоновый прогрев модели, экспорт диагностических логов.
+- On-device LLM inference (Android 12+).
+- Support for **Gemma 4** models (E2B, E4B) from the HuggingFace [`litert-community`](https://huggingface.co/litert-community) repository.
+- Multimodal input: text, image (gallery / camera), short audio clip.
+- Separate thinking channel for models that support it.
+- Per-model inference settings: temperature, top-K, top-P, max tokens, accelerator, system prompt.
+- Persistent chat history (Room).
+- Crash recovery, background model warm-up, diagnostic log export.
 
-## Приватность
+## Privacy
 
-- **Данные не покидают устройство.** Нет cloud-sync, нет телеметрии, нет аналитики.
-- **Google Auto Backup отключён** — настройки и история не уезжают в Google Drive.
-- Скачивание моделей — единственное сетевое действие; идёт напрямую к HuggingFace по жёсткому allowlist'у.
+- **Data never leaves the device.** No cloud sync, no telemetry, no analytics.
+- **Google Auto Backup is disabled** — settings and history do not get uploaded to Google Drive.
+- Model downloads are the only network activity; they go directly to HuggingFace through a strict allowlist.
 
-## Технический стек
+## Tech stack
 
-- **Платформа:** Android, `minSdk 31`, `targetSdk 35`
-- **Язык / UI:** Kotlin, Jetpack Compose, Material 3
-- **LLM-движок:** [LiteRT-LM 0.10.0](https://github.com/google-ai-edge/LiteRT-LM) (`.aar` с Google Maven)
+- **Platform:** Android, `minSdk 31`, `targetSdk 35`
+- **Language / UI:** Kotlin, Jetpack Compose, Material 3
+- **LLM engine:** [LiteRT-LM 0.10.0](https://github.com/google-ai-edge/LiteRT-LM) (`.aar` from Google Maven)
 - **DI:** Hilt
-- **Хранилище:** Room (история), DataStore + protobuf (настройки)
-- **Загрузки:** WorkManager (foreground service)
+- **Storage:** Room (history), DataStore + protobuf (settings)
+- **Downloads:** WorkManager (foreground service)
 
-## Лицензия
+## License
 
-[Apache License 2.0](LICENSE), унаследовано от upstream Google AI Edge Gallery. Атрибуция и сведения о модификациях — в [`NOTICE`](NOTICE).
+[Apache License 2.0](LICENSE), inherited from upstream Google AI Edge Gallery. Attribution and modification notices are in [`NOTICE`](NOTICE).
 
-## Атрибуция
+## Attribution
 
-- [Google AI Edge Gallery](https://github.com/google-ai-edge/gallery) — основа форка.
-- [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) — рантайм on-device inference.
-- [Gemma](https://ai.google.dev/gemma) — семейство моделей.
+- [Google AI Edge Gallery](https://github.com/google-ai-edge/gallery) — fork base.
+- [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) — on-device inference runtime.
+- [Gemma](https://ai.google.dev/gemma) — model family.
