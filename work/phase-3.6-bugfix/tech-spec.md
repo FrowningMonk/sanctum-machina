@@ -98,11 +98,12 @@ MainActivity.onCreate → enableEdgeToEdge() → setContent { SanctumApp() }
 
 ## Decisions
 
-### Decision 1: `ResetReason` lives in `:core-runtime/.../core/registry/`
-**Decision:** Place the enum next to `ModelRegistry.kt` interface, not in `:app`.
-**Rationale:** `ModelRegistry.resetConversation(reason: ResetReason)` is the cross-module API surface. Keeping the type in `:core-runtime` avoids passing `String` (loose) or `Any` (gross) and keeps `:core-runtime` self-contained. The tag values themselves (`LIGHT_OVERRIDE` etc.) are app-layer concepts but they're opaque to the runtime — only logged as `name`.
-**Alternatives considered:** Place in `:app/ui/chat/` — rejected because `ModelRegistry` would lose type safety. Pass `String` — rejected because typo-prone and unenforced.
-**User-spec link:** Supports AC-1.5 (logged with reason tag).
+### Decision 1: `ResetReason` lives in `:core-runtime/.../core/registry/`; unknown-model name skip stays silent
+**Decision:** Place the `ResetReason` enum next to `ModelRegistry.kt` interface, not in `:app`. Keep the early-return for unknown model names silent (no log).
+**Rationale (placement):** `ModelRegistry.resetConversation(reason: ResetReason)` is the cross-module API surface. Keeping the type in `:core-runtime` avoids passing `String` (loose) or `Any` (gross) and keeps `:core-runtime` self-contained. The tag values themselves (`LIGHT_OVERRIDE` etc.) are app-layer concepts but they're opaque to the runtime — only logged as `name`.
+**Rationale (silent unknown-name):** Rapid chat-switch races between `bootstrapChatModelId` and `WarmupCoordinator.cancelAndRestart` can briefly leave the registry without an entry for the target model name. Logging every such transient miss would generate spam without diagnostic value (the warmup coordinator itself logs the actual init failure). The non-Ready skip path (`errorLog.w`) already covers the meaningful misuse pattern: model exists, engine is not ready.
+**Alternatives considered:** Place enum in `:app/ui/chat/` — rejected, `ModelRegistry` would lose type safety. Pass `String` reason — rejected, typo-prone. Log unknown-name skip too — rejected, log spam without value.
+**User-spec link:** Supports AC-1.4 (only meaningful skips warning-logged) and AC-1.5 (every successful reset logged with reason tag).
 
 ### Decision 2: Distinguish `DRAFT_COMMIT` from `CHAT_SWITCH` via existing `messageDao.lastByChat` heuristic, not a new state flag
 **Decision:** In `bootstrapChatModelId`, after the existing `lastMsg = messageDao.lastByChat(id.id)` call (line 744), use `lastMsg?.role == ROLE_USER` as the heuristic: USER tail = handover from draft commit (DRAFT_COMMIT); else CHAT_SWITCH.
@@ -122,10 +123,10 @@ MainActivity.onCreate → enableEdgeToEdge() → setContent { SanctumApp() }
 **Alternatives considered:** Add a SEMI_HEAVY tier between Light and Heavy — rejected as overengineering for a single field. Hide `max_tokens` slider entirely — rejected because the user wants the control; the limit affects context-window usage materially.
 **User-spec link:** Supports AC-1.3b (max_tokens via Heavy). Documented in user-spec § Технические решения.
 
-### Decision 5: Use existing `ErrorLog.i` / `ErrorLog.w` and add component `"inference-reset"` to `ALLOWED_COMPONENTS`
-**Decision:** Add `"inference-reset"` to `ErrorLog.ALLOWED_COMPONENTS`. Use existing `errorLog.i(component, message)` for success-path reset logs (one line per reset, with reason + status), `errorLog.w(component, message)` for the non-Ready skip path (AC-1.4).
-**Rationale:** Matches the closed-whitelist convention from `patterns.md` (14 existing values, every addition is a documented decision). Reset events are operational, not incidents, so `i` level is appropriate for the success path; `w` for the skip-when-not-Ready signals a misuse pattern that we want surfaced. `ErrorLog` already handles file rotation, length bounding, and SAF export integration — no new logging infrastructure.
-**Alternatives considered:** Use Android's `Log.d/Log.i` only — rejected because those entries are not captured in the diagnostic export (AC-1.5 requires the user to be able to see the tag in exported logs). Add `i` and `w` levels to `ErrorLog` if missing — verify during implementation; if `ErrorLog.kt` only has `e`, add `i` and `w` as part of Task 1 with a one-paragraph rationale in the file.
+### Decision 5: Add `i` and `w` levels to `ErrorLog` via shared `write(level, ...)` helper; whitelist `"inference-reset"`
+**Decision:** Skeptic + security review confirmed `ErrorLog.kt` exposes only `e()`. Add `i()` and `w()` as new public methods routing through a single private `write(level, component, description, cause)` helper that owns the existing length-bounding (description ≤500, cause ≤200), `sanitize()` whitespace-collapse, and rotation. The `e()` method becomes a thin wrapper. All three levels share the exact same input pipeline — adding a fourth level later is one line. Add `"inference-reset"` to `ALLOWED_COMPONENTS` (size 14 → 15).
+**Rationale:** A parallel formatter for `i`/`w` would duplicate the bounding/sanitize logic and risk drift (security finding #2 + #3). The single-helper refactor is small, makes all levels uniformly safe, and is a well-defined unit of test coverage (`iAndW_lengthBoundingMatchesE`). Reset events are operational at success path (`i`), warning at non-Ready skip (`w`); `ErrorLog` already handles rotation/SAF/export — no new infrastructure.
+**Alternatives considered:** Three independent methods each with their own bounding code — rejected, drift risk. Use Android `Log.d/i/w` only — rejected because those don't reach diagnostic export (AC-1.5 requires the tag in exported logs). Defer the refactor and inline `i`/`w` quickly — rejected because security review explicitly flagged the drift (`status=...` could interpolate `Throwable.message`).
 **User-spec link:** Supports AC-1.4 (non-Ready warning) and AC-1.5 (every reset logged with reason).
 
 ### Decision 6: New `engineReady: StateFlow<Boolean>` in `ChatViewModel`, not a new TopAppBarState branch
@@ -141,7 +142,7 @@ MainActivity.onCreate → enableEdgeToEdge() → setContent { SanctumApp() }
 **User-spec link:** Supports AC-3.1, AC-3.2, AC-3.3.
 
 ### Decision 8: Update `patterns.md` § Three-tier classification AS PART OF this phase
-**Decision:** Phase 3.6 includes a documentation-writing task that rewrites the Light bullet of `.claude/skills/project-knowledge/references/patterns.md` to reflect the Conversation-recreation reality and the `MAX_TOKENS` migration. New text drafted in code-research.md § 8.
+**Decision:** Phase 3.6 includes a documentation-writing task (Task 5 in Wave 2) that rewrites the Light bullet of `.claude/skills/project-knowledge/references/patterns.md` to reflect the Conversation-recreation reality and the `MAX_TOKENS` migration. New text drafted in code-research.md § 8.
 **Rationale:** The Phase 3.6 implementation invalidates the current rule. Leaving the wrong rule in patterns.md is a future trap — agents and humans will follow it and re-introduce the bug. The doc fix is small (one paragraph) and naturally co-located with the code fix.
 **Alternatives considered:** Defer to a separate doc phase — rejected because it leaves a broken rule in PK during the gap. File an issue — there's no issue tracker; PK is the system of record.
 **User-spec link:** Supports user-spec § Технические решения (explicit decision to update PK).
@@ -172,24 +173,31 @@ None. `enableEdgeToEdge()` is in `androidx.activity:activity-compose:1.10.1` alr
 ### Unit tests
 
 **`DefaultModelRegistryTest.kt` (currently 5 tests, all init-only — phase 3.6 adds reset coverage):**
-- `resetConversation_skipsAndLogsWarning_whenEngineNotReady` — seed entry with `ModelInitStatus.Idle`, call `resetConversation(name, prompt, reason = CHAT_SWITCH)`. Assert: `helper.resetConversation` NOT called; `errorLog.w("inference-reset", containing "skipped" and "CHAT_SWITCH")` was called once.
-- `resetConversation_dispatchesAndLogsInfo_whenReady` — seed Ready entry. Call with `reason = LIGHT_OVERRIDE`. Assert: helper called once with the merged `model.configValues`; `errorLog.i("inference-reset", containing "LIGHT_OVERRIDE")` was called.
-- `resetConversation_skipsSilently_whenModelMissing` — call with unknown name. Assert: no helper call, no log.
-- `resetConversation_isSerializedByLifecycleMutex` — launch two parallel coroutines calling `resetConversation`; assert second waits for first (use the existing pattern with a recording lock or sequence numbers).
+- `resetConversation_skipsAndLogsWarning_whenEngineIdle` — seed entry with `ModelInitStatus.Idle`, call with `reason = CHAT_SWITCH`. Assert: helper NOT called; `errorLog.w("inference-reset", ...)` containing `"skipped"`, `"CHAT_SWITCH"`, `"Idle"`.
+- `resetConversation_skipsAndLogsWarning_whenEngineInitializing` — seed Initializing. Same assertions; status string contains `"Initializing"`.
+- `resetConversation_skipsAndLogsWarning_whenEngineFailed` — seed Failed. Same; status string contains `"Failed"`. Failure cause text MUST go through the existing `sanitize()` + length-bound pipeline (no parallel formatter — see Decision 5).
+- `resetConversation_dispatchesAndLogsInfo_whenReady` — seed Ready. Call with `reason = LIGHT_OVERRIDE`. Assert helper called once with merged `model.configValues`; `errorLog.i("inference-reset", "...LIGHT_OVERRIDE...")`.
+- `resetConversation_skipsSilently_whenModelMissing` — unknown name → no helper call, no log.
+- `resetConversation_isSerializedByLifecycleMutex` — use `runTest` with explicit sequence numbers and a delay-injected helper to prove serialisation; not a single-thread dispatcher artifact.
+- `resetConversation_propagatesHelperException` — helper throws; assert exception bubbles, lifecycleMutex is released (a follow-up call succeeds).
 
 **`ChatViewModelTest.kt` (extend existing, add new):**
-- `applyLightOverrides_callsResetConversation_withLightOverrideReason` — flip the existing `applyLightOverrides_updatesConfigValues_noCleanup` test (line 1124). Now must assert `FakeModelRegistry.lastResetReason == ResetReason.LIGHT_OVERRIDE` and `lastResetSystemPrompt` matches the merged effective prompt.
-- `bootstrapPersistent_emitsChatSwitchReset_onceEngineReady` — seed entry as Initializing, bootstrap a Persistent VM, flip entry to Ready; assert `FakeModelRegistry.resetReasons` contains `CHAT_SWITCH` exactly once. Use `ROLE_ASSISTANT` for the persisted lastByChat to get CHAT_SWITCH (not DRAFT_COMMIT).
-- `bootstrapPersistent_emitsDraftCommitReset_whenLastIsUnpairedUser` — same setup but `lastByChat` returns USER role. Assert `resetReasons` contains `DRAFT_COMMIT`.
-- `engineReady_isFalse_whenWarmupInFlight` — assert `engineReady.value == false` while warmup-in-flight flag is true even if entry is Ready.
-- `engineReady_isFalse_whenStatusIdle` — initial state.
-- `engineReady_isTrue_whenStatusReadyAndNoWarmup` — happy path.
-- `classifyApplyLevel_returnsHeavy_forMaxTokens` — change `MAX_TOKENS` only. Assert `classifyApplyLevel` returns `HEAVY`.
-- `classifyApplyLevel_returnsLight_forTemperature` — assert `LIGHT` for temperature only (max_tokens unchanged).
-- `applyMaxTokens_dispatchesHeavyPath` — change max_tokens, call saveAndApplySettings; assert `cleanupCalls == 1` and `initializeCalls == 1` on `FakeModelRegistry` (Heavy path).
+- `applyLightOverrides_callsResetConversation_withLightOverrideReason` — replaces existing `applyLightOverrides_updatesConfigValues_noCleanup` (line 1124). KEEP the no-cleanup/no-init regression guard from the original: `assertEquals(0, fakeRegistry.cleanupCalls); assertEquals(0, fakeRegistry.initializeCalls)`. NEW assertions: `lastResetReason == ResetReason.LIGHT_OVERRIDE`; `lastResetSystemPrompt` matches merged effective prompt.
+- `bootstrapPersistent_chatSwitchReset_waitsForReady` — two-phase: (a) seed Initializing, bootstrap Persistent with ROLE_ASSISTANT lastByChat, advance dispatcher; assert `resetReasons` is empty (cold-start race not fired prematurely). (b) flip entry to Ready, advance; assert `resetReasons == [CHAT_SWITCH]` exactly once.
+- `bootstrapPersistent_emitsDraftCommitReset_whenLastIsUnpairedUser` — same shape; lastByChat returns USER; assert `[DRAFT_COMMIT]`.
+- `engineReady_combinatorics` (parameterised across the 5 states) — Idle → false; Initializing → false; Failed → false; Ready + warmup-in-flight → false; Ready + no-warmup → true.
+- `applySystemPromptAndReset_passesSystemPromptReason` — extend existing `applySystemPromptAndReset_resetsWithPrompt` (line ~1200) to assert `lastResetReason == SYSTEM_PROMPT`.
+- `userTapReset_passesUserReason` — extend existing `resetConversation_clearsAll` (line ~1234) to assert `lastResetReason == USER`.
+- `classifyApplyLevel_returnsHeavy_forMaxTokens` — change `MAX_TOKENS` only → `HEAVY`.
+- `classifyApplyLevel_returnsHeavy_forAccelerator` — keep existing baseline.
+- `classifyApplyLevel_returnsLight_forTemperature` — `LIGHT` for temperature only.
+- `applyMaxTokens_followsHeavyDialogSequence` — mirror existing `applyHeavySetting_sequencing_stopCleanupInitialize` pattern. Trigger via `saveAndApplySettings(maxTokens=X)`. Assert ordered sequence in `fakeRegistry.sharedCalls`: `["heavyDialogShown", "userConfirmed", "reinitDialogShown", "cleanup", "initialize"]` — pinning that the dialog path is taken, not just that cleanup+init were called.
 
 **`ErrorLogTest.kt` (extend):**
-- `accept_inferenceResetComponent` — assert `ErrorLog.e("inference-reset", "x")` does NOT throw; current whitelist enforcement test pattern (existing tests reject unknown components — extend whitelist of allowed components).
+- `whitelistCount_is15` — replace existing `assertEquals(14, ALLOWED_COMPONENTS.size)` with `15`.
+- `inferenceResetComponent_acceptedByAllLevels` — `e("inference-reset", "x")` AND `i(...)` AND `w(...)` all succeed.
+- `unknownComponent_stillRejected_negative` — `e("inference-reset-x", "x")` throws `IllegalArgumentException` (closed-whitelist invariant preserved).
+- `iAndW_lengthBoundingMatchesE` — pass 600-char description and 300-char cause to `i` and `w`; assert truncation to 500/200 (verifies the single private `write(level, ...)` helper from Decision 5 inherits length-bounding).
 
 ### Integration tests
 
@@ -230,7 +238,9 @@ Per-task verification is via Gradle unit tests (every task with code changes) an
 
 - **Added: Update `patterns.md` § D15 Light bullet** — not originally in user-spec scope. Reason: the patterns.md text becomes wrong the moment Light-tier code changes; PK is the methodology source of truth and must stay correct. Documentation-writing task added to Wave 3. → [APPROVED IN PRE-DRAFT]
 
-- **Added: `ErrorLog.ALLOWED_COMPONENTS` += `"inference-reset"`** — not in user-spec, follows from AC-1.4 / AC-1.5 (logging requirements). Reason: `patterns.md` § ErrorLog component strings is a closed whitelist enforced at runtime; a new logging surface requires whitelisting. → [APPROVED IMPLICITLY VIA AC-1.4/1.5]
+- **Added: `ErrorLog.ALLOWED_COMPONENTS` += `"inference-reset"`** — not in user-spec, follows from AC-1.4 / AC-1.5 (logging requirements). Reason: `patterns.md` § ErrorLog component strings is a closed whitelist enforced at runtime; a new logging surface requires whitelisting. → [APPROVED IN PRE-DRAFT — implicit via AC-1.4/1.5 logging requirements]
+
+- **Clarification on AC-2.2:** "Изменения, сделанные до первого сообщения, применяются к первому сообщению" is satisfied by the existing data flow — settings sheet writes per-model overrides to DataStore (via `SettingsRepository`); the first inference reads `model.configValues` (merged defaults + overrides) at `LlmChatModelHelper.runInference`. No additional plumbing needed, but the chain (DataStore write → bootstrap re-merge → first inference read) is implicit in the codebase, not a new mechanism in this phase. → [APPROVED IN PRE-DRAFT — documented for traceability]
 
 ## Acceptance Criteria
 
@@ -247,84 +257,83 @@ Per-task verification is via Gradle unit tests (every task with code changes) an
 
 ## Implementation Tasks
 
-### Wave 1 — :core-runtime foundation (independent)
+Wave structure avoids parallel edits to the same file. `ChatViewModel.kt` is touched by Tasks 3 and 5 — they sit in different waves to serialise. `ChatScreen.kt` is touched only by Task 5 (gating + comment cleanup folded in).
 
-#### Task 1: Add `ResetReason` enum and extend `ModelRegistry.resetConversation` signature
-- **Description:** Create `ResetReason` enum with values CHAT_SWITCH, DRAFT_COMMIT, LIGHT_OVERRIDE, SYSTEM_PROMPT, HEAVY, USER. Extend `ModelRegistry.resetConversation` interface to accept `reason: ResetReason` (no default). Update `DefaultModelRegistry.resetConversation` to log `errorLog.i("inference-reset", ...)` on success path and `errorLog.w("inference-reset", ...)` on the non-Ready skip path; remove silent skip on missing model only (keep silent for unknown name — defensive). Update existing internal callers within `:core-runtime` (none expected — verify with grep).
+### Wave 1 — :core-runtime foundation
+
+Tasks 1 and 2 are parallel — different files in `:core-runtime`.
+
+#### Task 1: `ResetReason` enum + `ModelRegistry.resetConversation` signature + `DefaultModelRegistry` logging
+- **Description:** Create `ResetReason` enum (CHAT_SWITCH, DRAFT_COMMIT, LIGHT_OVERRIDE, SYSTEM_PROMPT, HEAVY, USER) in `:core-runtime/.../core/registry/`. Extend `ModelRegistry.resetConversation` interface with `reason: ResetReason` parameter (no default — every caller must pick). Replace silent non-Ready skip in `DefaultModelRegistry.resetConversation` with `errorLog.w("inference-reset", ...)`; on success path, `errorLog.i("inference-reset", ...)`. Unknown-model name remains silent (rationale in Decisions § 1).
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Files to modify:** `core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/ModelRegistry.kt`, `core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt`, `core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/ResetReason.kt` (new)
 - **Files to read:** `core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt`, `work/phase-3.6-bugfix/code-research.md`
 
-#### Task 2: Whitelist `"inference-reset"` in `ErrorLog`
-- **Description:** Add `"inference-reset"` to `ErrorLog.ALLOWED_COMPONENTS`. Verify `ErrorLog` exposes `i` and `w` level methods; if only `e` exists, add `i` and `w` with the same length-bounding behaviour (description ≤500, cause ≤200, control whitespace collapsed). Update `ErrorLogTest` accordingly.
+#### Task 2: `ErrorLog` refactor — shared `write(level, ...)` helper + add `i()` / `w()` + whitelist `"inference-reset"`
+- **Description:** Refactor `ErrorLog` so that `e()`, `i()`, `w()` all route through a private `write(level, component, description, cause)` helper owning the existing length-bounding (description ≤500, cause ≤200) and `sanitize()` whitespace collapse. Add `"inference-reset"` to `ALLOWED_COMPONENTS` (size 14 → 15). Update tests to cover all three levels and the closed-whitelist invariant.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Files to modify:** `core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt`, `core-runtime/src/test/kotlin/app/sanctum/machina/core/log/ErrorLogTest.kt`
-- **Files to read:** `.claude/skills/project-knowledge/references/patterns.md` (whitelist section)
+- **Files to read:** `.claude/skills/project-knowledge/references/patterns.md` (§ ErrorLog component strings + § ErrorLog length bounding)
 
-### Wave 2 — :app wiring (depends on Wave 1)
+### Wave 2 — Bug 1 wiring + edge-to-edge + docs
 
-#### Task 3: Wire `resetConversation` reasons into `ChatViewModel.bootstrapChatModelId` and `applyLightOverrides`
-- **Description:** Persistent branch of `bootstrapChatModelId` issues `registry.resetConversation(name, systemPrompt = effective, reason)` once engine reaches Ready (mirror `observeFirstReadyThenResume` pattern). Reason chosen by `lastByChat` heuristic: USER tail → DRAFT_COMMIT, else CHAT_SWITCH. `applyLightOverrides` calls `registry.resetConversation(reason = LIGHT_OVERRIDE)` after the existing `model.configValues = merged` line; UI history is NOT cleared. `applySystemPromptAndReset` keeps current behaviour but passes `reason = SYSTEM_PROMPT`. The existing user-tap reset (↻ button) passes `reason = USER`.
+Tasks 3, 6, 7 in parallel — disjoint file sets. Task 3 owns `ChatViewModel.kt` for this wave.
+
+#### Task 3: Wire reset reasons across `ChatViewModel` and reclassify `MAX_TOKENS` to Heavy
+- **Description:** Combined Bug-1 fix in `ChatViewModel`. Persistent branch of `bootstrapChatModelId` waits for first Ready signal (mirror `observeFirstReadyThenResume`), then issues `registry.resetConversation(reason)` with reason chosen by `lastByChat` heuristic (USER tail → DRAFT_COMMIT, else CHAT_SWITCH). `applyLightOverrides` calls reset with `LIGHT_OVERRIDE` after the `model.configValues = merged` mutation; UI history is preserved. `applySystemPromptAndReset` passes `SYSTEM_PROMPT`; existing user-tap reset passes `USER`. Remove `ConfigKeys.MAX_TOKENS.label` from `LIGHT_FIELD_LABELS`; update `classifyApplyLevel` so HEAVY fires on `acceleratorChanged || maxTokensChanged`.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
-- **Verify-user:** На Honor 200: создать persistent чат A с длинной перепиской → переключиться в чат B через drawer → задать вопрос «о чём мы говорили выше?» → ответ должен относиться только к чату B, не к A.
+- **Verify-user:** На Honor 200: (a) persistent чат A с длинной перепиской → переключиться в чат B через drawer → «о чём мы говорили выше?» отвечает только про B. (b) Поймать repetition loop, открыть Settings → снизить temperature → следующий ответ другой. (c) Изменить max_tokens → появляется HeavyChangeDialog (как у акселератора).
 - **Files to modify:** `app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt`
-- **Files to read:** `core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/ResetReason.kt`, `work/phase-3.6-bugfix/code-research.md` (§ 2 patterns + § 7 conflicts)
+- **Files to read:** `core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/ResetReason.kt`, `core-runtime/src/main/kotlin/app/sanctum/machina/core/data/Config.kt` (defines `ConfigKeys.MAX_TOKENS`), `work/phase-3.6-bugfix/code-research.md` (§ 2 patterns + § 4 + § 7 conflicts)
 
-#### Task 4: Reclassify `MAX_TOKENS` to Heavy tier
-- **Description:** Remove `ConfigKeys.MAX_TOKENS.label` from `LIGHT_FIELD_LABELS`. Update `classifyApplyLevel`: HEAVY now fires on `acceleratorChanged || maxTokensChanged`. Tests `classifyApplyLevel_returnsHeavy_forMaxTokens` and `applyMaxTokens_dispatchesHeavyPath` cover the change.
+#### Task 4: `enableEdgeToEdge()` in `MainActivity` and `CrashReportActivity`
+- **Description:** Call `enableEdgeToEdge()` in both activities' `onCreate` before `setContent`. In `CrashReportActivity` it goes after the existing `FLAG_SECURE` `setFlags` line — they're independent window APIs and order is preserved. No other changes — no manual status-bar / nav-bar colors, no `setDecorFitsSystemWindows`.
 - **Skill:** code-writing
-- **Reviewers:** code-reviewer, test-reviewer
-- **Files to modify:** `app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt`
-- **Files to read:** `core-runtime/src/main/kotlin/app/sanctum/machina/core/data/ConfigKeys.kt` (verify label constants), `work/phase-3.6-bugfix/code-research.md` (§ 4)
-
-#### Task 5: Add `engineReady` StateFlow and rewire Settings gating
-- **Description:** Expose `val engineReady: StateFlow<Boolean>` in `ChatViewModel` derived from `_uiState` (`true` iff matching entry's `initStatus is Ready` and `!warmupInFlight`). In `ChatScreen.kt`, replace `topAppBarState is TopAppBarState.Ready` (the boolean source for `engineUsable`/`settingsEnabled`) with `engineReady` collected as state. `deriveTopAppBarState` keeps returning `TopAppBarState.Draft` for Draft (model picker dropdown unchanged).
-- **Skill:** code-writing
-- **Reviewers:** code-reviewer, test-reviewer
-- **Verify-user:** На Honor 200: создать новый persistent чат → дождаться прогрева модели (статус Ready) → НЕ отправляя сообщение, тапнуть по иконке Settings — sheet открывается. До прогрева — кнопка серая.
-- **Files to modify:** `app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt`, `app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatScreen.kt`
-- **Files to read:** `work/phase-3.6-bugfix/code-research.md` (§ 1 Bug 2 nuance)
-
-### Wave 3 — edge-to-edge + docs (independent of Wave 2)
-
-#### Task 6: Add `enableEdgeToEdge()` to MainActivity and CrashReportActivity
-- **Description:** Call `enableEdgeToEdge()` (from `androidx.activity:activity-compose`) in `MainActivity.onCreate` before `setContent`. Same in `CrashReportActivity.onCreate` (after the `FLAG_SECURE` setFlags, before `setContent`). No other changes — no manual status-bar / nav-bar color, no `setDecorFitsSystemWindows`. Remove the now-stale comment in `ChatScreen.kt` line 327-330 about MainActivity dependency (becomes implicit).
-- **Skill:** code-writing
-- **Reviewers:** code-reviewer
+- **Reviewers:** code-reviewer, security-auditor
 - **Verify-user:** На Honor 200: открыть чат → тапнуть по input bar → клавиатура поднимается → нет зазора между ней и input bar. Затем пройти Home / Drawer / Model Manager / Diagnostics / About / Crash Report — нет регрессий: контент не уезжает под status/nav bar, текст читаем.
-- **Files to modify:** `app/src/main/kotlin/app/sanctum/machina/MainActivity.kt`, `app/src/main/kotlin/app/sanctum/machina/crash/CrashReportActivity.kt`, `app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatScreen.kt` (comment cleanup only)
+- **Files to modify:** `app/src/main/kotlin/app/sanctum/machina/MainActivity.kt`, `app/src/main/kotlin/app/sanctum/machina/crash/CrashReportActivity.kt`
 - **Files to read:** `work/phase-3.6-bugfix/code-research.md` (§ 5 inset table)
 
-#### Task 7: Update `patterns.md` § D15 Light bullet and § ErrorLog component strings
-- **Description:** Rewrite the Light bullet of `patterns.md` § Three-tier settings application classification (D15) per code-research.md § 8. Append `"inference-reset"` to the closed whitelist enumeration in § ErrorLog component strings (with one-paragraph rationale: phase 3.6 added this for KV-cache reset diagnostics).
+#### Task 5: Update `patterns.md` § D15 Light bullet and § ErrorLog component strings
+- **Description:** Rewrite the Light bullet of `patterns.md` § Three-tier settings application classification (D15) per code-research.md § 8 — Conversation-recreation reality, MAX_TOKENS migrated to Heavy. Append `"inference-reset"` to the whitelist enumeration in § ErrorLog component strings with a one-paragraph rationale.
 - **Skill:** documentation-writing
 - **Reviewers:** code-reviewer
 - **Files to modify:** `.claude/skills/project-knowledge/references/patterns.md`
 - **Files to read:** `work/phase-3.6-bugfix/code-research.md` (§ 8), `work/phase-3.6-bugfix/tech-spec.md` (Decision 4, Decision 5)
 
+### Wave 3 — Bug 2 wiring (depends on Task 3 landing in `ChatViewModel`)
+
+#### Task 6: `engineReady` StateFlow + Settings gating switch in `ChatScreen` (+ stale comment cleanup)
+- **Description:** Expose `val engineReady: StateFlow<Boolean>` in `ChatViewModel` — `true` iff the entry for the current model is `ModelInitStatus.Ready` AND `!warmupInFlight`. In `ChatScreen.kt`, replace the existing `topAppBarState is TopAppBarState.Ready` boolean (source for `engineUsable`/`settingsEnabled`) with `engineReady` collected as state. `deriveTopAppBarState` keeps returning `TopAppBarState.Draft` for Draft (model picker dropdown unchanged). Also remove the now-stale comment in `ChatScreen.kt` (the line about MainActivity setting decorFitsSystemWindows — becomes implicit after Task 6).
+- **Skill:** code-writing
+- **Reviewers:** code-reviewer, security-auditor, test-reviewer
+- **Verify-user:** На Honor 200: создать новый persistent чат → дождаться прогрева модели → НЕ отправляя сообщение, тапнуть по иконке Settings — sheet открывается. До прогрева — кнопка серая.
+- **Files to modify:** `app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt`, `app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatScreen.kt`
+- **Files to read:** `work/phase-3.6-bugfix/code-research.md` (§ 1 Bug 2 nuance + § 5 inset table for the comment context)
+
 ### Audit Wave
 
-#### Task 8: Code Audit
-- **Description:** Full-feature code quality audit. Read all modified files (Tasks 1–7). Review for cross-component issues: `ResetReason` placement, mutex discipline preserved, no Honor-specific code introduced (per memory `manifest_breadth_over_honor_lock`), `:core-runtime` UI-free invariant preserved. Write audit report to `work/phase-3.6-bugfix/logs/audit/code-audit.md`.
+#### Task 7: Code Audit
+- **Description:** Full-feature code quality audit. Read all modified files (Tasks 1–6). Review for cross-component issues: `ResetReason` placement, mutex discipline preserved, no Honor-specific code introduced (per memory `manifest_breadth_over_honor_lock`), `:core-runtime` UI-free invariant preserved. Write audit report to `work/phase-3.6-bugfix/logs/audit/code-audit.md`.
 - **Skill:** code-reviewing
 - **Reviewers:** none
 
-#### Task 9: Security Audit
-- **Description:** Full-feature security audit. Read all modified files. OWASP Top 10 review. Specific points: log-injection through `ResetReason.name` (enum so safe — verify), edge-to-edge does not expose `FLAG_SECURE`-protected content, no new permission, `ErrorLog` length-bounding still in effect for new component. Write report to `work/phase-3.6-bugfix/logs/audit/security-audit.md`.
+#### Task 8: Security Audit
+- **Description:** Full-feature security audit. Read all modified files. OWASP Top 10 review. Specific points: log-injection through reset message construction (`status=...` interpolating `Throwable.message` — must route through `sanitize()`), edge-to-edge does not clobber `FLAG_SECURE` in `CrashReportActivity`, no new permission, `ErrorLog` length-bounding still in effect for new `i`/`w` levels. Write report to `work/phase-3.6-bugfix/logs/audit/security-audit.md`.
 - **Skill:** security-auditor
 - **Reviewers:** none
 
-#### Task 10: Test Audit
+#### Task 9: Test Audit
 - **Description:** Full-feature test audit. Read all new and modified test files. Verify coverage of every AC, meaningful assertions (not just smoke), no test-only behaviour leaking into production. Test pyramid: unit-only (no integration / E2E for size S) — that's the chosen strategy. Write report to `work/phase-3.6-bugfix/logs/audit/test-audit.md`.
 - **Skill:** test-master
 - **Reviewers:** none
 
 ### Final Wave
 
-#### Task 11: Pre-deploy QA
+#### Task 10: Pre-deploy QA
 - **Description:** Acceptance testing. Run `./gradlew :app:testDebugUnitTest :core-runtime:testDebugUnitTest :app:lintDebug :app:assembleDebug`. Verify every AC from user-spec (AC-1.1 … AC-3.3) and from tech-spec (this file). For AC-3.2 / AC-3.3 / AC-1.1 / AC-1.2 / AC-1.3a / AC-1.3b / AC-2.1 / AC-2.2 — emit a Verify-user request to the user (Honor 200 smoke). Aggregate results in `work/phase-3.6-bugfix/logs/qa/pre-deploy-qa.md`.
 - **Skill:** pre-deploy-qa
 - **Reviewers:** none
