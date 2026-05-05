@@ -1,0 +1,37 @@
+{
+  "verdict": "approve",
+  "summary": "Documentation-only edit to patterns.md is factually accurate, scoped exactly to the two regions specified by Task 5 (§ D15 Light bullet at L64 and § ErrorLog component strings at L16/L18/L20), and internally consistent with Tasks 1-3 implementation in decisions.md and code-research.md § 8. All 9 acceptance checks pass on string-presence grounds and on prose-quality grounds. No blocker / major / minor findings; two informational observations only.",
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "info": 2
+  },
+  "findings": [
+    {
+      "file": ".claude/skills/project-knowledge/references/patterns.md",
+      "line": 64,
+      "severity": "info",
+      "category": "prose-quality",
+      "description": "Light bullet adds a clarifying clause 'The Apply button is gated by !isGenerating, so this path does not arise mid-stream.' This is a stronger replacement for the deleted 'Active stream is not interrupted' clause and matches the recommendation in task spec edge-cases (line 107) — preferable to the neutral fallback the task allowed. Accurate against ChatScreen.kt Settings IconButton gating documented in code-research.md § 7."
+    },
+    {
+      "file": ".claude/skills/project-knowledge/references/patterns.md",
+      "line": 20,
+      "severity": "info",
+      "category": "prose-quality",
+      "description": "Rationale paragraph for inference-reset is well-scoped to the Phase-origin breakdown style used at L18 for the other 14 components, lists all six ResetReason values verbatim, and ties the operational role to the SAF diagnostic export path documented elsewhere in the file (L28). The phrase 'every DefaultModelRegistry.resetConversation call regardless of caller' is technically tighter than 'every registry.resetConversation call' — the abstraction lives on the interface but the logging lives in the impl, so the wording correctly localises the behaviour."
+    }
+  ],
+  "acceptance_check_results": {
+    "AC1_light_field_list_exact_three_no_maxTokens": "pass — line 64: '**Light** (`temperature`, `topK`, `topP`)'",
+    "AC2_resetConversation_and_LIGHT_OVERRIDE_mentioned": "pass — line 64 has both 'registry.resetConversation(reason = LIGHT_OVERRIDE)' and explicit Conversation/SamplerConfig wording",
+    "AC3_ui_history_preserved_engine_not_torn_down_maxTokens_in_Heavy": "pass — line 64 states 'Engine is not torn down (no `cleanup + initialize`)', 'UI history (in-memory message list + Room rows) is preserved', and 'maxTokens is baked into EngineConfig at engine creation and therefore lives in the Heavy tier'",
+    "AC4_whitelist_count_15_and_inference_reset_in_list": "pass — line 16: 'Only these 15 values are allowed', and `\"inference-reset\"` appears in the inline list at position 4 (grouped naturally with `\"inference-init\"` / `\"inference\"` / `\"inference-cleanup\"`); signature also updated to `e/i/w` per Task 1",
+    "AC5_rationale_paragraph_covers_required_points": "pass — line 20 covers all five required points: caller (DefaultModelRegistry.resetConversation), six ResetReason values (CHAT_SWITCH | DRAFT_COMMIT | LIGHT_OVERRIDE | SYSTEM_PROMPT | HEAVY | USER), level convention (errorLog.i success / errorLog.w non-Ready skip with engine status enumeration), operational role (SAF-exported diagnostic log, KV-cache leakage and stale-sampler regression triage), Phase 3.6 marker ('(Phase 3.6 addition)' parenthetical at paragraph open + closing sentence at L18 'Phase 3.6 added inference-reset (see next paragraph)')",
+    "AC6_diff_scope_confined": "pass — touched regions: L16 (whitelist count 14→15, inference-reset entry, e/i/w signature), L18 (Phase-origin breakdown trailing sentence pointing to next paragraph), L20 (new sibling rationale paragraph), L64 (Light bullet rewrite). No edits outside § D15 + § ErrorLog component strings; Semi-light bullet (L65), Heavy bullet (L66), and classifyApplyLevel closing paragraph (L68) untouched",
+    "AC7_markdown_formatting_consistent": "pass — bold tier names (`**Light**`, `**Semi-light**`, `**Heavy**`) preserved; code identifiers in backticks throughout; bullet style matches sibling bullets; no orphaned bold markers or broken backticks",
+    "AC8_closing_paragraph_unchanged": "pass — L68 'ChatViewModel.classifyApplyLevel(overrides) is the single entry point …' wording preserved verbatim including the historical `enableThinking` reclassification anecdote",
+    "AC9_factual_cross_check_research_and_decisions": "pass — Light bullet matches code-research § 8 proposed replacement (and is slightly tighter on the !isGenerating gate); six ResetReason values match Task 2 commit 8f46a38 enum definition; errorLog.i/w levels match Task 1 ErrorLog refactor commit 34032ea; LIGHT_OVERRIDE reason matches Task 3 commit 2bb21c6 wiring; maxTokens reclassification to Heavy matches Task 3 Decision 4 (LIGHT_FIELD_LABELS minus MAX_TOKENS)"
+  }
+}

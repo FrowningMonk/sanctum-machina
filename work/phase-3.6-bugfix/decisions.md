@@ -105,3 +105,26 @@ Added regression test `bootstrapPersistent_draftCommit_resetsBeforeAutoResumeRun
 - Smoke grep `setDecorFitsSystemWindows|statusBarColor|navigationBarColor|fitsSystemWindows` in the two modified files → 0 hits.
 - AC-3.1 verified statically by code-reviewer: call present in both `onCreate` before `setContent`.
 - AC-3.2 / AC-3.3 (Honor 200 visual smoke on 6 screens + IME-gap check) and FLAG_SECURE on-device check deferred to Task 10 pre-deploy QA per memory rule `feedback_smoke_verification.md` — bundled with Task 3 + Task 6 into a single Honor 200 sweep once the full UI chain (Bug 1, Bug 2, Bug 3) is in place.
+
+---
+
+## Task 5: Update `patterns.md` § D15 Light bullet and § ErrorLog component strings
+
+**Status:** Done
+**Commit:** c372d5f
+**Agent:** main agent
+**Summary:** Doc-only sync of `.claude/skills/project-knowledge/references/patterns.md` to Phase 3.6 reality. Light bullet of § D15 rewritten — field list trimmed to `temperature`/`topK`/`topP`, the runtime mechanism named (`registry.resetConversation(reason = LIGHT_OVERRIDE)` recreates `Conversation` with new `SamplerConfig`), UI-history-preserved + engine-not-torn-down clauses added, `!isGenerating`-gate noted, `maxTokens` redirected to Heavy tier per Decision 4. § ErrorLog component strings: count 14→15, `"inference-reset"` inserted between `"inference"` and `"inference-cleanup"`, signature updated to `e/i/w`, Phase-origin breakdown extended with a forward pointer, and a sibling rationale paragraph added covering caller (`DefaultModelRegistry.resetConversation`), all six `ResetReason` values, level convention (`i` = success, `w` = non-Ready skip), and SAF-export operational role.
+**Deviations:** None. Touched `e/i/w` signature inside § ErrorLog component strings (Task 1 introduced i/w but did not update patterns.md); within section scope per AC.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approve, 0 blocker / 0 major / 0 minor / 2 info → [logs/working/task-5/code-reviewer-1.json](logs/working/task-5/code-reviewer-1.json)
+- documentation-reviewer: approved, 2 optional minor suggestions (light cross-reference overlap between L18 and L20; rationale closing sentence slightly longer than Phase-origin density) — not blocking → [logs/working/task-5/documentation-reviewer-1.json](logs/working/task-5/documentation-reviewer-1.json)
+
+**Verification:**
+- `grep -n "applies from next send" .claude/.../patterns.md` → 0 hits.
+- `grep -n "inference-reset" .claude/.../patterns.md` → 3 hits (whitelist, Phase-origin breakdown extension, rationale paragraph).
+- `grep -n "15 values are allowed" .claude/.../patterns.md` → 1 hit; `"14 values are allowed"` → 0 hits.
+- `grep -n "LIGHT_OVERRIDE" .claude/.../patterns.md` → 2 hits (Light bullet + reset-reason enumeration).
+- Diff scope (read-verified, since `.claude/` is gitignored): edits confined to lines 16, 18, 20 (§ ErrorLog component strings) and line 64 (§ D15 Light bullet). Semi-light/Heavy bullets and § D15 closing paragraph at line 68 untouched.

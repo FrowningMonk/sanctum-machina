@@ -250,8 +250,8 @@ Per-task verification is via Gradle unit tests (every task with code changes) an
 - [ ] `./gradlew :app:lintDebug` — нет новых warnings в затронутых файлах.
 - [ ] `./gradlew :app:assembleDebug` — debug APK собран.
 - [ ] Module boundary preserved: `:core-runtime` остаётся UI-free (grep `androidx.compose|androidx.activity` в `core-runtime/src/main` → 0 hits).
-- [ ] `ErrorLog.ALLOWED_COMPONENTS` обновлён в `ErrorLog.kt` И в `patterns.md` § ErrorLog component strings.
-- [ ] `patterns.md` § D15 Light bullet перезаписан — больше нет утверждения «applies from next send() without engine touch».
+- [x] `ErrorLog.ALLOWED_COMPONENTS` обновлён в `ErrorLog.kt` И в `patterns.md` § ErrorLog component strings.
+- [x] `patterns.md` § D15 Light bullet перезаписан — больше нет утверждения «applies from next send() without engine touch».
 - [ ] Все callers `registry.resetConversation` передают явный `reason` — не `default`-параметр.
 - [ ] `LIGHT_FIELD_LABELS` не содержит `MAX_TOKENS`.
 
