@@ -21,10 +21,11 @@ private const val ROTATED_FILE = "errors.log.1"
 private val CONTROL_WS = Regex("[\\n\\r\\t]")
 
 /**
- * Closed whitelist of components allowed as the first argument to [ErrorLog.e].
- * Phase 2 extends the Phase-1 set with four new failure modes
- * (`settings-io`, `camera`, `audio`, `attachment-decode`) per tech-spec D27.
- * Any value not in this set raises [IllegalArgumentException] at call time.
+ * Closed whitelist of components allowed as the first argument to
+ * [ErrorLog.e] / [ErrorLog.i] / [ErrorLog.w]. Phase 3.6 adds
+ * `"inference-reset"` for `DefaultModelRegistry.resetConversation`
+ * diagnostics (Decision 5). Any value not in this set raises
+ * [IllegalArgumentException] at call time, before any I/O.
  *
  * `internal` — consumers should pass the string literal; the set exists for
  * runtime enforcement, not for cross-module pre-validation.
@@ -47,20 +48,27 @@ internal val ALLOWED_COMPONENTS: Set<String> = setOf(
   "history-write",
   "attachment-save",
   "attachment-read",
+  // Phase 3.6
+  "inference-reset",
 )
 
 /**
- * On-device ERROR-only writer. Single channel for failure events.
+ * On-device three-level writer (`e` / `i` / `w`). Single channel for
+ * operational events: errors, info, warnings. All three route through one
+ * private [write] helper that owns whitelist enforcement, sanitization,
+ * length-bounding, mutex, append, and rotation — so adding a level cannot
+ * drift from the existing input pipeline.
  *
  * Format (one physical line per event, no newlines, no emoji, no dividers):
  * ```
- * ERROR [component] description :: CauseType: cause.message
+ * <LEVEL> [component] description :: CauseType: cause.message
  * ```
- * When `cause` is null the ` :: ...` suffix is omitted. `description` is
- * sanitized (control whitespace → space) and truncated to 500 chars;
- * `cause.message` is sanitized and truncated to 200 chars — bounds the
- * cause-chain footprint so a verbose native exception cannot blow out the log
- * (TAC-15). The cause class name is emitted verbatim.
+ * `<LEVEL>` is one of `ERROR`, `INFO`, `WARN`. When `cause` is null the
+ * ` :: ...` suffix is omitted. `description` is sanitized (control whitespace
+ * → space) and truncated to 500 chars; `cause.message` is sanitized and
+ * truncated to 200 chars — bounds the cause-chain footprint so a verbose
+ * native exception cannot blow out the log (TAC-15). The cause class name
+ * is emitted verbatim.
  *
  * Rotation: after each append, if the file exceeds 2 MB, any existing
  * `errors.log.1` is deleted and the current `errors.log` is renamed to
@@ -74,13 +82,30 @@ class ErrorLog @Inject constructor(@ApplicationContext private val context: Cont
   private val mutex = Mutex()
 
   suspend fun e(component: String, description: String, cause: Throwable? = null) {
+    write(Level.ERROR, component, description, cause)
+  }
+
+  suspend fun i(component: String, description: String, cause: Throwable? = null) {
+    write(Level.INFO, component, description, cause)
+  }
+
+  suspend fun w(component: String, description: String, cause: Throwable? = null) {
+    write(Level.WARN, component, description, cause)
+  }
+
+  private suspend fun write(
+    level: Level,
+    component: String,
+    description: String,
+    cause: Throwable?,
+  ) {
     require(component in ALLOWED_COMPONENTS) {
       "Unknown ErrorLog component: '$component'. Allowed: $ALLOWED_COMPONENTS"
     }
     mutex.withLock {
       withContext(Dispatchers.IO) {
         try {
-          val line = buildLine(component, description, cause)
+          val line = buildLine(level, component, description, cause)
           val dir = File(context.filesDir, LOG_DIR).apply { mkdirs() }
           val file = File(dir, LOG_FILE)
           file.appendText(line + "\n", Charsets.UTF_8)
@@ -98,8 +123,13 @@ class ErrorLog @Inject constructor(@ApplicationContext private val context: Cont
     }
   }
 
-  private fun buildLine(component: String, description: String, cause: Throwable?): String {
-    val head = "ERROR [$component] ${sanitize(description, MAX_DESCRIPTION_LEN)}"
+  private fun buildLine(
+    level: Level,
+    component: String,
+    description: String,
+    cause: Throwable?,
+  ): String {
+    val head = "${level.name} [$component] ${sanitize(description, MAX_DESCRIPTION_LEN)}"
     if (cause == null) return head
     val causeClass = cause::class.simpleName.orEmpty()
     val causeMsg = cause.message?.let { sanitize(it, MAX_CAUSE_MESSAGE_LEN) }.orEmpty()
@@ -108,4 +138,6 @@ class ErrorLog @Inject constructor(@ApplicationContext private val context: Cont
 
   private fun sanitize(raw: String, maxLen: Int): String =
     raw.replace(CONTROL_WS, " ").take(maxLen)
+
+  private enum class Level { ERROR, INFO, WARN }
 }
