@@ -104,6 +104,7 @@ private fun ChatScreenBody(
     val attachments by viewModel.attachments.collectAsStateWithLifecycle()
     val modelCaps by viewModel.modelCaps.collectAsStateWithLifecycle()
     val topAppBarState by viewModel.topAppBarState.collectAsStateWithLifecycle()
+    val engineReady by viewModel.engineReady.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     val resources = LocalResources.current
@@ -130,6 +131,7 @@ private fun ChatScreenBody(
         val isGenerating = (uiState as? ChatUiState.Ready)?.isGenerating == true
         ReadyContent(
             topAppBarState = topAppBarState,
+            engineReady = engineReady,
             isQuickMode = isQuick,
             reinitInProgress = reinitInProgress,
             messages = messages,
@@ -199,6 +201,7 @@ private fun FailedContent(rawCause: String, onBack: () -> Unit) {
 @Composable
 private fun ReadyContent(
     topAppBarState: TopAppBarState,
+    engineReady: Boolean,
     isQuickMode: Boolean,
     reinitInProgress: Boolean,
     messages: List<Message>,
@@ -267,17 +270,18 @@ private fun ReadyContent(
         audioButtonEnabled = !hasAudioAttachment,
     )
 
-    // Settings gate (Phase-3 debt 1): the heavy-apply path teardowns/initializes
-    // the engine directly; it must only run when the engine is idle-Ready and
-    // no reinit is already in flight. Disabling the button whenever the UI is
-    // not in Ready(isGenerating=false) or a reinit is running makes the tech-
-    // spec Decision 3 race unreachable — `lifecycleMutex` is free at tap time.
-    // Settings/Reset are only meaningful when an engine is Ready. During
-    // cross-model reinit (topAppBarState=Loading) or an explicit Failed
-    // state the sheet gate below would refuse to render anyway — disabling
-    // the buttons keeps the tap a no-op visible in the UI.
-    val engineUsable = topAppBarState is TopAppBarState.Ready
-    val settingsEnabled = engineUsable && !isGenerating && !reinitInProgress
+    // Settings/Reset gate (Phase-3 debt 1 + Phase-3.6 Bug 2 fix): the heavy-
+    // apply path teardowns/initializes the engine directly; it must only run
+    // when the engine is Ready and no reinit is in flight, so `lifecycleMutex`
+    // is free at tap time (tech-spec Decision 3 race unreachable). The
+    // readiness signal is `viewModel.engineReady` rather than
+    // `topAppBarState is TopAppBarState.Ready` because the Draft branch of
+    // `deriveTopAppBarState` keeps returning `TopAppBarState.Draft` even after
+    // warmup completes — its model picker dropdown lives on that state.
+    // `engineReady` is the orthogonal boolean that flips true for Draft and
+    // Persistent alike once the entry hits Ready and warmup is no longer in
+    // flight (tech-spec Decision 6).
+    val settingsEnabled = engineReady && !isGenerating && !reinitInProgress
 
     Scaffold(
         topBar = {
@@ -305,7 +309,7 @@ private fun ReadyContent(
                             contentDescription = stringResource(R.string.chat_action_settings),
                         )
                     }
-                    IconButton(onClick = onReset, enabled = engineUsable && !isGenerating) {
+                    IconButton(onClick = onReset, enabled = engineReady && !isGenerating) {
                         Icon(
                             imageVector = Icons.Outlined.Refresh,
                             contentDescription = stringResource(R.string.chat_action_reset),
@@ -325,9 +329,6 @@ private fun ReadyContent(
                 // instead of max(IME, nav-bar), leaving a visible empty strip under the
                 // input panel when the keyboard opens.
                 .consumeWindowInsets(innerPadding)
-                // AC-U4: lift the input bar above the IME. Depends on
-                // `WindowCompat.setDecorFitsSystemWindows(window, false)`
-                // already set by MainActivity.
                 .imePadding(),
         ) {
             MessageList(

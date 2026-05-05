@@ -264,6 +264,40 @@ constructor(
         initialValue = TopAppBarState.Loading(modelId = "", modelName = null),
     )
 
+    /**
+     * Settings IconButton readiness gate (Phase 3.6 / Task 6, Bug 2 fix).
+     *
+     * `true` iff the entry for the current chat-pinned model is
+     * [ModelInitStatus.Ready] AND `WarmupCoordinator.isWarmupInProgress` is
+     * false. Derived from the same three source flows as [topAppBarState] so
+     * the warmup-gate matches: a Ready entry that is mid-warmup must not
+     * surface as ready (Conversation is still being rebuilt under
+     * `lifecycleMutex`).
+     *
+     * Decoupled from [topAppBarState] because the Draft branch deliberately
+     * keeps returning [TopAppBarState.Draft] regardless of init-status — the
+     * model picker dropdown lives there. Settings gating needs the orthogonal
+     * boolean signal so a Ready Draft chat can open the sheet before the
+     * first send.
+     */
+    val engineReady: StateFlow<Boolean> = combine(
+        registry.models,
+        _chatModelId,
+        warmupCoordinator.isWarmupInProgress,
+    ) { models, modelId, warmupInFlight ->
+        if (modelId == null || warmupInFlight) return@combine false
+        val entry = models.firstOrNull { it.model.modelId == modelId }
+        entry?.initStatus is ModelInitStatus.Ready
+    }.stateIn(
+        scope = viewModelScope,
+        // Eagerly mirrors `topAppBarState` above — the two flows share source
+        // signals and the same UI surface (TopAppBar action gating). Using
+        // WhileSubscribed here would let `.value` lag behind the registry
+        // between sheet open/close cycles when no Compose collector is active.
+        started = SharingStarted.Eagerly,
+        initialValue = false,
+    )
+
     init {
         viewModelScope.launch { bootstrapChatModelId() }
         viewModelScope.launch { observeEngineState() }

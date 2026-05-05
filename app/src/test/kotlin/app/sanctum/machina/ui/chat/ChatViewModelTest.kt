@@ -1607,6 +1607,49 @@ class ChatViewModelTest {
         )
     }
 
+    // ------------------------------------------------------------------
+    // Phase 3.6 / Task 6 — engineReady StateFlow (Bug 2: Settings gating)
+    // ------------------------------------------------------------------
+
+    @Test
+    fun engineReady_combinatorics() = runTest(dispatcher) {
+        // Drives the same VM through the 5 readiness states the Settings
+        // IconButton must observe (AC-2.1 / AC-2.3 in the user-spec):
+        //   Idle → false; Initializing → false; Failed → false;
+        //   Ready + warmup-in-flight → false; Ready + no-warmup → true.
+        // Persistent identity is used so `_chatModelId` is pinned by the
+        // ChatDao seed (Quick mode would never resolve it because the fake
+        // registry leaves `activeModelName = null` for non-Ready entries,
+        // and Quick bootstrap suspends until that flow emits).
+        val model = Model(name = "Model M", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeRegistry.publishEntry(model, ModelInitStatus.Idle)
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        assertEquals("Idle → engineReady=false", false, vm.engineReady.value)
+
+        fakeRegistry.publishEntry(model, ModelInitStatus.Initializing)
+        advanceUntilIdle()
+        assertEquals("Initializing → engineReady=false", false, vm.engineReady.value)
+
+        fakeRegistry.publishEntry(model, ModelInitStatus.Failed("boom"))
+        advanceUntilIdle()
+        assertEquals("Failed → engineReady=false", false, vm.engineReady.value)
+
+        // Flip warmup before publishing Ready so the (Ready ∧ warmup) cell is
+        // exercised in isolation — without this, the Ready emission would
+        // race the warmup flag and briefly observe the (Ready ∧ !warmup) cell.
+        fakeWarmupCoordinator.isWarmupInProgressState.value = true
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        advanceUntilIdle()
+        assertEquals("Ready+warmup → engineReady=false", false, vm.engineReady.value)
+
+        fakeWarmupCoordinator.isWarmupInProgressState.value = false
+        advanceUntilIdle()
+        assertEquals("Ready+no-warmup → engineReady=true", true, vm.engineReady.value)
+    }
+
     @Test
     fun loadModel_delegatesToWarmupCoordinator() = runTest(dispatcher) {
         fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
