@@ -250,3 +250,38 @@ QA — terminal verification step, отдельных reviewers нет (per Task
 - User smoke (Honor 200): AC-2.1 — pass (settings до первого сообщения открываются). AC-3.2 — **fail** (зазор увеличился относительно pre-Phase-3.6). Остальные 7 user-smoke ACs — deferred.
 
 **Next step (рекомендация):** создать fix-task в phase-3.6 на регрессию AC-3.2 (двойной IME-inset под `enableEdgeToEdge()` + `Scaffold.contentWindowInsets` + `imePadding()`); после фикса — повторный Verify-user одним сообщением на все deferred AC + AC-3.2 + AC-3.3. Гарантии phase 3.6, которые НЕ требуют пересдачи при фиксе B1: AC-1.4, AC-2.3, AC-3.1, все agent-проверки § 1–§ 2 (unit / lint / static / audit), потому что B1 — узко UI-layout область (Activity onCreate flag + ChatScreen Compose обвязка), не runtime registry / ErrorLog / ResetReason / `LIGHT_FIELD_LABELS`.
+
+---
+
+## Task 11: KV-cache restoration on chat re-entry — `ConversationConfig.initialMessages` cascade
+
+**Status:** Done
+**Commit:** f3d49a3 (impl `bb089c5` + review-fix `f3d49a3`)
+**Agent:** main agent
+**Summary:** Прокинул `initialMessages: List<litertlm.Message>` через цепочку `LlmModelHelper` → `LlmChatModelHelper` → `ModelRegistry` → `DefaultModelRegistry` (default `emptyList()` сохранил всех существующих caller'ов). `ChatViewModel.buildInitialMessages(chatId, dropUnpairedUserTail)` грузит paired-историю через `messageDao.getByChatId`, маппит каждый row через `MultimodalContentsBuilder` + `Contents.of(...)` + Companion-фабрики `Message.user`/`Message.model` (primary constructor `internal` к litertlm-модулю), и передаёт в `registry.resetConversation` для CHAT_SWITCH (bootstrap Persistent с paired tail) и LIGHT_OVERRIDE (slider-Apply в Persistent). DRAFT_COMMIT/SYSTEM_PROMPT/USER/HEAVY и Quick/Draft LIGHT_OVERRIDE — `emptyList()` (фреш-семантика, default-параметр). `inference-reset` info-лог расширен `replayedMessages=N`. `:core-runtime` поднял `litertlm` `implementation` → `api`, потому что `Message` теперь в публичной API-сигнатуре registry. user-spec AC-1.1 переформулирован, Сценарий 1 шаг 4 добавлен; tech-spec § Solution + Decision 9 + Risks дополнены; patterns.md D15 Light bullet и `inference-reset` описание обновлены (`replayedMessages=N`).
+**Deviations:** Спецификация просила прямой конструктор `LitertlmMessage(role, contents, toolCalls, channels)` — Kotlin-компилятор отказывает: конструктор помечен `internal` к litertlm-модулю (видно как public только из Java через kotlin metadata). Ушёл на public Companion-фабрики `Message.user(Contents)` / `Message.model(Contents)`, поведение идентичное (`toolCalls = emptyList()`, `channels = emptyMap()` через `model$default`). API-наблюдение записано инлайн-комментом в `buildInitialMessages` для будущих читателей. Wall-clock замер prefill на Honor 200 (Implementation hints из таски): на коротких чатах задержка незаметна — пользователь подтвердил «всё работает как надо», без жалоб на медленный возврат. Если потом окажется, что чат с 100+ сообщениями ощутимо тормозит — отдельный follow-up с loading-индикатором по образцу `applyHeavySetting._reinitInProgress`. Не блокер для merge.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved, 0 blocker / 0 major / 3 minor (optional) / 5 info → [logs/working/task-11/code-reviewer-1.json](logs/working/task-11/code-reviewer-1.json). Оптинальные минусы (skip-arm `replayedMessages=N` симметрия, синхронный `decodeAttachmentsForEntity` re-decode, явный `Quick + Draft` discriminator вместо `else`) — не применял, чтобы не раздувать scope.
+- security-auditor: APPROVED, 0 findings → [logs/working/task-11/security-auditor-1.json](logs/working/task-11/security-auditor-1.json). Подтвердил что info-лог идёт через shared `write()` (sanitize + 500-char bound), `decodeAttachmentsForEntity` containment работает, SQL-injection N/A (Room `:chatId` биндинг), `litertlm` api-промоушен — pure Gradle visibility, не attack surface.
+- test-reviewer: needs_improvement, 0 critical / 1 major / 4 minor → [logs/working/task-11/test-reviewer-1.json](logs/working/task-11/test-reviewer-1.json). Все применены в `f3d49a3`:
+  - major: `contains("replayedMessages=2")` ловил `=20`/`=200` — заменил на `endsWith("reason=<NAME> replayedMessages=<N>")` для обеих registry-проверок.
+  - minor 1: `applyLightOverrides_passesPairedHistory_inPersistentChat` использовал одинаковую paired-историю на bootstrap и apply — теперь мутирую `fakeMessageDao` между ними, asserting size=4 и per-row text, доказывая re-read DAO at apply-time.
+  - minor 2: `resetConversation_passesInitialMessagesToHelper_whenReady` — добавил content-level asserts (size, role list, per-row Content.Text) рядом с reference-equals.
+  - minor 3: per-row text round-trip распространён на все 4 row'а в test 7a и на 2 row'а в test 7b (не только first).
+  - minor 4: test 7b теперь asserting `fakeHelper.runInferenceCalls == 1` — доказывает что dropped USER row уходит в auto-resume, не теряется.
+
+**Verification:**
+- `./gradlew :core-runtime:testDebugUnitTest --tests "DefaultModelRegistryTest"` → BUILD SUCCESSFUL (12 + 3 = 15 тестов, все green).
+- `./gradlew :app:testDebugUnitTest --tests "ChatViewModelTest"` → BUILD SUCCESSFUL.
+- `./gradlew :app:testDebugUnitTest :core-runtime:testDebugUnitTest` (full suites) → BUILD SUCCESSFUL — нет регрессий в обновлённых fakes (Sanctum/SettingsMigration/Warmup/Drawer/Home/ModelManager/ModelRegistryActiveModel — все 7 fake registries и 3 fake helpers подняты на новую сигнатуру).
+- `./gradlew :app:lintDebug` → BUILD SUCCESSFUL, 0 новых warnings в затронутых файлах.
+- `./gradlew :app:assembleDebug` → APK собран (`app/build/outputs/apk/debug/app-debug.apk`).
+- Module boundary smoke: `Grep "androidx\.(compose|activity)" core-runtime/src/main` → 0 hits.
+- `Grep "replayedMessages=" core-runtime/src/main` → ровно 1 hit (info-ветка `DefaultModelRegistry.resetConversation`, как и ожидалось).
+- `Grep "initialMessages" app/src/main/.../ChatViewModel.kt` → ожидаемые места: `buildInitialMessages` helper, `bootstrapChatModelId` Persistent-ветка, `applyLightOverrides`, KDoc reference. `applySystemPromptAndReset` / user-tap reset / `applyHeavySetting` НЕ упоминают параметр (default-empty подтверждено).
+- User smoke (Honor 200): пользователь подтвердил «всё работает вроде как надо» — KV-restore на возврате в чат A, изоляция между A↔B, пустой контекст в свежем C, LIGHT_OVERRIDE сохраняет контекст, ощутимой задержки на возврате нет. Все 6 шагов user-smoke блока pass.
+
+**Next step:** Task 12 = повторный pre-deploy QA (объединённый: AC-1.1 refined + AC-3.2 регрессия + остальные deferred user-smoke ACs из Task 10), как только AC-3.2 fix-task будет закрыт. Phase 3.6 merge-ready по Bug 1 после Task 12.
