@@ -14,15 +14,10 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
-import androidx.compose.foundation.layout.exclude
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.union
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -43,7 +38,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -290,13 +284,6 @@ private fun ReadyContent(
     val settingsEnabled = engineReady && !isGenerating && !reinitInProgress
 
     Scaffold(
-        // Drop the navigation-bar inset from Scaffold's contentWindowInsets so the
-        // Column owns the bottom inset exclusively. Without this, both Scaffold
-        // (via innerPadding) AND the Column's bottom modifier would account for
-        // the nav bar — and on EMUI/Honor 200 with edge-to-edge enabled, the
-        // accumulation produces a navBar-sized gap above the IME.
-        contentWindowInsets = ScaffoldDefaults.contentWindowInsets
-            .exclude(WindowInsets.navigationBars),
         topBar = {
             TopAppBar(
                 title = {
@@ -337,16 +324,12 @@ private fun ReadyContent(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                // Tell imePadding() that Scaffold's innerPadding already accounts for the
+                // navigation-bar inset — without this the bottom gap equals IME + nav-bar
+                // instead of max(IME, nav-bar), leaving a visible empty strip under the
+                // input panel when the keyboard opens.
                 .consumeWindowInsets(innerPadding)
-                // max(navBar, IME) on the bottom: when the keyboard is closed the
-                // nav-bar inset keeps the input panel above the gesture/3-button
-                // bar; when the keyboard opens the IME inset takes over (it
-                // already covers the nav bar visually). The union avoids the
-                // navBar+IME accumulation that left a visible gap under the
-                // input panel on EMUI/Honor 200 after edge-to-edge was enabled.
-                .windowInsetsPadding(
-                    WindowInsets.navigationBars.union(WindowInsets.ime),
-                ),
+                .imePadding(),
         ) {
             MessageList(
                 messages = messages,
