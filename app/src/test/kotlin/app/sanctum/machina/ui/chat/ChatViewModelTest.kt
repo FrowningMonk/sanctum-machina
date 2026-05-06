@@ -1300,14 +1300,16 @@ class ChatViewModelTest {
                 listOf(Role.USER, Role.MODEL, Role.USER, Role.MODEL),
                 replayed.map { it.role },
             )
-            // Confirm the text part survives the MultimodalContentsBuilder →
-            // Contents.of round-trip — a regression that dropped Content.Text
-            // would leave the prefill empty even with non-empty entity rows.
-            val firstText = replayed.first().contents.contents
-                .filterIsInstance<Content.Text>()
-                .firstOrNull()
-                ?.text
-            assertEquals("hi", firstText)
+            // Per-row text round-trip catches a regression where the lambda
+            // closes over a single entity (e.g., misplaced `first()`) and
+            // produces N copies of the same text — sizes/roles still match
+            // but per-message content collapses.
+            assertEquals(
+                listOf("hi", "hello", "more", "ok"),
+                replayed.map { msg ->
+                    msg.contents.contents.filterIsInstance<Content.Text>().firstOrNull()?.text
+                },
+            )
         }
 
     @Test
@@ -1344,6 +1346,22 @@ class ChatViewModelTest {
             assertEquals(
                 listOf(Role.USER, Role.MODEL),
                 replayed.map { it.role },
+            )
+            assertEquals(
+                "kept rows' text must be u1/a1, NOT every entry collapsed to row 0",
+                listOf("u1", "a1"),
+                replayed.map { msg ->
+                    msg.contents.contents.filterIsInstance<Content.Text>().firstOrNull()?.text
+                },
+            )
+            // The dropped USER row must reach the auto-resume path (engine is
+            // Ready in this fixture, so observeFirstReadyThenResume fires) —
+            // proves the contract is "drop from prefill AND hand to resume",
+            // not "drop and silently lose".
+            assertEquals(
+                "unpaired USER must be auto-resumed as the first turn of the new Conversation",
+                1,
+                fakeHelper.runInferenceCalls,
             )
         }
 
@@ -1388,8 +1406,19 @@ class ChatViewModelTest {
         val vm = buildViewModel(ChatIdentityArg.Persistent(42L))
         advanceUntilIdle()
 
-        // Drop the bootstrap-time CHAT_SWITCH from the assertion target so
-        // we observe only the LIGHT_OVERRIDE invocation.
+        // Mutate Room AFTER bootstrap has settled. If applyLightOverrides
+        // re-uses bootstrap-time cached state instead of re-reading the
+        // DAO at apply-time, the assertions below would observe size=2
+        // and only the bootstrap text — distinguishable from the post-
+        // mutation state.
+        fakeMessageDao.emit(
+            listOf(
+                MessageEntity(id = 1L, chatId = 42L, role = "user", text = "hi", createdAt = 1L),
+                MessageEntity(id = 2L, chatId = 42L, role = "assistant", text = "hello", createdAt = 2L),
+                MessageEntity(id = 3L, chatId = 42L, role = "user", text = "u2", createdAt = 3L),
+                MessageEntity(id = 4L, chatId = 42L, role = "assistant", text = "a2", createdAt = 4L),
+            ),
+        )
         fakeRepo.save(
             "id-m",
             PerModelSettings.newBuilder().setTemperature(0.4f).build(),
@@ -1400,13 +1429,20 @@ class ChatViewModelTest {
         assertEquals(ResetReason.LIGHT_OVERRIDE, fakeRegistry.resetReasons.last())
         val replayed = fakeRegistry.lastResetInitialMessages
         assertEquals(
-            "Persistent LIGHT_OVERRIDE must replay paired history",
-            2,
+            "Persistent LIGHT_OVERRIDE must re-read DAO at apply-time, not stale bootstrap state",
+            4,
             replayed.size,
         )
         assertEquals(
-            listOf(Role.USER, Role.MODEL),
+            listOf(Role.USER, Role.MODEL, Role.USER, Role.MODEL),
             replayed.map { it.role },
+        )
+        assertEquals(
+            "post-bootstrap rows must reach the prefill, proving DAO re-read",
+            listOf("hi", "hello", "u2", "a2"),
+            replayed.map { msg ->
+                msg.contents.contents.filterIsInstance<Content.Text>().firstOrNull()?.text
+            },
         )
     }
 

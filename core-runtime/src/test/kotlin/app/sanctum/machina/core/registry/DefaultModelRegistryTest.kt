@@ -476,13 +476,29 @@ class DefaultModelRegistryTest {
       msgs,
       call.initialMessages,
     )
-    val line = logFile.readLines().single()
-    assertTrue(line.startsWith("INFO [inference-reset] "))
-    assertTrue("info line must contain reason CHAT_SWITCH: $line", line.contains("CHAT_SWITCH"))
-    assertTrue(
-      "info line must contain replayedMessages=2: $line",
-      line.contains("replayedMessages=2"),
+    // Content-level assertions: a refactor that rebuilt equivalent factory-Messages
+    // would falsely fail the reference assertion above; a regression that drops or
+    // reshapes contents would still be caught here.
+    assertEquals(2, call.initialMessages.size)
+    assertEquals(
+      listOf(Role.USER, Role.MODEL),
+      call.initialMessages.map { it.role },
     )
+    assertEquals(
+      listOf("hi", "hello"),
+      call.initialMessages.map { msg ->
+        msg.contents.contents.filterIsInstance<Content.Text>().firstOrNull()?.text
+      },
+    )
+    val line = logFile.readLines().single()
+    // End-anchored: `replayedMessages=N` is the trailing token, so a regression
+    // that emitted `replayedMessages=20` (off-by-multiplier or accidental
+    // token-count) would not slip past `contains("replayedMessages=2")`.
+    assertTrue(
+      "info line must end exactly with reason=CHAT_SWITCH replayedMessages=2: $line",
+      line.endsWith("reason=CHAT_SWITCH replayedMessages=2"),
+    )
+    assertTrue(line.startsWith("INFO [inference-reset] "))
   }
 
   @Test
@@ -504,7 +520,11 @@ class DefaultModelRegistryTest {
       helper.resetCalls.single().initialMessages.isEmpty(),
     )
     val line = logFile.readLines().single()
-    assertTrue("info line must contain replayedMessages=0: $line", line.contains("replayedMessages=0"))
+    // End-anchored — see sibling `_passesInitialMessagesToHelper_whenReady` for rationale.
+    assertTrue(
+      "info line must end exactly with reason=USER replayedMessages=0: $line",
+      line.endsWith("reason=USER replayedMessages=0"),
+    )
   }
 
   @Test
