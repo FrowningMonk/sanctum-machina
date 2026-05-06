@@ -177,3 +177,25 @@ Audit task — auditor IS the review (no secondary reviewers per task spec).
 - `grep -n "setDecorFitsSystemWindows\|MainActivity" ChatScreen.kt` → 0 hits (stale comment removed; new comment block describes `consumeWindowInsets`/`imePadding` ordering).
 - 4 production `registry.resetConversation` call sites in `ChatViewModel.kt` (368, 497, 514, 944) — all pass explicit `reason = ResetReason.<NAME>`; interface signature has no default value.
 - Audit report `work/phase-3.6-bugfix/logs/audit/code-audit.md` exists with Summary + Checklist results + Findings + Overall verdict.
+
+---
+
+## Task 8: Security Audit
+
+**Status:** Done
+**Commit:** _this commit_
+**Agent:** main agent
+**Summary:** Security audit of Tasks 1–6 changes. OWASP Top 10 (2021) sweep + six tech-spec invariants (log-injection mitigation, FLAG_SECURE preservation across `enableEdgeToEdge()`, no new permissions, length-bounding for `i`/`w`, closed-whitelist on `i`/`w`, general OWASP). Verdict **APPROVE — 0 CRITICAL / 0 HIGH / 0 MEDIUM / 1 LOW (hygiene) / 2 INFO**. Report at [logs/audit/security-audit.md](logs/audit/security-audit.md). The Decision-5 log-injection drift vector is structurally closed by the shared `write(level, ...)` helper; Decision-7 `FLAG_SECURE` ordering is correct and AndroidX `enableEdgeToEdge` does not touch the flag. `git diff main -- app/src/main/AndroidManifest.xml` is empty — no new permissions added.
+**Deviations:** Local build smoke (`./gradlew :app:assembleDebug :core-runtime:assembleDebug`) failed in the audit environment with a non-code Gradle/Kotlin issue (`IllegalArgumentException: 25.0.3` from `JavaVersion.parse` — JDK 25.0.3 unparseable by the bundled Kotlin compiler's version util); the audit relied on the recorded green builds from Tasks 1, 2, 3, 4, and 6 in this same `decisions.md` plus full source review. No code changes proposed.
+
+**Reviews:**
+
+Audit task — auditor IS the review (`reviewers: []` per task spec).
+
+**Verification:**
+- `git diff main -- app/src/main/AndroidManifest.xml` → empty (no new `<uses-permission>`).
+- `Grep "errorLog.[iew]\(" core-runtime/src/main` → 10 hits across `DefaultModelRegistry.kt` + `AllowlistLoader.kt`; new `i`/`w` calls (lines 318, 326) interpolate only closed-set values (`reason.name`, `formatStatus(status)`) and route through `ErrorLog.write(...)` which sanitizes + length-bounds.
+- `Grep "enableEdgeToEdge\|FLAG_SECURE" app/src/main` → confirms `CrashReportActivity.kt:84` (`setFlags(FLAG_SECURE, ...)`) precedes `:85` (`enableEdgeToEdge()`).
+- `Grep "Log\.[diew]\|System\.out\|println\|System\.err" core-runtime/src/main/.../DefaultModelRegistry.kt` → 0 parallel logger calls.
+- All six specific checks pass with PASS verdict + per-line evidence; OWASP A01–A10 sweep recorded, all PASS or N/A.
+- No high/critical findings; no follow-up tasks created.
