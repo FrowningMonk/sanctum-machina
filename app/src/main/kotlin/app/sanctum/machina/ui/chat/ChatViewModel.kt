@@ -8,6 +8,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.sanctum.machina.R
+import app.sanctum.machina.core.common.MultimodalContentsBuilder
 import app.sanctum.machina.core.common.pcmToWav
 import app.sanctum.machina.core.common.wavToPcm
 import app.sanctum.machina.core.data.ConfigKeys
@@ -27,6 +28,8 @@ import app.sanctum.machina.data.dao.ChatDao
 import app.sanctum.machina.data.dao.MessageDao
 import app.sanctum.machina.data.model.MessageEntity
 import app.sanctum.machina.engine.WarmupCoordinator
+import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.Message as LitertlmMessage
 import java.io.File
 import java.util.UUID
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -494,10 +497,22 @@ constructor(
             // UI history is NOT touched — Light tier is a sampler refresh,
             // not a context wipe.
             val effective = effectiveSystemPrompt(merged)
+            // Phase 3.6 Task 11: replay paired history for Persistent so a
+            // slider-Apply does not erase context the user can still see in
+            // the message list. Quick / Draft have no persistent history —
+            // the recreated Conversation matches the empty in-memory list.
+            val initial = when (val id = identity) {
+                is ChatIdentity.Persistent -> buildInitialMessages(
+                    chatId = id.id,
+                    dropUnpairedUserTail = false,
+                )
+                else -> emptyList()
+            }
             registry.resetConversation(
                 model.name,
                 systemPrompt = effective,
                 reason = ResetReason.LIGHT_OVERRIDE,
+                initialMessages = initial,
             )
         }
     }
@@ -818,6 +833,16 @@ constructor(
                 if (pendingAutoResume != null) {
                     autoResumeTarget = pendingAutoResume
                 }
+                // Phase 3.6 Task 11: replay paired history through
+                // `ConversationConfig.initialMessages` so the recreated
+                // Conversation starts with the same KV-cache the user left
+                // behind. Drop unpaired USER tail in DRAFT_COMMIT /
+                // mid-stream-kill scenarios — auto-resume below dispatches
+                // it as the first USER turn of the new Conversation.
+                val initialMessages = buildInitialMessages(
+                    chatId = id.id,
+                    dropUnpairedUserTail = pendingAutoResume != null,
+                )
                 // Reset and auto-resume run in a single coroutine so the
                 // resume's `helper.runInference` is invoked strictly AFTER
                 // `helper.resetConversation` has returned. Two sibling
@@ -827,7 +852,7 @@ constructor(
                 // siblings fire against the still-dirty Conversation —
                 // exactly the KV leak Bug-1 closes.
                 viewModelScope.launch {
-                    observeFirstReadyThenReset(resetReason)
+                    observeFirstReadyThenReset(resetReason, initialMessages)
                     if (pendingAutoResume != null) {
                         observeFirstReadyThenResume(id)
                     }
@@ -937,7 +962,10 @@ constructor(
      * rows must remain visible across the reset; only the engine-internal
      * Conversation is recreated.
      */
-    private suspend fun observeFirstReadyThenReset(reason: ResetReason) {
+    private suspend fun observeFirstReadyThenReset(
+        reason: ResetReason,
+        initialMessages: List<LitertlmMessage>,
+    ) {
         _uiState.first { it is ChatUiState.Ready }
         val model = currentReadyModel() ?: return
         val effective = effectiveSystemPrompt(model)
@@ -945,6 +973,7 @@ constructor(
             model.name,
             systemPrompt = effective,
             reason = reason,
+            initialMessages = initialMessages,
         )
     }
 
@@ -1525,6 +1554,64 @@ constructor(
             thinkingText = entity.thinkingText,
             attachments = attachments,
         )
+    }
+
+    /**
+     * Phase 3.6 Task 11: load paired persistent history for [chatId] and map
+     * each row into a `litertlm.Message` so [registry.resetConversation] can
+     * prefill it through `ConversationConfig.initialMessages` — restoring the
+     * KV-cache that the recreated `Conversation` would otherwise start empty
+     * (Decision 9, refined AC-1.1).
+     *
+     * If [dropUnpairedUserTail] is `true` and the last row is a USER row, that
+     * row is excluded from the prefill. The Draft→Persistent handover (and
+     * AC-R3 kill-mid-stream recovery) leaves the unpaired USER for
+     * [observeFirstReadyThenResume] to dispatch as the first turn of the new
+     * Conversation; replaying it here too would double-count the USER message
+     * in the new KV-cache.
+     *
+     * Reuses [decodeAttachmentsForEntity] so the prefill sees the same media
+     * payloads the UI history shows. Containment checks
+     * (`resolveInsideAttachmentsRoot`) and `attachment-read` logging are
+     * inherited from that helper. A row whose attachments fail the
+     * containment / decode checks is sent as a text-only Message — the UI
+     * already renders it the same way through `toDomainMessageWithAttachments`.
+     */
+    private suspend fun buildInitialMessages(
+        chatId: Long,
+        dropUnpairedUserTail: Boolean,
+    ): List<LitertlmMessage> {
+        val rows = runCatching { messageDao.getByChatId(chatId) }
+            .onFailure { errorLog.e("history-read", "getByChatId failed for id=$chatId", it) }
+            .getOrNull()
+            .orEmpty()
+        val effective = if (dropUnpairedUserTail && rows.lastOrNull()?.role == ROLE_USER) {
+            rows.dropLast(1)
+        } else {
+            rows
+        }
+        return effective.map { entity ->
+            val attachments = decodeAttachmentsForEntity(entity)
+            val images = attachments.filterIsInstance<Attachment.Image>().map { it.bitmap }
+            val audio = attachments.filterIsInstance<Attachment.Audio>().map { it.pcm }
+            val parts = MultimodalContentsBuilder.build(
+                text = entity.text,
+                images = images,
+                audio = audio,
+            )
+            val contents = Contents.of(parts)
+            // The `litertlm.Message` constructor is `internal` to its module,
+            // so out-of-module callers must go through the public Companion
+            // factories: `Message.user(Contents)` and `Message.model(Contents)`.
+            // Tools and channels are not needed for prefill (chat history rows
+            // never carry tool calls, and `Conversation.sendMessageAsync` is
+            // the only producer of channel-keyed payloads).
+            if (entity.role == ROLE_USER) {
+                LitertlmMessage.user(contents)
+            } else {
+                LitertlmMessage.model(contents)
+            }
+        }
     }
 
     private fun decodeAttachmentsForEntity(entity: MessageEntity): List<Attachment> {

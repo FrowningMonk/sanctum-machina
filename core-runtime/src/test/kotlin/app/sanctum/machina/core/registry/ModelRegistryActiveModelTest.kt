@@ -12,6 +12,7 @@ import app.sanctum.machina.core.runtime.CleanUpListener
 import app.sanctum.machina.core.runtime.LlmModelHelper
 import app.sanctum.machina.core.runtime.ResultListener
 import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.Message as LitertlmMessage
 import com.google.ai.edge.litertlm.ToolProvider
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
@@ -290,6 +291,7 @@ private object NoOpLlmModelHelper : LlmModelHelper {
     systemInstruction: Contents?,
     tools: List<ToolProvider>,
     enableConversationConstrainedDecoding: Boolean,
+    initialMessages: List<LitertlmMessage>,
   ) {}
 
   override fun cleanUp(model: Model, onDone: () -> Unit) {}

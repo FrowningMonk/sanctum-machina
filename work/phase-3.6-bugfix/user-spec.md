@@ -17,10 +17,11 @@ size: S
 
 ## Как должно работать
 
-**Сценарий 1 (KV-cache не утекает между чатами).**
+**Сценарий 1 (KV-cache не утекает между чатами и восстанавливается на возврате).**
 1. Пользователь работает в персистентном чате A, накопил 30 сообщений.
 2. Открывает drawer, переключается на чат B (или создаёт новый).
 3. Чат B стартует с чистым контекстом — модель не «помнит» переписку из A; повторов нет.
+4. Возврат в чат A через drawer — в нём накоплены 30 сообщений. Пользователь спрашивает «как меня зовут?» / «о чём мы говорили выше?» — модель отвечает в контексте именно A, ссылаясь на ранние сообщения этого чата.
 
 **Сценарий 2 (настройки инференса работают вживую).**
 1. Пользователь ловит likelihood trap (повторяющийся ответ).
@@ -42,7 +43,7 @@ size: S
 ## Критерии приёмки
 
 **Bug 1 — KV-cache reset:**
-- [ ] AC-1.1: При переключении на другой persistent-чат через drawer Conversation пересоздаётся (KV-cache очищен).
+- [ ] AC-1.1: При переключении между persistent-чатами KV-cache соответствует текущему чату: контекст другого чата не утекает (изоляция), и при возврате в чат его собственная история восстанавливается prefill'ом через `ConversationConfig.initialMessages`.
 - [ ] AC-1.2: При commit draft → новый persistent-чат Conversation пересоздаётся.
 - [ ] AC-1.3a: При изменении temperature / topK / topP в settings sheet изменения применяются к следующему ответу того же чата (Conversation пересоздаётся с новым SamplerConfig — Light tier).
 - [ ] AC-1.3b: При изменении max_tokens срабатывает Heavy-путь (`HeavyChangeDialog` → подтверждение → `ReinitProgressDialog` → cleanup+initialize), потому что `maxNumTokens` баксается в `EngineConfig` при создании движка, не в `ConversationConfig`. После переинита новый лимит активен.
@@ -81,6 +82,7 @@ size: S
 - Мы решили **не трогать Bug 4** (audit inference settings) — отсутствующие в LiteRT-LM 0.10.0 параметры (`repetition_penalty`, `min_p` и т.п.) не существуют в API; вернёмся, если движок их добавит или мы заменим LiteRT-LM.
 - Мы решили **переклассифицировать `max_tokens` из Light в Heavy** — выявленный в code research баг: поле физически живёт в `EngineConfig`, не в `ConversationConfig`. Перенос в Heavy-путь делает слайдер реально работающим (через `cleanup + initialize`); UX-цена — `HeavyChangeDialog` + 5–30 сек переинита, как у переключения акселератора.
 - Мы решили **обновить `patterns.md` L62** в `.claude/skills/project-knowledge/references/`: текущий текст «Light — applies from next send() without engine touch» неверен для LiteRT-LM 0.10.0; SamplerConfig запекается в `Conversation` при создании. Новая формулировка: Light = `model.configValues = merged` + `registry.resetConversation(reason = LIGHT_OVERRIDE)`; UI history сохраняется, движок не выгружается.
+- Мы решили **восстанавливать KV-cache при возврате в чат через `ConversationConfig.initialMessages`** — LiteRT-LM 0.10.0 принимает `List<Message>` при создании Conversation и прогоняет их prefill'ом. Альтернативы (KV-cache на диск, длинный live engine на чат) дороже и не предусмотрены публичным API. Применяется только для CHAT_SWITCH и LIGHT_OVERRIDE; DRAFT_COMMIT / SYSTEM_PROMPT / USER / HEAVY получают пустой список (фреш-семантика).
 
 ## Тестирование
 

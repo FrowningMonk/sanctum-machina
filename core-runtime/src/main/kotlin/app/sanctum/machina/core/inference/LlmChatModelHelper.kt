@@ -155,6 +155,7 @@ object LlmChatModelHelper : LlmModelHelper {
     systemInstruction: Contents?,
     tools: List<ToolProvider>,
     enableConversationConstrainedDecoding: Boolean,
+    initialMessages: List<Message>,
   ) {
     try {
       val instance = model.instance as LlmModelInstance? ?: return
@@ -187,6 +188,7 @@ object LlmChatModelHelper : LlmModelHelper {
                 )
               },
             systemInstruction = systemInstruction,
+            initialMessages = initialMessages,
             tools = tools,
           )
         )

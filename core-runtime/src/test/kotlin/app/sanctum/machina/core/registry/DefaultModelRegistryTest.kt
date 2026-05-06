@@ -11,7 +11,10 @@ import app.sanctum.machina.core.log.ErrorLog
 import app.sanctum.machina.core.runtime.CleanUpListener
 import app.sanctum.machina.core.runtime.LlmModelHelper
 import app.sanctum.machina.core.runtime.ResultListener
+import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.Message as LitertlmMessage
+import com.google.ai.edge.litertlm.Role
 import com.google.ai.edge.litertlm.ToolProvider
 import java.io.File
 import java.util.UUID
@@ -439,6 +442,99 @@ class DefaultModelRegistryTest {
     )
   }
 
+  // --- Phase 3.6 Task 11: initialMessages prefill + replayedMessages logging ---
+
+  /**
+   * Build a minimal `litertlm.Message` for prefill assertions. The constructor is `internal`
+   * to the litertlm module, so out-of-module callers must go through Companion factories.
+   */
+  private fun userMessage(text: String): LitertlmMessage =
+    LitertlmMessage.user(Contents.of(listOf(Content.Text(text))))
+
+  private fun modelMessage(text: String): LitertlmMessage =
+    LitertlmMessage.model(Contents.of(listOf(Content.Text(text))))
+
+  @Test
+  fun resetConversation_passesInitialMessagesToHelper_whenReady() = runBlocking {
+    val helper = RecordingLlmModelHelper()
+    val registry = buildRegistry(helper, RecordingInitDiagnostics())
+    registry.awaitEntry(modelName)
+    registry.setStatus(modelName, ModelInitStatus.Ready)
+
+    val msgs = listOf(userMessage("hi"), modelMessage("hello"))
+    registry.resetConversation(
+      modelName,
+      systemPrompt = null,
+      reason = ResetReason.CHAT_SWITCH,
+      initialMessages = msgs,
+    )
+
+    assertEquals(1, helper.resetCalls.size)
+    val call = helper.resetCalls.single()
+    assertEquals(
+      "helper must receive the same list reference content the caller passed",
+      msgs,
+      call.initialMessages,
+    )
+    val line = logFile.readLines().single()
+    assertTrue(line.startsWith("INFO [inference-reset] "))
+    assertTrue("info line must contain reason CHAT_SWITCH: $line", line.contains("CHAT_SWITCH"))
+    assertTrue(
+      "info line must contain replayedMessages=2: $line",
+      line.contains("replayedMessages=2"),
+    )
+  }
+
+  @Test
+  fun resetConversation_passesEmptyByDefault_whenCallerOmits() = runBlocking {
+    // Default-parameter pin: `resetConversation(modelName, systemPrompt, reason)` without
+    // an explicit `initialMessages` must reach the helper as `emptyList()`. A regression
+    // that drops the default would force every caller (Quick chat, USER ↻ tap, …) to
+    // pass an empty list explicitly.
+    val helper = RecordingLlmModelHelper()
+    val registry = buildRegistry(helper, RecordingInitDiagnostics())
+    registry.awaitEntry(modelName)
+    registry.setStatus(modelName, ModelInitStatus.Ready)
+
+    registry.resetConversation(modelName, systemPrompt = null, reason = ResetReason.USER)
+
+    assertEquals(1, helper.resetCalls.size)
+    assertTrue(
+      "helper must receive emptyList when caller omits initialMessages",
+      helper.resetCalls.single().initialMessages.isEmpty(),
+    )
+    val line = logFile.readLines().single()
+    assertTrue("info line must contain replayedMessages=0: $line", line.contains("replayedMessages=0"))
+  }
+
+  @Test
+  fun resetConversation_skipsAndDoesNotForwardInitialMessages_whenNonReady() = runBlocking {
+    // Non-Ready engine: helper is NOT invoked even when caller passes a non-empty list.
+    // The warning still fires (skip-arm format pinned by the existing
+    // `resetConversation_skipsAndLogsWarning_whenEngineIdle` test); this test guards
+    // the orthogonal claim that no `initialMessages` leak through to the helper.
+    val helper = RecordingLlmModelHelper()
+    val registry = buildRegistry(helper, RecordingInitDiagnostics())
+    registry.awaitEntry(modelName) // Idle by default
+
+    val msgs = listOf(userMessage("hi"), modelMessage("hello"))
+    registry.resetConversation(
+      modelName,
+      systemPrompt = null,
+      reason = ResetReason.CHAT_SWITCH,
+      initialMessages = msgs,
+    )
+
+    assertEquals(
+      "helper must NOT be invoked when engine is not Ready, regardless of initialMessages",
+      0,
+      helper.resetCalls.size,
+    )
+    val line = logFile.readLines().single()
+    assertTrue(line.startsWith("WARN [inference-reset] "))
+    assertTrue("skip line must contain 'skipped': $line", line.contains("skipped"))
+  }
+
   // --- helpers ---------------------------------------------------------------
 
   /**
@@ -448,7 +544,11 @@ class DefaultModelRegistryTest {
   private class RecordingLlmModelHelper(
     private val onResetCalled: () -> Unit = {},
   ) : LlmModelHelper {
-    data class ResetCall(val modelName: String, val systemInstruction: Contents?)
+    data class ResetCall(
+      val modelName: String,
+      val systemInstruction: Contents?,
+      val initialMessages: List<LitertlmMessage>,
+    )
     val resetCalls: MutableList<ResetCall> = java.util.Collections.synchronizedList(mutableListOf())
 
     override fun initialize(
@@ -470,8 +570,9 @@ class DefaultModelRegistryTest {
       systemInstruction: Contents?,
       tools: List<ToolProvider>,
       enableConversationConstrainedDecoding: Boolean,
+      initialMessages: List<LitertlmMessage>,
     ) {
-      resetCalls.add(ResetCall(model.name, systemInstruction))
+      resetCalls.add(ResetCall(model.name, systemInstruction, initialMessages))
       onResetCalled()
     }
 
@@ -535,6 +636,7 @@ class DefaultModelRegistryTest {
       systemInstruction: Contents?,
       tools: List<ToolProvider>,
       enableConversationConstrainedDecoding: Boolean,
+      initialMessages: List<LitertlmMessage>,
     ) = Unit
 
     override fun cleanUp(model: Model, onDone: () -> Unit) {
@@ -582,6 +684,7 @@ class DefaultModelRegistryTest {
       systemInstruction: Contents?,
       tools: List<ToolProvider>,
       enableConversationConstrainedDecoding: Boolean,
+      initialMessages: List<LitertlmMessage>,
     ) = Unit
 
     override fun cleanUp(model: Model, onDone: () -> Unit) = Unit

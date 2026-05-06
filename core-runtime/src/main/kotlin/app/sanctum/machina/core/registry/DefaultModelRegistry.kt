@@ -304,6 +304,7 @@ constructor(
     modelName: String,
     systemPrompt: String?,
     reason: ResetReason,
+    initialMessages: List<com.google.ai.edge.litertlm.Message>,
   ) {
     withContext(Dispatchers.Default) {
       lifecycleMutex.withLock {
@@ -322,8 +323,15 @@ constructor(
           return@withLock
         }
         val contents: Contents? = systemPrompt?.let { Contents.of(listOf(Content.Text(it))) }
-        llmModelHelper.resetConversation(entry.model, systemInstruction = contents)
-        errorLog.i(LOG_TAG_RESET, "reason=${reason.name}")
+        llmModelHelper.resetConversation(
+          entry.model,
+          systemInstruction = contents,
+          initialMessages = initialMessages,
+        )
+        errorLog.i(
+          LOG_TAG_RESET,
+          "reason=${reason.name} replayedMessages=${initialMessages.size}",
+        )
       }
     }
   }

@@ -474,6 +474,7 @@ private class FakeModelRegistry : ModelRegistry {
     modelName: String,
     systemPrompt: String?,
     reason: ResetReason,
+    initialMessages: List<com.google.ai.edge.litertlm.Message>,
   ) = Unit
   override fun getModel(modelName: String): Model? = null
 }

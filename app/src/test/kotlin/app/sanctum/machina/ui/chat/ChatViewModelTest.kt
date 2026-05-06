@@ -30,7 +30,10 @@ import app.sanctum.machina.data.dao.MessageDao
 import app.sanctum.machina.data.model.ChatEntity
 import app.sanctum.machina.data.model.MessageEntity
 import app.sanctum.machina.engine.WarmupCoordinator
+import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.Message as LitertlmMessage
+import com.google.ai.edge.litertlm.Role
 import com.google.ai.edge.litertlm.ToolProvider
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
@@ -1154,6 +1157,13 @@ class ChatViewModelTest {
         // it to null, so the reset propagates null (no system instruction
         // change).
         assertEquals(null, fakeRegistry.lastResetSystemPrompt)
+        // Phase 3.6 Task 11: Quick identity has no persistent history, so the
+        // initialMessages list reaching the registry must be empty (the
+        // recreated Conversation matches the empty in-memory message list).
+        assertTrue(
+            "Quick chat must not replay any history",
+            fakeRegistry.lastResetInitialMessages.isEmpty(),
+        )
     }
 
     @Test
@@ -1248,6 +1258,180 @@ class ChatViewModelTest {
             "USER tail → DRAFT_COMMIT exactly once",
             listOf(ResetReason.DRAFT_COMMIT),
             fakeRegistry.resetReasons,
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 3.6 Task 11 — `initialMessages` propagation (KV-cache replay)
+    // ------------------------------------------------------------------
+
+    @Test
+    fun bootstrapPersistent_replaysHistoryAsInitialMessages_whenLastIsAssistant() =
+        runTest(dispatcher) {
+            // Paired tail (USER → ASSISTANT × 2) → CHAT_SWITCH path. Every
+            // row must reach `initialMessages`; nothing is dropped because
+            // the tail is ASSISTANT, not unpaired USER.
+            val model = Model(name = "m", modelId = "id-m")
+            fakeChatDao.put(
+                ChatEntity(id = 42L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L),
+            )
+            fakeMessageDao.emit(
+                listOf(
+                    MessageEntity(id = 1L, chatId = 42L, role = "user", text = "hi", createdAt = 1L),
+                    MessageEntity(id = 2L, chatId = 42L, role = "assistant", text = "hello", createdAt = 2L),
+                    MessageEntity(id = 3L, chatId = 42L, role = "user", text = "more", createdAt = 3L),
+                    MessageEntity(id = 4L, chatId = 42L, role = "assistant", text = "ok", createdAt = 4L),
+                ),
+            )
+            fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+
+            val vm = buildViewModel(ChatIdentityArg.Persistent(42L))
+            advanceUntilIdle()
+
+            assertEquals(ResetReason.CHAT_SWITCH, fakeRegistry.lastResetReason)
+            val replayed = fakeRegistry.lastResetInitialMessages
+            assertEquals(
+                "all 4 paired rows must be replayed when tail is ASSISTANT",
+                4,
+                replayed.size,
+            )
+            assertEquals(
+                "role mapping ROLE_USER → USER, ROLE_ASSISTANT → MODEL preserved in order",
+                listOf(Role.USER, Role.MODEL, Role.USER, Role.MODEL),
+                replayed.map { it.role },
+            )
+            // Confirm the text part survives the MultimodalContentsBuilder →
+            // Contents.of round-trip — a regression that dropped Content.Text
+            // would leave the prefill empty even with non-empty entity rows.
+            val firstText = replayed.first().contents.contents
+                .filterIsInstance<Content.Text>()
+                .firstOrNull()
+                ?.text
+            assertEquals("hi", firstText)
+        }
+
+    @Test
+    fun bootstrapPersistent_excludesUnpairedUserFromInitialMessages_whenDraftCommit() =
+        runTest(dispatcher) {
+            // Draft→Persistent handover (or AC-R3 mid-stream kill): tail is
+            // unpaired USER. That row must NOT enter `initialMessages` —
+            // `observeFirstReadyThenResume` will dispatch it as the first
+            // USER turn of the new Conversation. Replaying it here too
+            // would double-count the message in KV.
+            val model = Model(name = "m", modelId = "id-m")
+            fakeChatDao.put(
+                ChatEntity(id = 99L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L),
+            )
+            fakeMessageDao.emit(
+                listOf(
+                    MessageEntity(id = 1L, chatId = 99L, role = "user", text = "u1", createdAt = 1L),
+                    MessageEntity(id = 2L, chatId = 99L, role = "assistant", text = "a1", createdAt = 2L),
+                    MessageEntity(id = 3L, chatId = 99L, role = "user", text = "u2", createdAt = 3L),
+                ),
+            )
+            fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+
+            val vm = buildViewModel(ChatIdentityArg.Persistent(99L))
+            advanceUntilIdle()
+
+            assertEquals(ResetReason.DRAFT_COMMIT, fakeRegistry.lastResetReason)
+            val replayed = fakeRegistry.lastResetInitialMessages
+            assertEquals(
+                "unpaired USER tail must be dropped from initialMessages",
+                2,
+                replayed.size,
+            )
+            assertEquals(
+                listOf(Role.USER, Role.MODEL),
+                replayed.map { it.role },
+            )
+        }
+
+    @Test
+    fun bootstrapPersistent_emptyInitialMessages_whenChatEmpty() = runTest(dispatcher) {
+        // Freshly-created Persistent (chat row exists, no messages yet).
+        // The reset must still fire (CHAT_SWITCH semantics — no USER tail
+        // to convert into DRAFT_COMMIT) and `initialMessages` is empty.
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(ChatEntity(id = 7L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L))
+        fakeMessageDao.emit(emptyList())
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        assertEquals(ResetReason.CHAT_SWITCH, fakeRegistry.lastResetReason)
+        assertTrue(
+            "empty chat must produce empty initialMessages",
+            fakeRegistry.lastResetInitialMessages.isEmpty(),
+        )
+    }
+
+    @Test
+    fun applyLightOverrides_passesPairedHistory_inPersistentChat() = runTest(dispatcher) {
+        // Persistent slider-Apply must replay paired history: erasing the
+        // engine context the user can still see in the message list would
+        // be a worse experience than the pre-fix "silent no-op" Light tier.
+        val model = Model(name = "m", modelId = "id-m", configs = createLlmChatConfigs())
+        model.preProcess()
+        fakeChatDao.put(
+            ChatEntity(id = 42L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L),
+        )
+        fakeMessageDao.emit(
+            listOf(
+                MessageEntity(id = 1L, chatId = 42L, role = "user", text = "hi", createdAt = 1L),
+                MessageEntity(id = 2L, chatId = 42L, role = "assistant", text = "hello", createdAt = 2L),
+            ),
+        )
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+
+        val vm = buildViewModel(ChatIdentityArg.Persistent(42L))
+        advanceUntilIdle()
+
+        // Drop the bootstrap-time CHAT_SWITCH from the assertion target so
+        // we observe only the LIGHT_OVERRIDE invocation.
+        fakeRepo.save(
+            "id-m",
+            PerModelSettings.newBuilder().setTemperature(0.4f).build(),
+        )
+        vm.applyLightOverrides()
+        advanceUntilIdle()
+
+        assertEquals(ResetReason.LIGHT_OVERRIDE, fakeRegistry.resetReasons.last())
+        val replayed = fakeRegistry.lastResetInitialMessages
+        assertEquals(
+            "Persistent LIGHT_OVERRIDE must replay paired history",
+            2,
+            replayed.size,
+        )
+        assertEquals(
+            listOf(Role.USER, Role.MODEL),
+            replayed.map { it.role },
+        )
+    }
+
+    @Test
+    fun applyLightOverrides_passesEmptyHistory_inQuickChat() = runTest(dispatcher) {
+        // Quick has no persistent history — recreating the Conversation
+        // with an empty list matches the empty in-memory message list and
+        // avoids reading a chatId that doesn't exist for Quick.
+        val model = Model(name = "m", modelId = "id-m", configs = createLlmChatConfigs())
+        model.preProcess()
+        fakeRegistry.setModel(model)
+        val vm = buildViewModel(ChatIdentityArg.Quick)
+        advanceUntilIdle()
+
+        fakeRepo.save(
+            "id-m",
+            PerModelSettings.newBuilder().setTemperature(0.4f).build(),
+        )
+        vm.applyLightOverrides()
+        advanceUntilIdle()
+
+        assertEquals(ResetReason.LIGHT_OVERRIDE, fakeRegistry.lastResetReason)
+        assertTrue(
+            "Quick LIGHT_OVERRIDE must not replay any history",
+            fakeRegistry.lastResetInitialMessages.isEmpty(),
         )
     }
 
@@ -1434,6 +1618,13 @@ class ChatViewModelTest {
         assertEquals(listOf(R.string.settings_semilight_applied_snackbar), events)
         assertEquals(cleanupBefore, fakeRegistry.cleanupCalls)
         assertEquals(initBefore, fakeRegistry.initializeCalls)
+        // Phase 3.6 Task 11: SYSTEM_PROMPT is a fresh-start reset — UI history
+        // is cleared above, so prefilling the engine with the prior history
+        // would re-introduce the very state the user just elected to wipe.
+        assertTrue(
+            "SYSTEM_PROMPT must not replay history (semi-light = fresh start)",
+            fakeRegistry.lastResetInitialMessages.isEmpty(),
+        )
     }
 
     @Test
@@ -1465,6 +1656,11 @@ class ChatViewModelTest {
         assertEquals(ResetReason.USER, fakeRegistry.lastResetReason)
         assertEquals(cleanupBefore, fakeRegistry.cleanupCalls)
         assertEquals(initBefore, fakeRegistry.initializeCalls)
+        // Phase 3.6 Task 11: explicit ↻ tap is a wipe — never replay history.
+        assertTrue(
+            "USER reset must not replay history (explicit wipe)",
+            fakeRegistry.lastResetInitialMessages.isEmpty(),
+        )
     }
 
     // ------------------------------------------------------------------
@@ -2046,6 +2242,7 @@ private class FakeModelRegistry(
     var initResult: Result<Unit> = Result.success(Unit)
     var lastResetSystemPrompt: String? = null
     var lastResetReason: ResetReason? = null
+    var lastResetInitialMessages: List<LitertlmMessage> = emptyList()
     val resetReasons: MutableList<ResetReason> = mutableListOf()
     var cleanupCalls = 0
     var initializeCalls = 0
@@ -2109,9 +2306,11 @@ private class FakeModelRegistry(
         modelName: String,
         systemPrompt: String?,
         reason: ResetReason,
+        initialMessages: List<LitertlmMessage>,
     ) {
         lastResetSystemPrompt = systemPrompt
         lastResetReason = reason
+        lastResetInitialMessages = initialMessages
         resetReasons += reason
         sharedCalls += "resetConversation"
     }
@@ -2147,6 +2346,7 @@ private class FakeLlmHelper(
         systemInstruction: Contents?,
         tools: List<ToolProvider>,
         enableConversationConstrainedDecoding: Boolean,
+        initialMessages: List<LitertlmMessage>,
     ) {}
 
     override fun cleanUp(model: Model, onDone: () -> Unit) { onDone() }
