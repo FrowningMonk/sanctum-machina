@@ -199,3 +199,25 @@ Audit task — auditor IS the review (`reviewers: []` per task spec).
 - `Grep "Log\.[diew]\|System\.out\|println\|System\.err" core-runtime/src/main/.../DefaultModelRegistry.kt` → 0 parallel logger calls.
 - All six specific checks pass with PASS verdict + per-line evidence; OWASP A01–A10 sweep recorded, all PASS or N/A.
 - No high/critical findings; no follow-up tasks created.
+
+---
+
+## Task 9: Test Audit
+
+**Status:** Done
+**Commit:** _this commit_
+**Agent:** main agent
+**Summary:** Test audit of Phase 3.6 coverage. All 12 user-spec ACs (AC-1.1…AC-3.3) and all 8 tech-spec § Acceptance Criteria items are covered — unit-tested, statically verified (AC-3.1 grep), or explicitly USER-ONLY for Honor 200 visual smoke (AC-3.2 / AC-3.3) per user-spec § Как проверить. AC-2.2 documented as covered-implicit per tech-spec § User-Spec Deviations. Tech-spec § Testing Strategy ↔ reality cross-check: all 21 listed tests present (2 in-place name extensions of pre-existing tests; 1 sequencing test triggers `applyHeavySetting()` directly — composed coverage with separate classification test); 1 bonus race-ordering guard added in Task 3 Round 2; `engineReady_combinatorics` expanded from 5 → 6 cells per Task 6 review. Hand-rolled fakes only (no mockk / mockito); regression guards from prior tests preserved (no-cleanup/no-init asserts on every Light/Conversation-only path); no test-only paths leaked into production. Verdict **APPROVE — 0 blocker / 0 major / 1 minor / 4 info**. Report at [logs/audit/test-audit.md](logs/audit/test-audit.md).
+**Deviations:** Local `./gradlew :core-runtime:testDebugUnitTest :app:testDebugUnitTest` in this audit environment failed with `IllegalArgumentException: 25.0.3` (same JDK 25 / bundled Kotlin compiler issue noted in Task 8). Audit relied on per-task recorded green builds (Tasks 1, 2, 3, 6). Recommendation forwarded to Task 10: re-run on the maintainer's primary host where the JDK bundle resolves.
+
+**Reviews:**
+
+Audit task — auditor IS the review (`reviewers: []` per task spec).
+
+**Verification:**
+- Audit report `work/phase-3.6-bugfix/logs/audit/test-audit.md` exists, non-empty, valid markdown (Summary + Build status + AC coverage table + Reverse mapping + 7 quality checklist sections + Recommendations + Verdict).
+- `Grep "AC-1\.1|AC-1\.2|AC-1\.3a|AC-1\.3b|AC-1\.4|AC-1\.5|AC-2\.1|AC-2\.2|AC-2\.3|AC-3\.1|AC-3\.2|AC-3\.3" logs/audit/test-audit.md` → 36 hits across all 12 AC IDs (none missing).
+- `Glob **/test/**/*IntegrationTest.kt` → 0; `Glob **/test/**/*E2ETest.kt` → 0; `Glob **/androidTest/**/*.kt` → 3 pre-Phase-3.6 files unchanged. Test pyramid sanity (unit-only for size S) preserved.
+- `Grep @Test ErrorLogTest.kt` → 13; `Grep @Test DefaultModelRegistryTest.kt` → 12; `Grep @Test ChatViewModelTest.kt` → 73. Counts match tech-spec § Testing Strategy plan (9+4 / 5+7 / 65+10) plus the documented +1 bonus race-ordering guard.
+- `Grep "@VisibleForTesting" core-runtime/src/main` → 2 (both pre-Phase-3.6 — `AllowlistLoader.kt:47`, `DefaultModelRegistry.kt:116`); `Grep "BuildConfig\.DEBUG|testMode|isTestMode" core-runtime/src/main` → 0; no `kotlin.allopen` plugin in `*.kts`.
+- `Grep "mockk|mockito"` over the three audited test files → 0 (hand-rolled `FakeModelRegistry`, `FakeLlmHelper`, `RecordingLlmModelHelper` per project pattern).
