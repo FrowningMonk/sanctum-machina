@@ -221,3 +221,32 @@ Audit task — auditor IS the review (`reviewers: []` per task spec).
 - `Grep @Test ErrorLogTest.kt` → 13; `Grep @Test DefaultModelRegistryTest.kt` → 12; `Grep @Test ChatViewModelTest.kt` → 73. Counts match tech-spec § Testing Strategy plan (9+4 / 5+7 / 65+10) plus the documented +1 bonus race-ordering guard.
 - `Grep "@VisibleForTesting" core-runtime/src/main` → 2 (both pre-Phase-3.6 — `AllowlistLoader.kt:47`, `DefaultModelRegistry.kt:116`); `Grep "BuildConfig\.DEBUG|testMode|isTestMode" core-runtime/src/main` → 0; no `kotlin.allopen` plugin in `*.kts`.
 - `Grep "mockk|mockito"` over the three audited test files → 0 (hand-rolled `FakeModelRegistry`, `FakeLlmHelper`, `RecordingLlmModelHelper` per project pattern).
+
+---
+
+## Task 10: Pre-deploy QA
+
+**Status:** Done
+**Commit:** _this commit_
+**Agent:** main agent
+**Summary:** Pre-deploy QA на Phase 3.6 — все agent-проверки green (399 unit-тестов pass, lint без новых warnings в файлах задач 1–6, APK 118 MB собран, 5/5 static checks pass, audit-волна без открытых CRITICAL/HIGH). User smoke на Honor 200 нашёл регрессию **AC-3.2**: пользователь сообщил «зазор между клавиатурой и полем ввода стал ещё больше чем раньше» — Phase 3.6 ухудшил Bug 3, не починил. AC-2.1 подтверждён pass («настройки могу открыть до первого сообщения»). Остальные user-smoke ACs (1.1/1.2/1.3a/1.3b/1.5/2.2/3.3) deferred — не пройдены в этом раунде; решение откладывать их до фикса B1, потому что любая правка edge-to-edge затронет всю Compose-обвязку и потребует переснять AC-3.3 (6 экранов) бандлом. Отчёт — [logs/qa/pre-deploy-qa.md](logs/qa/pre-deploy-qa.md). **Вердикт: BLOCKED** — нужен fix-task на регрессию IME-зазора перед merge.
+**Deviations:** Использован Android Studio bundled JBR (OpenJDK 21.0.10) для Gradle, потому что системный JAVA_HOME (Eclipse Adoptium 25.0.3) ломает бандл Kotlin (`IllegalArgumentException: 25.0.3` от `JavaVersion.parse`) — та же проблема, что в Tasks 8/9. Это среда, не код.
+
+**Reviews:**
+
+QA — terminal verification step, отдельных reviewers нет (per Task 10 § Reviewers).
+
+**Verification:**
+- `./gradlew :app:testDebugUnitTest :core-runtime:testDebugUnitTest` → BUILD SUCCESSFUL, 304 + 95 = 399 тестов, 0 fail (подсчёт по JUnit XML).
+- `./gradlew :app:lintDebug` → BUILD SUCCESSFUL, 0 errors / 81 warnings; единственный hit в файлах задач 1–6 — `ChatViewModel.kt:1492 Bitmap.scale [UseKtx]`, pre-existing, документирован в Tasks 3 и 6 как «carried over».
+- `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL, APK `app/build/outputs/apk/debug/app-debug.apk` 118 MB.
+- Static check 1: `Grep "androidx\.(compose|activity)" core-runtime/src/main` → 0 hits (UI-free invariant сохранён).
+- Static check 2: `LIGHT_FIELD_LABELS` в `ChatViewModel.kt:1636-1640` содержит только TEMPERATURE/TOPK/TOPP — `MAX_TOKENS` отсутствует.
+- Static check 3: `ErrorLog.kt:33-53` — 15 элементов, `"inference-reset"` присутствует (line 52).
+- Static check 4: `patterns.md:64` Light bullet перезаписан, фразы "applies from next send" нет; `LIGHT_OVERRIDE` упомянут; `maxTokens` явно перенесён в Heavy.
+- Static check 5: 4 production caller'а `registry.resetConversation` в `ChatViewModel.kt` (lines 368/497/514/944) — все с явным `reason = ResetReason.<X>`; bootstrap-вариант (line 944) — параметризованный, выбор `DRAFT_COMMIT/CHAT_SWITCH` по `lastByChat` heuristic в lines 812-816.
+- Static check 6: `enableEdgeToEdge()` в `MainActivity.kt:24` (после `super.onCreate`) и в `CrashReportActivity.kt:85` (после `setFlags(FLAG_SECURE)` line 84) — оба до `setContent`.
+- Audit carry-over: Tasks 7/8/9 все APPROVE, 0 CRITICAL / 0 HIGH / 0 MEDIUM. 1 LOW (formatStatus hygiene), 5 NIT/INFO суммарно — non-blocking.
+- User smoke (Honor 200): AC-2.1 — pass (settings до первого сообщения открываются). AC-3.2 — **fail** (зазор увеличился относительно pre-Phase-3.6). Остальные 7 user-smoke ACs — deferred.
+
+**Next step (рекомендация):** создать fix-task в phase-3.6 на регрессию AC-3.2 (двойной IME-inset под `enableEdgeToEdge()` + `Scaffold.contentWindowInsets` + `imePadding()`); после фикса — повторный Verify-user одним сообщением на все deferred AC + AC-3.2 + AC-3.3. Гарантии phase 3.6, которые НЕ требуют пересдачи при фиксе B1: AC-1.4, AC-2.3, AC-3.1, все agent-проверки § 1–§ 2 (unit / lint / static / audit), потому что B1 — узко UI-layout область (Activity onCreate flag + ChatScreen Compose обвязка), не runtime registry / ErrorLog / ResetReason / `LIGHT_FIELD_LABELS`.
