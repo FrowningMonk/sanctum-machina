@@ -1514,10 +1514,14 @@ class ChatViewModelTest {
         advanceUntilIdle()
 
         assertEquals(
+            "Draft bootstrap must emit exactly one QUICK_BOOTSTRAP reset on first Ready",
             listOf(ResetReason.QUICK_BOOTSTRAP),
             fakeRegistry.resetReasons,
         )
-        assertTrue(fakeRegistry.lastResetInitialMessages.isEmpty())
+        assertTrue(
+            "Draft has no committed history yet — initialMessages must be empty",
+            fakeRegistry.lastResetInitialMessages.isEmpty(),
+        )
     }
 
     @Test
@@ -1569,7 +1573,13 @@ class ChatViewModelTest {
         val vm = buildViewModel(ChatIdentityArg.Quick)
         advanceUntilIdle()
 
-        assertEquals(ResetReason.QUICK_BOOTSTRAP, fakeRegistry.lastResetReason)
+        // Multiplicity guard: a regression that fires the reset twice (e.g.
+        // Ready→Initializing→Ready flutter retriggering) would still pass a
+        // `lastResetReason` check but break here.
+        assertEquals(
+            listOf(ResetReason.QUICK_BOOTSTRAP),
+            fakeRegistry.resetReasons,
+        )
         assertEquals(
             "DataStore override must reach the registry as the reset's systemPrompt",
             "override-prompt",
