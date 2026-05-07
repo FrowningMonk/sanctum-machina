@@ -12,11 +12,11 @@
 
 Авиарежим включён; всё что ниже — работает без сети:
 
-<video src="docs/media/demo-airplane-mode.mp4" controls muted autoplay loop width="320"></video>
+![Airplane mode demo](docs/media/demo-airplane-mode.webp)
 
 Multi-turn чат — Python codegen, потом pitch privacy-first AI приложения, переделанный в tagline, твит и испанский перевод:
 
-<video src="docs/media/demo-chat.mp4" controls muted autoplay loop width="320"></video>
+![Chat demo](docs/media/demo-chat.webp)
 
 ## Статус
 

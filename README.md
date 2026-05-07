@@ -12,11 +12,11 @@ A fork of [Google AI Edge Gallery](https://github.com/google-ai-edge/gallery) fo
 
 Airplane mode on; everything below runs without network:
 
-<video src="docs/media/demo-airplane-mode.mp4" controls muted autoplay loop width="320"></video>
+![Airplane mode demo](docs/media/demo-airplane-mode.webp)
 
 Multi-turn chat — Python codegen, then a privacy-first AI pitch reshaped into a tagline, a tweet, and a Spanish translation:
 
-<video src="docs/media/demo-chat.mp4" controls muted autoplay loop width="320"></video>
+![Chat demo](docs/media/demo-chat.webp)
 
 ## Status
 
