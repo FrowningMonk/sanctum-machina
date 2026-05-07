@@ -10,7 +10,7 @@ import org.junit.Test
  * AC-U2 algorithm coverage. Pure JVM — no Robolectric needed.
  *
  * Title rules (Task 4 spec):
- *   1. trim → if empty → fallback "Чат от DD.MM HH:mm"
+ *   1. trim → if empty → fallback "Chat from DD.MM HH:mm"
  *   2. collapse `\s+` to single space
  *   3. length ≤ 20 → return as-is, no ellipsis
  *   4. length > 20 → cut at last space at position ≤ 20 + "…"
@@ -52,25 +52,25 @@ class AutoTitleGeneratorTest {
   fun nullText_fallback() {
     val createdAt = 1_700_000_000_000L // arbitrary epoch ms
     val title = AutoTitleGenerator.generateTitle(null, createdAt)
-    val expected = "Чат от " + SimpleDateFormat("dd.MM HH:mm", Locale.getDefault())
+    val expected = "Chat from " + SimpleDateFormat("dd.MM HH:mm", Locale.getDefault())
       .format(java.util.Date(createdAt))
     assertEquals(expected, title)
     // Format invariant
-    assertTrue(title.matches(Regex("""Чат от \d{2}\.\d{2} \d{2}:\d{2}""")))
+    assertTrue(title.matches(Regex("""Chat from \d{2}\.\d{2} \d{2}:\d{2}""")))
   }
 
   @Test
   fun emptyText_fallback() {
     val createdAt = 1_700_000_000_000L
     val title = AutoTitleGenerator.generateTitle("", createdAt)
-    assertTrue(title.matches(Regex("""Чат от \d{2}\.\d{2} \d{2}:\d{2}""")))
+    assertTrue(title.matches(Regex("""Chat from \d{2}\.\d{2} \d{2}:\d{2}""")))
   }
 
   @Test
   fun whitespaceOnlyText_fallback() {
     val createdAt = 1_700_000_000_000L
     val title = AutoTitleGenerator.generateTitle("   ", createdAt)
-    assertTrue(title.matches(Regex("""Чат от \d{2}\.\d{2} \d{2}:\d{2}""")))
+    assertTrue(title.matches(Regex("""Chat from \d{2}\.\d{2} \d{2}:\d{2}""")))
   }
 
   @Test

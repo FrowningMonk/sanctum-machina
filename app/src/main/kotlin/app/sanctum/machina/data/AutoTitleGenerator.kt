@@ -8,7 +8,7 @@ import java.util.Locale
  * Pure-JVM title derivation for new persistent chats (AC-U2).
  *
  * Algorithm:
- *   1. trim → if blank → fallback `"Чат от DD.MM HH:mm"` from [createdAtMs]
+ *   1. trim → if blank → fallback `"Chat from DD.MM HH:mm"` from [createdAtMs]
  *   2. collapse all `\s+` runs to a single space
  *   3. if cleaned length ≤ [MAX_LEN] → return as-is
  *   4. else cut at the last space at position ≤ [MAX_LEN] and append `…`
@@ -38,6 +38,6 @@ object AutoTitleGenerator {
   private fun fallbackTitle(createdAtMs: Long): String {
     // Locale.getDefault — visible to the user; matches their date conventions.
     val formatter = SimpleDateFormat("dd.MM HH:mm", Locale.getDefault())
-    return "Чат от " + formatter.format(Date(createdAtMs))
+    return "Chat from " + formatter.format(Date(createdAtMs))
   }
 }

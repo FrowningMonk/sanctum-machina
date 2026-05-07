@@ -2,38 +2,38 @@
   <string name="app_name">Sanctum Machina</string>
 
   <!-- ModelManager screen -->
-  <string name="model_manager_title">Модели</string>
-  <string name="model_status_not_downloaded">Не скачано</string>
-  <string name="model_status_downloading">Скачивание</string>
-  <string name="model_status_downloaded">Скачано</string>
-  <string name="model_status_failed">Ошибка</string>
-  <string name="model_size_gb_format">%1$.1f ГБ</string>
-  <string name="model_download_progress_format">%1$d / %2$d МБ</string>
-  <string name="model_error_prefix">Ошибка: %1$s</string>
+  <string name="model_manager_title">Models</string>
+  <string name="model_status_not_downloaded">Not downloaded</string>
+  <string name="model_status_downloading">Downloading</string>
+  <string name="model_status_downloaded">Downloaded</string>
+  <string name="model_status_failed">Failed</string>
+  <string name="model_size_gb_format">%1$.1f GB</string>
+  <string name="model_download_progress_format">%1$d / %2$d MB</string>
+  <string name="model_error_prefix">Error: %1$s</string>
   <!-- Phase 3.5 Slice 1: pre-flight gate secondary text. Source-of-truth in Phase 3.5
        is the pure-fun `formatRamShortage(totalBytes, minGb)`; this resource is reserved
        for future locale support and is not read by the UI yet, hence UnusedResources
        is suppressed. Both must match verbatim once the locale path lands. -->
-  <string name="model_gate_secondary" tools:ignore="UnusedResources">Недостаточно RAM (%1$s ГБ устройство, нужно %2$d ГБ)</string>
+  <string name="model_gate_secondary" tools:ignore="UnusedResources">Not enough RAM (%1$s GB device, needs %2$d GB)</string>
 
   <!-- Buttons (generic) -->
-  <string name="btn_download">Скачать</string>
-  <string name="btn_cancel">Отмена</string>
-  <string name="btn_load">Загрузить</string>
-  <string name="btn_retry">Повторить</string>
-  <string name="btn_send">Отправить</string>
-  <string name="btn_stop">Стоп</string>
-  <string name="btn_reset">Сбросить</string>
-  <string name="btn_back">Назад</string>
-  <string name="btn_apply">Применить</string>
-  <string name="btn_default">По умолчанию</string>
-  <string name="btn_close">Закрыть</string>
+  <string name="btn_download">Download</string>
+  <string name="btn_cancel">Cancel</string>
+  <string name="btn_load">Load</string>
+  <string name="btn_retry">Retry</string>
+  <string name="btn_send">Send</string>
+  <string name="btn_stop">Stop</string>
+  <string name="btn_reset">Reset</string>
+  <string name="btn_back">Back</string>
+  <string name="btn_apply">Apply</string>
+  <string name="btn_default">Default</string>
+  <string name="btn_close">Close</string>
 
   <!-- Chat screen -->
-  <string name="chat_loading_model">Загрузка модели…</string>
-  <string name="chat_load_failed_title">Не удалось загрузить модель. Скачайте заново.</string>
-  <string name="chat_input_placeholder">Сообщение</string>
-  <string name="chat_message_interrupted_suffix"> (прервано)</string>
+  <string name="chat_loading_model">Loading model…</string>
+  <string name="chat_load_failed_title">Failed to load model. Please redownload.</string>
+  <string name="chat_input_placeholder">Message</string>
+  <string name="chat_message_interrupted_suffix"> (interrupted)</string>
 
   <!-- Chat TTFT footer.
        `ttft_footer_format` is the fallback when the runtime does not
@@ -43,146 +43,146 @@
   <string name="ttft_with_tps_footer_format">TTFT %1$dms · %2$.1f tok/s · %3$.1fs total</string>
 
   <!-- TopAppBar actions (used across chat and model-manager surfaces) -->
-  <string name="chat_action_settings">Настройки модели</string>
-  <string name="chat_action_reset">Сбросить чат</string>
-  <string name="action_about">О приложении</string>
+  <string name="chat_action_settings">Model settings</string>
+  <string name="chat_action_reset">Reset chat</string>
+  <string name="action_about">About</string>
 
   <!-- Inference settings (InferenceSettingsBottomSheet, 7 fields) -->
-  <string name="settings_title">Настройки модели</string>
-  <string name="settings_system_prompt_label">Системный промпт</string>
-  <string name="settings_system_prompt_placeholder">Например: «Отвечай коротко по делу»</string>
-  <string name="settings_temperature_label">Температура</string>
+  <string name="settings_title">Model settings</string>
+  <string name="settings_system_prompt_label">System prompt</string>
+  <string name="settings_system_prompt_placeholder">For example: “Answer briefly and to the point”</string>
+  <string name="settings_temperature_label">Temperature</string>
   <string name="settings_top_k_label">Top-K</string>
   <string name="settings_top_p_label">Top-P</string>
-  <string name="settings_max_tokens_label">Максимум токенов</string>
-  <string name="settings_enable_thinking_label">Ризонинг</string>
-  <string name="settings_accelerator_label">Ускоритель</string>
+  <string name="settings_max_tokens_label">Max tokens</string>
+  <string name="settings_enable_thinking_label">Reasoning</string>
+  <string name="settings_accelerator_label">Accelerator</string>
   <string name="settings_accelerator_gpu">GPU</string>
   <string name="settings_accelerator_cpu">CPU</string>
   <string name="settings_value_float_format">%1$.2f</string>
   <string name="settings_value_int_format">%1$d</string>
   <!-- Shown after a semi-light apply (systemPromptDefault or enableThinking) — both wipe the engine context. -->
-  <string name="settings_semilight_applied_snackbar">Настройки применены, контекст чата сброшен</string>
+  <string name="settings_semilight_applied_snackbar">Settings applied, chat context reset</string>
 
   <!-- Heavy-change confirmation dialog (D12) -->
-  <string name="heavy_change_dialog_title">Изменить параметр модели</string>
-  <string name="heavy_change_dialog_body">Применение займёт примерно 5–30 секунд. Контекст чата будет сброшен.</string>
+  <string name="heavy_change_dialog_title">Change model parameter</string>
+  <string name="heavy_change_dialog_body">Applying will take roughly 5–30 seconds. The chat context will be reset.</string>
 
   <!-- Reinit progress dialog (D12) -->
-  <string name="reinit_progress_message">Переинициализация модели…</string>
+  <string name="reinit_progress_message">Reinitializing model…</string>
 
   <!-- Runtime permissions (D11) -->
-  <string name="permission_camera_denied">Доступ к камере не предоставлен.</string>
-  <string name="permission_audio_denied">Доступ к микрофону не предоставлен.</string>
-  <string name="permission_open_settings">Открыть настройки</string>
+  <string name="permission_camera_denied">Camera access not granted.</string>
+  <string name="permission_audio_denied">Microphone access not granted.</string>
+  <string name="permission_open_settings">Open settings</string>
 
   <!-- Attachments (Photo Picker, ThumbnailStrip) -->
-  <string name="attachment_photo_picker">Добавить фото</string>
-  <string name="attachment_camera">Сделать фото</string>
-  <string name="attachment_audio">Записать аудио</string>
-  <string name="attachment_remove">Убрать вложение</string>
-  <string name="attachment_image_label">Фото</string>
-  <string name="attachment_audio_label">Аудио</string>
-  <string name="attachment_max_images_reached">Максимум 10 фото в одном сообщении.</string>
-  <string name="attachment_audio_disabled">Максимум один аудио-клип на сообщение</string>
-  <string name="attachment_image_decode_failed">Не удалось обработать фото.</string>
-  <string name="attachment_save_failed">Не удалось сохранить вложение.</string>
-  <string name="attachment_still_saving">Вложение ещё сохраняется…</string>
-  <string name="attachment_only_first_persisted">Сохранено только первое фото — остальные прикреплены к ответу модели, но не попадут в историю.</string>
+  <string name="attachment_photo_picker">Add photo</string>
+  <string name="attachment_camera">Take photo</string>
+  <string name="attachment_audio">Record audio</string>
+  <string name="attachment_remove">Remove attachment</string>
+  <string name="attachment_image_label">Photo</string>
+  <string name="attachment_audio_label">Audio</string>
+  <string name="attachment_max_images_reached">Up to 10 photos per message.</string>
+  <string name="attachment_audio_disabled">Up to one audio clip per message</string>
+  <string name="attachment_image_decode_failed">Could not process the photo.</string>
+  <string name="attachment_save_failed">Could not save the attachment.</string>
+  <string name="attachment_still_saving">Attachment is still saving…</string>
+  <string name="attachment_only_first_persisted">Only the first photo was saved — the rest are attached to the model reply but will not be kept in history.</string>
 
   <!-- Camera bottom sheet -->
-  <string name="camera_capture">Снять</string>
-  <string name="camera_init_failed">Не удалось запустить камеру.</string>
+  <string name="camera_capture">Capture</string>
+  <string name="camera_init_failed">Could not start the camera.</string>
 
   <!-- Audio recorder bottom sheet -->
-  <string name="audio_record_start">Записать</string>
-  <string name="audio_record_stop">Остановить</string>
-  <string name="audio_record_init_failed">Не удалось запустить запись.</string>
-  <string name="audio_record_timer_format">%1$d с</string>
+  <string name="audio_record_start">Record</string>
+  <string name="audio_record_stop">Stop</string>
+  <string name="audio_record_init_failed">Could not start recording.</string>
+  <string name="audio_record_timer_format">%1$d s</string>
 
   <!-- Thinking (collapsible block) -->
-  <string name="thinking_show">Показать ризонинг</string>
-  <string name="thinking_hide">Скрыть ризонинг</string>
+  <string name="thinking_show">Show reasoning</string>
+  <string name="thinking_hide">Hide reasoning</string>
 
   <!-- About screen -->
-  <string name="about_title">О приложении</string>
-  <string name="about_version_format">Версия %1$s</string>
-  <string name="about_version_unknown">неизвестна</string>
-  <string name="about_attribution">Построено на Google AI Edge Gallery · Gemma · LiteRT-LM</string>
-  <string name="about_load_failed">Не удалось загрузить содержимое.</string>
+  <string name="about_title">About</string>
+  <string name="about_version_format">Version %1$s</string>
+  <string name="about_version_unknown">unknown</string>
+  <string name="about_attribution">Built on Google AI Edge Gallery · Gemma · LiteRT-LM</string>
+  <string name="about_load_failed">Could not load content.</string>
 
   <!-- Crash report / diagnostics (Phase 2.5) -->
-  <string name="crash_report_title">Приложение аварийно закрылось</string>
-  <string name="crash_report_body">Можно сохранить технический лог, чтобы помочь разработчику разобраться.</string>
-  <string name="log_export_save_button">Сохранить лог</string>
-  <string name="log_export_success_toast">Лог сохранён</string>
-  <string name="log_export_error_toast">Не удалось сохранить лог</string>
-  <string name="crash_banner_body">Прошлый запуск завершился аварийно.</string>
-  <string name="crash_banner_dismiss_description">Скрыть баннер</string>
-  <string name="dev_crash_dialog_title">Спровоцировать тест-краш?</string>
-  <string name="dev_crash_dialog_confirm">Да</string>
+  <string name="crash_report_title">The app crashed</string>
+  <string name="crash_report_body">You can save a technical log to help the developer investigate.</string>
+  <string name="log_export_save_button">Save log</string>
+  <string name="log_export_success_toast">Log saved</string>
+  <string name="log_export_error_toast">Could not save log</string>
+  <string name="crash_banner_body">The previous run crashed.</string>
+  <string name="crash_banner_dismiss_description">Dismiss banner</string>
+  <string name="dev_crash_dialog_title">Trigger a test crash?</string>
+  <string name="dev_crash_dialog_confirm">Yes</string>
 
   <!-- Diagnostics screen (Phase 3.5 Task 8) -->
-  <string name="diagnostics_title">Диагностика</string>
+  <string name="diagnostics_title">Diagnostics</string>
   <string name="diagnostics_section_ram">RAM</string>
-  <string name="diagnostics_section_logs">Логи</string>
+  <string name="diagnostics_section_logs">Logs</string>
 
   <!-- Home screen (Phase 3 Task 7) -->
   <string name="home_title">Sanctum · Home</string>
   <string name="home_product_name">Sanctum Machina</string>
-  <string name="home_kicker">Локальный ИИ — тихий сосредоточенный труд</string>
-  <string name="home_action_new_quick_chat">Новый быстрый чат</string>
-  <string name="home_action_open_history">Открыть историю</string>
-  <string name="home_no_models_body">Для начала работы скачайте модель.</string>
-  <string name="home_action_open_model_manager">Открыть Model Manager</string>
-  <string name="home_status_model_cold">Модель не прогрета</string>
-  <string name="home_menu_open">Открыть меню</string>
-  <string name="home_default_model_label">Модель по умолчанию: %1$s</string>
+  <string name="home_kicker">Local AI — quiet, focused work</string>
+  <string name="home_action_new_quick_chat">New quick chat</string>
+  <string name="home_action_open_history">Open history</string>
+  <string name="home_no_models_body">Download a model to get started.</string>
+  <string name="home_action_open_model_manager">Open Model Manager</string>
+  <string name="home_status_model_cold">Model not warmed up</string>
+  <string name="home_menu_open">Open menu</string>
+  <string name="home_default_model_label">Default model: %1$s</string>
 
   <!-- Chat TopAppBar state machine (Phase 3 Task 10) -->
-  <string name="chat_topappbar_reloading">Модель перезагружается…</string>
-  <string name="chat_topappbar_loading_model">Загружаю %1$s…</string>
-  <string name="chat_topappbar_load_action">Загрузить</string>
-  <string name="chat_topappbar_quick_subtitle">Быстрый чат</string>
-  <string name="chat_topappbar_cross_model_title">Переключить модель?</string>
-  <string name="chat_topappbar_cross_model_body">Переключение займёт 20–30 секунд (дольше если модель ещё прогревается). Продолжить?</string>
-  <string name="chat_topappbar_cross_model_confirm">Переключить</string>
-  <string name="chat_topappbar_incognito_desc">Инкогнито</string>
-  <string name="chat_topappbar_pick_model_desc">Выбрать модель</string>
+  <string name="chat_topappbar_reloading">Model is reloading…</string>
+  <string name="chat_topappbar_loading_model">Loading %1$s…</string>
+  <string name="chat_topappbar_load_action">Load</string>
+  <string name="chat_topappbar_quick_subtitle">Quick chat</string>
+  <string name="chat_topappbar_cross_model_title">Switch model?</string>
+  <string name="chat_topappbar_cross_model_body">Switching will take 20–30 seconds (longer if the model is still warming up). Continue?</string>
+  <string name="chat_topappbar_cross_model_confirm">Switch</string>
+  <string name="chat_topappbar_incognito_desc">Incognito</string>
+  <string name="chat_topappbar_pick_model_desc">Pick model</string>
 
   <!-- Corruption banner (Phase 3 Task 10 / AC-D5) -->
-  <string name="corruption_banner_body">Прошлая история оказалась повреждена. Старая база сохранена.</string>
-  <string name="corruption_banner_save_log">Сохранить лог</string>
-  <string name="corruption_banner_dismiss">Закрыть</string>
+  <string name="corruption_banner_body">The previous history was corrupted. The old database was preserved.</string>
+  <string name="corruption_banner_save_log">Save log</string>
+  <string name="corruption_banner_dismiss">Dismiss</string>
 
   <!-- Model Manager — default model selection (Phase 3 Task 11) -->
-  <string name="model_manager_default_badge_desc">Модель по умолчанию</string>
-  <string name="model_manager_overflow_desc">Дополнительные действия</string>
-  <string name="model_manager_set_default">Сделать по умолчанию</string>
+  <string name="model_manager_default_badge_desc">Default model</string>
+  <string name="model_manager_overflow_desc">More actions</string>
+  <string name="model_manager_set_default">Set as default</string>
 
   <!-- Drawer (Phase 3 Task 9) -->
-  <string name="drawer_title">История чатов</string>
-  <string name="drawer_new_chat">Новый чат</string>
-  <string name="drawer_empty">Нет сохранённых чатов.</string>
-  <string name="drawer_untitled_chat">Без названия</string>
-  <string name="drawer_section_today">Сегодня</string>
-  <string name="drawer_section_yesterday">Вчера</string>
-  <string name="drawer_section_this_week">На этой неделе</string>
-  <string name="drawer_section_earlier">Раньше</string>
-  <string name="drawer_delete_action">Удалить</string>
-  <string name="drawer_delete_title">Удалить чат?</string>
-  <string name="drawer_delete_body_with_count">Чат «%1$s» содержит %2$d сообщ. Это действие нельзя отменить.</string>
-  <string name="drawer_delete_body_without_count">Удалить чат «%1$s»? Это действие нельзя отменить.</string>
-  <string name="drawer_delete_confirm">Удалить</string>
-  <string name="drawer_rename_title">Переименовать чат</string>
-  <string name="drawer_rename_placeholder">Оставьте пустым для авто-названия</string>
-  <string name="drawer_rename_save">Сохранить</string>
-  <string name="drawer_model_unavailable_title">Модель недоступна</string>
-  <string name="drawer_model_unavailable_body">Файл модели «%1$s» отсутствует на устройстве. Скачайте её заново, чтобы открыть чат.</string>
-  <string name="drawer_model_unavailable_download">Скачать</string>
+  <string name="drawer_title">Chat history</string>
+  <string name="drawer_new_chat">New chat</string>
+  <string name="drawer_empty">No saved chats.</string>
+  <string name="drawer_untitled_chat">Untitled</string>
+  <string name="drawer_section_today">Today</string>
+  <string name="drawer_section_yesterday">Yesterday</string>
+  <string name="drawer_section_this_week">This week</string>
+  <string name="drawer_section_earlier">Earlier</string>
+  <string name="drawer_delete_action">Delete</string>
+  <string name="drawer_delete_title">Delete chat?</string>
+  <string name="drawer_delete_body_with_count">Chat “%1$s” contains %2$d msg. This cannot be undone.</string>
+  <string name="drawer_delete_body_without_count">Delete chat “%1$s”? This cannot be undone.</string>
+  <string name="drawer_delete_confirm">Delete</string>
+  <string name="drawer_rename_title">Rename chat</string>
+  <string name="drawer_rename_placeholder">Leave blank for auto-title</string>
+  <string name="drawer_rename_save">Save</string>
+  <string name="drawer_model_unavailable_title">Model unavailable</string>
+  <string name="drawer_model_unavailable_body">The model file “%1$s” is missing on this device. Redownload it to open the chat.</string>
+  <string name="drawer_model_unavailable_download">Download</string>
 
   <!-- Drawer footer (Phase 3 Task 18) -->
-  <string name="drawer_nav_models">Модели</string>
-  <string name="drawer_nav_diagnostics">Диагностика</string>
-  <string name="drawer_nav_about">О приложении</string>
+  <string name="drawer_nav_models">Models</string>
+  <string name="drawer_nav_diagnostics">Diagnostics</string>
+  <string name="drawer_nav_about">About</string>
 </resources>

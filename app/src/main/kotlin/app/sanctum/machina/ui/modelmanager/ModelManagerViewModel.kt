@@ -128,7 +128,7 @@ constructor(
     fun setDefaultModel(modelId: String, modelName: String) {
         viewModelScope.launch {
             appSettings.setDefaultModelId(modelId)
-            _navEvents.emit(NavEvent.ShowSnackbar("Модель по умолчанию: $modelName"))
+            _navEvents.emit(NavEvent.ShowSnackbar("Default model: $modelName"))
         }
     }
 

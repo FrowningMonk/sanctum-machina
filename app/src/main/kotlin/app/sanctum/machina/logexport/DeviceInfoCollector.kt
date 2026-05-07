@@ -37,7 +37,7 @@ import javax.inject.Inject
  * device: <manufacturer> / <model> / Android <release> (API <level>)
  * memory: total=<G.G> GB, available=<G.G> GB, threshold=<G.G> GB, lowMemory=<true|false>
  * process: javaHeap=<M> MB, nativeHeap=<M> MB, totalPss=<M> MB    # `n/a` per-field on source error
- * last init: <Ok|Failed|InProgress|пока не было>                # see [formatLastInit]
+ * last init: <Ok|Failed|InProgress|none yet>                # see [formatLastInit]
  * active model: <id or "none">
  * downloaded models:
  *   - <id> (<size>)         # or "  (none)" when the list is empty
@@ -104,16 +104,15 @@ internal const val NA_SENTINEL: Long = Long.MIN_VALUE
 
 /**
  * Pure renderer for the `last init:` line. Four branches per AC-D6 + Decision 12:
- *  * `null` → `пока не было`
- *  * `Ok` → `<X.X> ГБ RAM · HH:mm · <modelName> · ok`
- *  * `Failed` → `<X.X> ГБ RAM · HH:mm · <modelName> · ошибка`
- *  * `InProgress` → `Идёт инициализация: <X.X> ГБ RAM · HH:mm · <modelName>`
+ *  * `null` → `none yet`
+ *  * `Ok` → `<X.X> GB RAM · HH:mm · <modelName> · ok`
+ *  * `Failed` → `<X.X> GB RAM · HH:mm · <modelName> · failed`
+ *  * `InProgress` → `Initializing: <X.X> GB RAM · HH:mm · <modelName>`
  *
- * Russian `ГБ` (with floor-precision via [formatGbFloor]) is intentional and
- * matches the same units used on the diagnostics screen (Decision 12). The
- * `memory:` row uses English `GB` via `formatGb`; `process:` row uses English
- * `MB` via `formatMbOrNa` (java-heap is typically tens of MB — GB-floor would
- * collapse it to `0.0`). Three separate formatters; do not confuse.
+ * `GB` (with floor-precision via [formatGbFloor]) matches the diagnostics screen
+ * (Decision 12). The `memory:` row also uses `GB` via `formatGb`; `process:` row
+ * uses `MB` via `formatMbOrNa` (java-heap is typically tens of MB — GB-floor
+ * would collapse it to `0.0`). Three separate formatters; do not confuse.
  *
  * `zone` defaults to system default — production wants whatever the device user
  * sees when they read the export. Tests pin an explicit zone for determinism.
@@ -127,16 +126,16 @@ internal fun formatLastInit(
     snapshot: InitSnapshot?,
     zone: ZoneId = ZoneId.systemDefault(),
 ): String {
-    if (snapshot == null) return "пока не было"
+    if (snapshot == null) return "none yet"
     val ramGb = formatGbFloor(snapshot.freeRamBytes)
     val hhmm = OffsetDateTime
         .ofInstant(Instant.ofEpochMilli(snapshot.atEpochMs), zone)
         .format(HH_MM)
     val name = flattenForLogLine(snapshot.modelName)
     return when (snapshot.outcome) {
-        Outcome.Ok -> "$ramGb ГБ RAM · $hhmm · $name · ok"
-        Outcome.Failed -> "$ramGb ГБ RAM · $hhmm · $name · ошибка"
-        Outcome.InProgress -> "Идёт инициализация: $ramGb ГБ RAM · $hhmm · $name"
+        Outcome.Ok -> "$ramGb GB RAM · $hhmm · $name · ok"
+        Outcome.Failed -> "$ramGb GB RAM · $hhmm · $name · failed"
+        Outcome.InProgress -> "Initializing: $ramGb GB RAM · $hhmm · $name"
     }
 }
 
@@ -159,7 +158,7 @@ internal fun flattenForLogLine(raw: String): String =
  *
  * [lastInitSnapshot] returns `null` in the `:crash` process where
  * [app.sanctum.machina.diagnostics.DiagnosticsState] is unavailable; the
- * `last init:` row degrades to `пока не было` (AC-H4) while the five other
+ * `last init:` row degrades to `none yet` (AC-H4) while the five other
  * memory/process getters keep working through system APIs.
  */
 interface DeviceInfoProvider {
@@ -203,7 +202,7 @@ interface DeviceInfoProvider {
  *  * **Non-Hilt secondary `(Context)`** — `:crash` process (see
  *    `architecture.md` § «Non-Hilt construction in :crash»). `DiagnosticsState`
  *    is genuinely unavailable (singleton lives only in main process), so the
- *    snapshot thunk forwards `{ null }` — `last init:` row reads `пока не было`
+ *    snapshot thunk forwards `{ null }` — `last init:` row reads `none yet`
  *    (AC-H4). Registry thunk likewise forwards `{ emptyList() }` — the crashed
  *    app has no engine, so `active model:` reads `none` and `downloaded models:`
  *    reads `(none)`. The five memory/process getters still work because they

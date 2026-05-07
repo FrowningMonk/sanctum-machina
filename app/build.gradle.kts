@@ -35,6 +35,10 @@ android {
         buildConfig = true
     }
 
+    androidResources {
+        localeFilters += listOf("en", "ru")
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11

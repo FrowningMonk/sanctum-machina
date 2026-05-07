@@ -63,7 +63,7 @@ constructor(
     /**
      * Human-readable name of the default model (Task 18 B3 — default discoverability).
      * Resolves `default_model_id` against `registry.models` to produce a `Model.name`
-     * the HomeScreen can render under the product title as «Модель по умолчанию: {name}».
+     * the HomeScreen can render under the product title as «Default model: {name}».
      * Emits `null` when the setting is blank or the referenced model is missing from
      * the current registry snapshot — the label is simply hidden in that case.
      */

@@ -52,7 +52,7 @@ class DeviceInfoCollectorTest {
             append("device: Honor / HONOR 200 / Android 14 (API 34)\n")
             append("memory: total=11.7 GB, available=6.2 GB, threshold=0.4 GB, lowMemory=false\n")
             append("process: javaHeap=76 MB, nativeHeap=209 MB, totalPss=362 MB\n")
-            append("last init: пока не было\n")
+            append("last init: none yet\n")
             append("active model: litert-community/gemma-4-E2B-it-litert-lm\n")
             append("downloaded models:\n")
             append("  - litert-community/gemma-4-E2B-it-litert-lm (3.1 GB)\n")
@@ -167,7 +167,7 @@ class DeviceInfoCollectorTest {
         val rendered = formatLastInit(snapshot(Outcome.Ok), ZoneOffset.UTC)
 
         assertEquals(
-            "3.2 ГБ RAM · ${HH_MM_AT_FIXTURE_UTC} · Gemma-4-E4B-it · ok",
+            "3.2 GB RAM · ${HH_MM_AT_FIXTURE_UTC} · Gemma-4-E4B-it · ok",
             rendered,
         )
     }
@@ -177,7 +177,7 @@ class DeviceInfoCollectorTest {
         val rendered = formatLastInit(snapshot(Outcome.Failed), ZoneOffset.UTC)
 
         assertEquals(
-            "3.2 ГБ RAM · ${HH_MM_AT_FIXTURE_UTC} · Gemma-4-E4B-it · ошибка",
+            "3.2 GB RAM · ${HH_MM_AT_FIXTURE_UTC} · Gemma-4-E4B-it · failed",
             rendered,
         )
     }
@@ -189,7 +189,7 @@ class DeviceInfoCollectorTest {
 
         val line = lastInitLine(DeviceInfoCollector(provider).buildHeader())
 
-        assertEquals("last init: пока не было", line)
+        assertEquals("last init: none yet", line)
     }
 
     @Test
@@ -197,15 +197,15 @@ class DeviceInfoCollectorTest {
         val rendered = formatLastInit(snapshot(Outcome.InProgress), ZoneOffset.UTC)
 
         assertEquals(
-            "Идёт инициализация: 3.2 ГБ RAM · ${HH_MM_AT_FIXTURE_UTC} · Gemma-4-E4B-it",
+            "Initializing: 3.2 GB RAM · ${HH_MM_AT_FIXTURE_UTC} · Gemma-4-E4B-it",
             rendered,
         )
         // Negative-substring assertions also locked here so a future refactor can't slip
-        // a stray "ok"/"ошибка" into the InProgress wording.
+        // a stray "ok"/"failed" into the InProgress wording.
         assertFalse("InProgress branch must NOT contain ' · ok', got:\n$rendered",
             rendered.contains(" · ok"))
-        assertFalse("InProgress branch must NOT contain 'ошибка', got:\n$rendered",
-            rendered.contains("ошибка"))
+        assertFalse("InProgress branch must NOT contain 'failed', got:\n$rendered",
+            rendered.contains("failed"))
     }
 
     @Test
@@ -232,7 +232,7 @@ class DeviceInfoCollectorTest {
     fun crashProcessDegradation_lastInitNullButMemoryAndProcessRender() {
         // AC-H4: in :crash process the secondary AndroidDeviceInfoProvider ctor passes
         // {null} for lastInitSnapshotProvider, but the five process/memory getters still
-        // hit live system APIs. Header must show "пока не было" without losing the new
+        // hit live system APIs. Header must show "none yet" without losing the new
         // memory/process rows.
         val provider = StubDeviceInfoProvider(
             totalMemoryBytes = 12_564_408_729L,
@@ -247,7 +247,7 @@ class DeviceInfoCollectorTest {
 
         val header = DeviceInfoCollector(provider).buildHeader()
 
-        assertEquals("last init: пока не было", lastInitLine(header))
+        assertEquals("last init: none yet", lastInitLine(header))
         assertEquals(
             "memory: total=11.7 GB, available=6.2 GB, threshold=0.4 GB, lowMemory=false",
             memoryLine(header)
@@ -275,7 +275,7 @@ class DeviceInfoCollectorTest {
 
     private fun snapshot(outcome: Outcome): InitSnapshot = InitSnapshot(
         modelName = "Gemma-4-E4B-it",
-        freeRamBytes = 3_500_000_000L, // floors to 3.2 ГБ
+        freeRamBytes = 3_500_000_000L, // floors to 3.2 GB
         atEpochMs = 1_745_000_000_000L, // April 2025; HH:mm shape is what matters
         outcome = outcome,
     )

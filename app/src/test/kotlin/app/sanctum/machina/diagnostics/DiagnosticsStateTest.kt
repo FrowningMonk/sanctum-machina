@@ -20,7 +20,7 @@ class DiagnosticsStateTest {
     fun initialStateIsNull() {
         val state = DiagnosticsState()
         assertNull(
-            "fresh DiagnosticsState must report null — readers depend on null = «пока не было»",
+            "fresh DiagnosticsState must report null — readers depend on null = «none yet»",
             state.lastInitSnapshot(),
         )
     }

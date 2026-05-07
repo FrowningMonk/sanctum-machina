@@ -103,7 +103,7 @@ class DiagnosticsViewModelTest {
         val viewModel = newViewModel()
 
         val text = viewModel.state.value.lastInitText
-        assertTrue("expected '3.2 ГБ' in: $text", text.contains("3.2 ГБ"))
+        assertTrue("expected '3.2 GB' in: $text", text.contains("3.2 GB"))
         assertTrue("expected 'E4B' in: $text", text.contains("E4B"))
         assertTrue("expected 'ok' in: $text", text.contains("ok"))
         assertTrue("expected HH:mm in: $text", text.contains(expectedHhmm()))
@@ -123,7 +123,7 @@ class DiagnosticsViewModelTest {
         val viewModel = newViewModel()
 
         val text = viewModel.state.value.lastInitText
-        assertTrue("expected 'ошибка' in: $text", text.contains("ошибка"))
+        assertTrue("expected 'failed' in: $text", text.contains("failed"))
     }
 
     @Test
@@ -132,7 +132,7 @@ class DiagnosticsViewModelTest {
 
         val viewModel = newViewModel()
 
-        assertEquals("пока не было", viewModel.state.value.lastInitText)
+        assertEquals("none yet", viewModel.state.value.lastInitText)
     }
 
     @Test
@@ -149,12 +149,12 @@ class DiagnosticsViewModelTest {
         val viewModel = newViewModel()
 
         val text = viewModel.state.value.lastInitText
-        assertTrue("expected 'инициализация' in: $text", text.contains("инициализация"))
-        assertTrue("expected '3.2 ГБ' in: $text", text.contains("3.2 ГБ"))
+        assertTrue("expected 'Initializing' in: $text", text.contains("Initializing"))
+        assertTrue("expected '3.2 GB' in: $text", text.contains("3.2 GB"))
         assertTrue("expected 'Gemma-4-E4B-it' in: $text", text.contains("Gemma-4-E4B-it"))
         assertTrue("expected HH:mm in: $text", text.contains(expectedHhmm()))
         assertFalse("must not contain 'ok' in: $text", text.contains("ok"))
-        assertFalse("must not contain 'ошибка' in: $text", text.contains("ошибка"))
+        assertFalse("must not contain 'failed' in: $text", text.contains("failed"))
     }
 
     // ---------- free-RAM polling ----------

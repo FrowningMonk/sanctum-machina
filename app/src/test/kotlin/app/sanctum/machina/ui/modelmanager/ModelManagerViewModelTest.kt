@@ -87,7 +87,7 @@ class ModelManagerViewModelTest {
 
         assertEquals(listOf("model-id"), settings.setDefaultModelIdCalls)
         assertEquals(
-            listOf<NavEvent>(NavEvent.ShowSnackbar("Модель по умолчанию: Model Name")),
+            listOf<NavEvent>(NavEvent.ShowSnackbar("Default model: Model Name")),
             events,
         )
     }

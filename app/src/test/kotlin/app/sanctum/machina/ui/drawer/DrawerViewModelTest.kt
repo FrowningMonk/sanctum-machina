@@ -304,7 +304,7 @@ class DrawerViewModelTest {
   @Test
   fun renameChatWithBlankTitleAndNoUserMessageFallsBackToTimestampTitle() = runTest {
     // Companion litmus: when there is no first-user-message, AutoTitleGenerator
-    // emits the `"Чат от DD.MM HH:mm"` fallback — pins that branch.
+    // emits the `"Chat from DD.MM HH:mm"` fallback — pins that branch.
     chatDao.put(
       ChatEntity(
         id = 71L,
@@ -324,7 +324,7 @@ class DrawerViewModelTest {
     assertFalse(call.isManuallyTitled)
     assertTrue(
       "expected fallback title prefix, was '${call.title}'",
-      call.title.startsWith("Чат от "),
+      call.title.startsWith("Chat from "),
     )
   }
 

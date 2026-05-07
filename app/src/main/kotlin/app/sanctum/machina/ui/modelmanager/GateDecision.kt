@@ -42,7 +42,7 @@ fun gateAllowsDownload(totalBytes: Long, minGb: Int?): Boolean =
     minGb != null && totalBytes >= minGb.toLong() * BYTES_PER_GB
 
 /**
- * Russian secondary text shown under the disabled "Скачать" button. Hand-rolled
+ * Secondary text shown under the disabled "Download" button. Hand-rolled
  * (no `String.format` / `Locale.getDefault()`) so the digits stay ASCII regardless
  * of the device locale and the floor-to-0.1-GB precision is locked end-to-end.
  *
@@ -52,7 +52,7 @@ fun gateAllowsDownload(totalBytes: Long, minGb: Int?): Boolean =
  * by the UI in Task 5.
  */
 fun formatRamShortage(totalBytes: Long, minGb: Int): String =
-    "Недостаточно RAM (${formatGbFloor(totalBytes)} ГБ устройство, нужно $minGb ГБ)"
+    "Not enough RAM (${formatGbFloor(totalBytes)} GB device, needs $minGb GB)"
 
 /**
  * Floor-precision GB renderer (e.g. `4_294_967_295L` → `"3.9"`, never `"4.0"`).

@@ -19,7 +19,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.stateIn
 
 /**
- * Backing state for [DiagnosticsScreen]. Both fields are pre-rendered Russian
+ * Backing state for [DiagnosticsScreen]. Both fields are pre-rendered display
  * strings so the screen has no formatting logic — keeps the screen a thin
  * Composable and the formatting fully unit-testable here.
  */
@@ -77,7 +77,7 @@ class DiagnosticsViewModel @Inject constructor(
 
     private fun snapshot(): DiagnosticsUiState = DiagnosticsUiState(
         lastInitText = formatLastInit(diagnosticsState.lastInitSnapshot()),
-        freeRamText = "Свободно: ${formatGbFloor(deviceInfo.availableMemoryBytes())} ГБ",
+        freeRamText = "Free: ${formatGbFloor(deviceInfo.availableMemoryBytes())} GB",
     )
 
     private companion object {
