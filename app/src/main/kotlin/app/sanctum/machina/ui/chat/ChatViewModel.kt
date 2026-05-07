@@ -887,6 +887,21 @@ constructor(
                     }
                 }
                 applyEffectiveConfigToModel()
+                // Post-3.6 fix: WarmupCoordinator created the Conversation
+                // with allowlist defaults — DataStore overrides applied above
+                // by `applyEffectiveConfigToModel` only landed in
+                // `model.configValues`, not in the engine's already-baked
+                // SamplerConfig / systemInstruction. Recreate the Conversation
+                // on first Ready so the user's first send actually uses the
+                // settings they had persisted (mirror of the Persistent
+                // CHAT_SWITCH path above). Empty `initialMessages` because
+                // Quick is incognito — no persistent history to replay.
+                viewModelScope.launch {
+                    observeFirstReadyThenReset(
+                        reason = ResetReason.QUICK_BOOTSTRAP,
+                        initialMessages = emptyList(),
+                    )
+                }
             }
         }
     }

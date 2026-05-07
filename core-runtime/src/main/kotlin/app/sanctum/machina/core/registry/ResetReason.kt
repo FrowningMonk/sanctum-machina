@@ -16,4 +16,15 @@ enum class ResetReason {
   SYSTEM_PROMPT,
   HEAVY,
   USER,
+
+  /**
+   * Quick / Draft chat entry: warm `Conversation` was created by
+   * [WarmupCoordinator] before any per-model DataStore overrides loaded into
+   * `model.configValues`, so its `SamplerConfig` and `systemInstruction`
+   * reflect allowlist defaults only. `ChatViewModel.bootstrapChatModelId`
+   * fires this reset after `applyEffectiveConfigToModel` so the recreated
+   * Conversation picks up the merged values before the user's first turn
+   * (post-Phase-3.6 fix; symmetric to [CHAT_SWITCH] in Persistent identity).
+   */
+  QUICK_BOOTSTRAP,
 }

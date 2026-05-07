@@ -1471,6 +1471,112 @@ class ChatViewModelTest {
         )
     }
 
+    // ------------------------------------------------------------------
+    // Post-3.6 Task 14 — Quick / Draft bootstrap reset (DataStore overrides)
+    // ------------------------------------------------------------------
+
+    @Test
+    fun bootstrapQuick_emitsQuickBootstrapReset_onFirstReady() = runTest(dispatcher) {
+        // Symmetric to the Persistent CHAT_SWITCH bootstrap path: Quick chat
+        // entry must recreate the Conversation so DataStore overrides — applied
+        // to `model.configValues` by `applyEffectiveConfigToModel` — actually
+        // reach the engine. Without this the warm Conversation (created in
+        // WarmupCoordinator with allowlist defaults) is what answers the first
+        // user turn, ignoring any setting the user had persisted.
+        val model = Model(name = "m", modelId = "id-m", configs = createLlmChatConfigs())
+        model.preProcess()
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+
+        val vm = buildViewModel(ChatIdentityArg.Quick)
+        advanceUntilIdle()
+
+        assertEquals(
+            "Quick bootstrap must emit exactly one QUICK_BOOTSTRAP reset on first Ready",
+            listOf(ResetReason.QUICK_BOOTSTRAP),
+            fakeRegistry.resetReasons,
+        )
+        assertTrue(
+            "Quick has no persistent history — initialMessages must be empty",
+            fakeRegistry.lastResetInitialMessages.isEmpty(),
+        )
+    }
+
+    @Test
+    fun bootstrapDraft_emitsQuickBootstrapReset_onFirstReady() = runTest(dispatcher) {
+        // Draft is the staging variant of Quick (no Room row yet) — same
+        // bootstrap-reset semantics apply: pre-first-send DataStore overrides
+        // must reach the engine.
+        val model = Model(name = "m", modelId = "id-m", configs = createLlmChatConfigs())
+        model.preProcess()
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+
+        val vm = buildViewModel(ChatIdentityArg.Draft)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(ResetReason.QUICK_BOOTSTRAP),
+            fakeRegistry.resetReasons,
+        )
+        assertTrue(fakeRegistry.lastResetInitialMessages.isEmpty())
+    }
+
+    @Test
+    fun bootstrapQuick_quickBootstrapReset_waitsForReady() = runTest(dispatcher) {
+        // Cold-start race regression guard, mirror of Persistent
+        // `bootstrapPersistent_chatSwitchReset_waitsForReady`. Firing the reset
+        // before Ready would land on `DefaultModelRegistry`'s non-Ready skip
+        // arm and warning-log without recreating Conversation — leaving the
+        // first turn under stale sampler.
+        val model = Model(name = "m", modelId = "id-m", configs = createLlmChatConfigs())
+        model.preProcess()
+        fakeRegistry.publishEntry(model, ModelInitStatus.Initializing)
+
+        val vm = buildViewModel(ChatIdentityArg.Quick)
+        advanceUntilIdle()
+        assertEquals(
+            "reset must defer while engine is Initializing",
+            emptyList<ResetReason>(),
+            fakeRegistry.resetReasons,
+        )
+
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(ResetReason.QUICK_BOOTSTRAP),
+            fakeRegistry.resetReasons,
+        )
+    }
+
+    @Test
+    fun bootstrapQuick_resetUsesMergedConfigValues() = runTest(dispatcher) {
+        // Load-bearing assertion for the actual bug: bootstrap must call
+        // `applyEffectiveConfigToModel` BEFORE `observeFirstReadyThenReset`
+        // so the reset's `effectiveSystemPrompt(model)` reflects DataStore
+        // overrides. A regression that flips the order would publish the
+        // allowlist-default system prompt verbatim — caught here.
+        val model = Model(
+            name = "m", modelId = "id-m",
+            configs = createLlmChatConfigs(defaultSystemPrompt = "default-prompt"),
+        )
+        model.preProcess()
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        fakeRepo.save(
+            "id-m",
+            PerModelSettings.newBuilder().setSystemPromptDefault("override-prompt").build(),
+        )
+
+        val vm = buildViewModel(ChatIdentityArg.Quick)
+        advanceUntilIdle()
+
+        assertEquals(ResetReason.QUICK_BOOTSTRAP, fakeRegistry.lastResetReason)
+        assertEquals(
+            "DataStore override must reach the registry as the reset's systemPrompt",
+            "override-prompt",
+            fakeRegistry.lastResetSystemPrompt,
+        )
+    }
+
     @Test
     fun classifyApplyLevel_returnsHeavy_forMaxTokens() = runTest(dispatcher) {
         // After Decision 4, max_tokens lives in EngineConfig (not
