@@ -1,0 +1,59 @@
+{
+  "status": "approved",
+  "summary": "Checked 32 claims against the codebase on phase/3.6-bugfix. 30 confirmed exactly. 2 minor inaccuracies: one off-by-one line range and one wrong filename in a 'Files to read' hint. No critical mirages — every cited file/function/symbol exists at the cited location, and the three negative claims (ResetReason / engineReady / inference-reset don't yet exist) are all true.",
+  "findings": [
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "tech-spec Task 4 'Files to read' lists `core-runtime/src/main/kotlin/app/sanctum/machina/core/data/ConfigKeys.kt`",
+      "reality": "There is no file named `ConfigKeys.kt`. `ConfigKeys` is an `object` declared inside `core-runtime/src/main/kotlin/app/sanctum/machina/core/data/Config.kt` (Config.kt:41 defines `val MAX_TOKENS = ConfigKey(\"max_tokens\", \"Max tokens\")`). The neighbour file is `ConfigValue.kt`.",
+      "source": "tech-spec.md line 281 — Task 4 'Files to read'",
+      "fix": "Replace `ConfigKeys.kt` with `Config.kt` in the Task 4 file-list."
+    },
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "tech-spec § Solution states `LIGHT_FIELD_LABELS` is at `ChatViewModel.kt:1518`; later acceptance criteria reference `LIGHT_FIELD_LABELS 1514-1518`",
+      "reality": "`LIGHT_FIELD_LABELS` is declared at `ChatViewModel.kt:1514-1519` (closing `)` is on line 1519). The MAX_TOKENS entry inside it is on line 1518 (so the line-1518 reference for MAX_TOKENS is correct). The 1514-1518 range is off-by-one for the closing bracket.",
+      "source": "tech-spec.md line 20 (says 1518), implicit ranges in solution/decisions",
+      "fix": "Cosmetic; cite line range as 1514-1519 if a range is needed. The MAX_TOKENS-specific reference is fine."
+    }
+  ],
+  "stats": {
+    "total_claims_checked": 32,
+    "confirmed": 30,
+    "mirages_found": 2,
+    "verified_claims": [
+      "ChatViewModel.kt:363-392 deriveTopAppBarState — exact range match",
+      "ChatViewModel.kt:442-450 applyLightOverrides — exact range match",
+      "ChatViewModel.kt:729-783 bootstrapChatModelId — exact range match",
+      "ChatViewModel.kt:911-1000 commitDraft — exact range match",
+      "ChatViewModel.kt:1296-1310 classifyApplyLevel — exact range match",
+      "ChatViewModel.kt:1518 ConfigKeys.MAX_TOKENS.label inside LIGHT_FIELD_LABELS — exact match",
+      "ChatViewModel.kt:744 messageDao.lastByChat call — exact match",
+      "ChatViewModel.kt:832 observeFirstReadyThenResume — exact match",
+      "ChatViewModel.kt:469-515 applyHeavySetting uses _reinitInProgress + cleanup+initialize",
+      "LlmChatModelHelper.kt:124-142 initialize creates Conversation with SamplerConfig",
+      "LlmChatModelHelper.kt:151-198 resetConversation function body",
+      "LlmChatModelHelper.kt:164-167 re-reads topK/topP/temperature from configValues",
+      "DefaultModelRegistry.kt:302-311 resetConversation with silent skip on non-Ready",
+      "MainActivity.kt:21-39 onCreate without enableEdgeToEdge — exact range match",
+      "CrashReportActivity.kt:80-95 onCreate with FLAG_SECURE setFlags, no enableEdgeToEdge — exact match",
+      "CrashReportActivity at app/src/main/kotlin/app/sanctum/machina/crash/ — path confirmed",
+      "ChatViewModelTest.kt:1784-1853 FakeModelRegistry — exact range match",
+      "ChatViewModelTest.kt:1855-1909 FakeLlmHelper — exact range match",
+      "ChatViewModelTest.kt:1124 applyLightOverrides_updatesConfigValues_noCleanup — exact match",
+      "gradle/libs.versions.toml:8 activityCompose = \"1.10.1\" — exact match",
+      "ModelRegistry.kt:89 fun resetConversation(modelName, systemPrompt: String? = null) — exact signature",
+      "ChatScreen.kt:329 comment mentioning WindowCompat.setDecorFitsSystemWindows — confirmed",
+      "ChatScreen.kt:279 engineUsable = topAppBarState is TopAppBarState.Ready — confirmed",
+      "ChatScreen.kt:280 settingsEnabled = engineUsable && !isGenerating && !reinitInProgress — confirmed",
+      "ErrorLog.kt has only e() method (no i/w) — risk acknowledged in tech-spec D5/Risk row 6",
+      "ErrorLog ALLOWED_COMPONENTS contains 14 entries, no `inference-reset` — confirmed",
+      "negative claim: ResetReason does not exist anywhere in repo — confirmed",
+      "negative claim: engineReady does not exist anywhere in repo — confirmed",
+      "negative claim: inference-reset string does not exist anywhere in repo — confirmed",
+      "patterns.md:62 Light bullet says `applies from next send() without engine touch` — confirmed mirage in patterns, correctly identified by tech-spec"
+    ]
+  }
+}

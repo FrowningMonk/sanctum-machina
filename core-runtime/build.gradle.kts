@@ -34,7 +34,11 @@ dependencies {
     api(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.exifinterface)
     implementation(libs.gson)
-    implementation(libs.litertlm)
+    // Promoted to `api` (Phase 3.6 Task 11): `ModelRegistry.resetConversation`
+    // and `LlmModelHelper.resetConversation` expose `litertlm.Message` as a
+    // parameter type for KV-cache replay, so consumers of `:core-runtime`
+    // (`:app`) need this artifact on their compile classpath.
+    api(libs.litertlm)
 
     implementation(libs.hilt.android)
     ksp(libs.hilt.android.compiler)

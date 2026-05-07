@@ -43,6 +43,7 @@ import kotlinx.coroutines.withContext
 
 private const val LOG_TAG_DOWNLOAD = "download"
 private const val LOG_TAG_INIT = "inference-init"
+private const val LOG_TAG_RESET = "inference-reset"
 
 /**
  * D24: translate the `SYSTEM_PROMPT_DEFAULT` entry from `Model.configValues`
@@ -299,16 +300,50 @@ constructor(
     }
   }
 
-  override suspend fun resetConversation(modelName: String, systemPrompt: String?) {
+  override suspend fun resetConversation(
+    modelName: String,
+    systemPrompt: String?,
+    reason: ResetReason,
+    initialMessages: List<com.google.ai.edge.litertlm.Message>,
+  ) {
     withContext(Dispatchers.Default) {
       lifecycleMutex.withLock {
+        // Decision 1: unknown model → silent return. The `WarmupCoordinator` race surfaces
+        // missing-name calls during cold start; logging them would drown the diagnostically
+        // meaningful Idle/Initializing/Failed/Ready signals below.
         val entry = _models.value.find { it.model.name == modelName } ?: return@withLock
-        if (entry.initStatus !== ModelInitStatus.Ready) return@withLock
+        val status = entry.initStatus
+        if (status !== ModelInitStatus.Ready) {
+          // Decision 5: description goes through `errorLog.w` → shared `write(level, ...)` —
+          // sanitize + length-bound applied once, no parallel formatter for cause/status text.
+          errorLog.w(
+            LOG_TAG_RESET,
+            "skipped reason=${reason.name} status=${formatStatus(status)}",
+          )
+          return@withLock
+        }
         val contents: Contents? = systemPrompt?.let { Contents.of(listOf(Content.Text(it))) }
-        llmModelHelper.resetConversation(entry.model, systemInstruction = contents)
+        llmModelHelper.resetConversation(
+          entry.model,
+          systemInstruction = contents,
+          initialMessages = initialMessages,
+        )
+        errorLog.i(
+          LOG_TAG_RESET,
+          "reason=${reason.name} replayedMessages=${initialMessages.size}",
+        )
       }
     }
   }
+
+  private fun formatStatus(status: ModelInitStatus): String =
+    when (status) {
+      ModelInitStatus.Idle -> "Idle"
+      ModelInitStatus.Initializing -> "Initializing"
+      ModelInitStatus.Ready -> "Ready"
+      is ModelInitStatus.Failed ->
+        if (status.message.isBlank()) "Failed" else "Failed: ${status.message}"
+    }
 
   override fun getModel(modelName: String): Model? {
     val entry = _models.value.find { it.model.name == modelName } ?: return null

@@ -1,0 +1,126 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3],
+  "iteration": 1,
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 1,
+      "issue": "Task describes refactoring ErrorLog.e() body into a private write(level, ...) helper and adding public i() and w() methods. The current ErrorLog.kt has NO i() or w() methods — that is expected and correct for the pre-task state. However, Task 1 states in §Details: 'Текущее состояние: один публичный suspend fun e(component, description, cause)'. The actual signature in code is: suspend fun e(component: String, description: String, cause: Throwable? = null). The task's description of the pre-existing state is accurate.",
+      "fix": "No fix needed — the task description matches reality. This finding was investigated and closed."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 1,
+      "issue": "ALLOWED_COMPONENTS whitelist in ErrorLog.kt is confirmed at size 14 (no 'inference-reset' entry yet). Task 1 §TDD Anchor and §Acceptance Criteria correctly state the target is 15. ErrorLogTest.kt line 61 hardcodes assertEquals(14, allowed.size) — the task correctly identifies this needs updating to 15. Confirmed correct.",
+      "fix": "No fix needed — pre-task size=14 confirmed, target=15 is correct."
+    },
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 2,
+      "issue": "Task 2 §Details states: 'текущая сигнатура suspend fun resetConversation(modelName: String, systemPrompt: String): ...' and notes '(или подобная — прочитать актуальный код перед правкой)'. The ACTUAL current signature in ModelRegistry.kt line 89 is: 'suspend fun resetConversation(modelName: String, systemPrompt: String? = null)' — the systemPrompt parameter is nullable with a default null. The task must add 'reason: ResetReason' as a third parameter WITHOUT a default. The nullable-with-default nature of systemPrompt is accurate in the hint parenthetical, but the main description omits the nullable type and the default value, which could cause an implementer to write 'systemPrompt: String' (non-nullable, no default) and break callers. Minor mismatch but worth flagging.",
+      "fix": "In Task 2 §Details, update the signature example to the actual: 'suspend fun resetConversation(modelName: String, systemPrompt: String? = null)' before noting the reason parameter is appended as required."
+    },
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 2,
+      "issue": "Task 2 TDD Anchor test 'resetConversation_skipsAndLogsWarning_whenEngineFailed' states: 'Failure cause text проходит через sanitize() + length-bound (общий пайплайн write(level, ...) из Task 1) — НЕТ параллельного форматтера.' However, the actual ModelInitStatus.Failed in code is 'data class Failed(val message: String)' — it holds a String message, not a Throwable. DefaultModelRegistry.resetConversation would access entry.initStatus as ModelInitStatus.Failed and read its .message field. The task's implementation hint says to pass the Failed cause/message as 'description' into errorLog.w, NOT as the 'cause: Throwable?' parameter. But the TDD Anchor phrasing 'Failure cause text ... passes through write(level, ...) pipeline (sanitize + length-bound)' is technically correct since any string passed as description goes through sanitize/truncate in the shared write() helper. This is consistent — no bug. Flagging as minor clarification.",
+      "fix": "No code fix needed. The Failed state holds String message (not Throwable), so cause parameter of errorLog.w will be null; the Failed message string goes into the description. The pipeline still sanitizes description correctly. Task text is slightly misleading but implementation will work."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 2,
+      "issue": "Task 2 TDD Anchor test 'resetConversation_isSerializedByLifecycleMutex' requires proving serialization via delay-injected helper 'not a single-thread dispatcher artifact'. The existing DefaultModelRegistryTest uses runBlocking (not runTest) and real coroutine dispatchers. The new tests must use runTest. The existing test file uses both runBlocking and launch(Dispatchers.Default) patterns. Adding a runTest-based mutex serialisation test to a file that currently uses runBlocking will require careful dispatcher setup. The task does not mention this compatibility concern — it simply says 'use runTest'. This is feasible but requires the implementer to know to use StandardTestDispatcher (not UnconfinedTestDispatcher) so that delay() actually suspends in tests.",
+      "fix": "Add a hint in Task 2 §Implementation hints: the serialization test must use StandardTestDispatcher (or the default TestCoroutineDispatcher) so that delay(50) actually suspends; UnconfinedTestDispatcher skips delays and would make the test vacuous."
+    },
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 3,
+      "issue": "Task 3 §TDD Anchor references test 'applyMaxTokens_followsHeavyDialogSequence' which asserts an ordered sequence in fakeRegistry.sharedCalls: ['heavyDialogShown', 'userConfirmed', 'reinitDialogShown', 'cleanup', 'initialize']. However, inspection of the actual FakeModelRegistry (line 1784) and the existing applyHeavySetting_sequencing_stopCleanupInitialize test (line 1149) shows the real sharedCalls sequence for heavy setting is ['stopResponse', 'cleanup', 'initialize'] — there are NO 'heavyDialogShown', 'userConfirmed', or 'reinitDialogShown' strings produced by any existing fake or production code path. The HeavyChangeDialog and ReinitProgressDialog are UI Compose dialogs driven by StateFlow flags (reinitInProgress, etc.) — they do not emit to sharedCalls. The asserted sequence is invented and cannot pass against the real FakeModelRegistry/FakeLlmHelper infrastructure without adding new instrumentation that doesn't exist.",
+      "fix": "Replace the 'applyMaxTokens_followsHeavyDialogSequence' TDD Anchor assertion with the same pattern as 'applyHeavySetting_sequencing_stopCleanupInitialize': assert sharedCalls sequence is ['stopResponse', 'cleanup', 'initialize'] after triggering saveAndApplySettings with a changed max_tokens. The dialog-path assertions ('heavyDialogShown' etc.) cannot be tested at the unit-test level without adding fake dialog-signal tracking to FakeModelRegistry, which is out of scope for this task."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "Task 3 §TDD Anchor test 'applyLightOverrides_callsResetConversation_withLightOverrideReason' says to REPLACE existing test 'applyLightOverrides_updatesConfigValues_noCleanup' (line 1124). The existing test asserts model.configValues[ConfigKeys.MAX_TOKENS.label] == 512 (line 1143) after applyLightOverrides. After Task 3's reclassification, MAX_TOKENS is removed from LIGHT_FIELD_LABELS and classifyApplyLevel returns HEAVY for MAX_TOKENS changes. The existing test seeds PerModelSettings with setMaxTokens(512) and calls applyLightOverrides() directly (bypassing classifyApplyLevel). So the configValues assertion for MAX_TOKENS may still pass (applyLightOverrides still merges configValues). However, the replacement test must be aware that applyLightOverrides() is now called directly — not via saveAndApplySettings — so the MAX_TOKENS regression in the existing test will still assert the merge happened. This creates a risk: the new test KEEPS the configValues MAX_TOKENS assertion but the test no longer goes through classifyApplyLevel. The implementer must understand this subtlety or the regression guard becomes misleading.",
+      "fix": "In Task 3 §TDD Anchor, explicitly note that the replacement test calls applyLightOverrides() directly (same as the original), so configValues assertions from the original still apply. The key NEW assertion is lastResetReason == LIGHT_OVERRIDE. Also note that testing MAX_TOKENS going through Heavy requires a separate test via saveAndApplySettings, which is covered by 'classifyApplyLevel_returnsHeavy_forMaxTokens'."
+    },
+    {
+      "severity": "major",
+      "category": "missing_function",
+      "task": 3,
+      "issue": "Task 3 requires extending FakeModelRegistry with new fields 'lastResetReason: ResetReason?' and 'resetReasons: List<ResetReason>'. The current FakeModelRegistry.resetConversation signature (line 1847) is: 'override suspend fun resetConversation(modelName: String, systemPrompt: String?)'. After Task 2 adds 'reason: ResetReason' as a required parameter to the ModelRegistry interface, FakeModelRegistry must also be updated to implement the new signature. Task 3 mentions this in §Details ('расширить его новыми полями lastResetReason: ResetReason?, resetReasons: List<ResetReason>') but does NOT explicitly state that FakeModelRegistry's override fun resetConversation() must be updated to match the new interface signature. An implementer following only Task 3 (assuming Task 2 is already done) will get a compile error on FakeModelRegistry until they update its resetConversation override. This is a feasibility gap.",
+      "fix": "Add to Task 3 §What to do (or §Details): 'Update FakeModelRegistry.resetConversation override to match the new interface signature: override suspend fun resetConversation(modelName: String, systemPrompt: String?, reason: ResetReason). Capture reason in lastResetReason and append to resetReasons.'"
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "Task 3 §What to do step 1 says: 'after the existing lastMsg = messageDao.lastByChat(id.id) (line 744), wait for first Ready signal via the same pattern as observeFirstReadyThenResume (line 832)'. The observeFirstReadyThenResume function at line 832 uses: '_uiState.first { it is ChatUiState.Ready }'. However, bootstrapChatModelId() is called from viewModelScope.launch { bootstrapChatModelId() } in init (line 267). At the point of the Ready wait, the uiState observer (observeEngineState) hasn't necessarily updated _uiState yet — because both launch blocks fire concurrently. The existing observeFirstReadyThenResume is called only AFTER bootstrapChatModelId() completes its synchronous setup (line 749: viewModelScope.launch { observeFirstReadyThenResume(id) }). Inserting a _uiState.first { Ready } INSIDE bootstrapChatModelId() itself would block the bootstrap coroutine, which is fine for coroutines, but the implementer must be aware that the uiState ready signal depends on observeEngineState() having seen a Ready entry from the registry — which itself depends on applyEffectiveConfigToModel() having triggered warmup. The ordering (applyEffectiveConfigToModel first, then wait for Ready) must be preserved. Task correctly notes this in §Edge cases (cold-start race), but the §What to do step is not explicit enough about WHERE the wait is inserted relative to applyEffectiveConfigToModel.",
+      "fix": "In Task 3 §What to do step 1, clarify: 'the Ready wait must be placed AFTER applyEffectiveConfigToModel() (line 736), not before it, because applyEffectiveConfigToModel triggers the warmup that produces the Ready signal. The pattern mirrors observeFirstReadyThenResume which is only launched after the synchronous bootstrap completes.'"
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 1,
+      "issue": "§Implementation hints for Task 1 says: 'В тесте iAndW_lengthBoundingMatchesE — после i(...) распарсить строку: prefix = \"INFO [inference-reset] \", desc = ...substringAfter(prefix).substringBefore(\" :: \")'. This is a full parsing algorithm with specific string operations prescribed step-by-step. While not a full code block, it prescribes exact parsing logic. Per the hints quality check, this level of detail (substringAfter/substringBefore sequence) borders on implementation rather than pattern pointer.",
+      "fix": "Simplify to: 'Parse the written line to verify prefix is INFO [inference-reset], description length is 500, and cause tail length is 200 — mirror the assertion pattern from causeChainBounding_truncatesAt200 test.' Remove the exact substringAfter/substringBefore prescription."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 3,
+      "issue": "Task 3 TDD Anchor test 'engineReady_combinatorics' is listed but Task 3 explicitly does NOT add the engineReady StateFlow (that is Task 6's responsibility per §What to do step 7 and tech-spec Decision 6). The TDD Anchor for Task 3 should not include engineReady_combinatorics — it belongs to Task 6's TDD Anchor.",
+      "fix": "Remove 'engineReady_combinatorics' from Task 3's TDD Anchor. It is correctly listed in the tech-spec Testing Strategy under ChatViewModelTest — but Task 3's task file erroneously includes it. Task 6 should own this test."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 38,
+    "issues_found": 11
+  },
+  "task_summary": {
+    "1": {
+      "verdict": "approved_with_minors",
+      "files_verified": [
+        "core-runtime/src/main/kotlin/app/sanctum/machina/core/log/ErrorLog.kt — EXISTS, only e() confirmed, ALLOWED_COMPONENTS size=14 confirmed",
+        "core-runtime/src/test/kotlin/app/sanctum/machina/core/log/ErrorLogTest.kt — EXISTS, 9 tests confirmed, hardcoded assertEquals(14,...) at line 61 confirmed"
+      ],
+      "critical_count": 0,
+      "major_count": 0,
+      "minor_count": 1
+    },
+    "2": {
+      "verdict": "changes_required",
+      "files_verified": [
+        "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/ModelRegistry.kt — EXISTS, resetConversation signature is (modelName: String, systemPrompt: String? = null) — nullable with default",
+        "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistry.kt — EXISTS, resetConversation has silent non-Ready skip confirmed",
+        "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/ResetReason.kt — DOES NOT EXIST yet (correct: new file for Task 2)",
+        "core-runtime/src/test/kotlin/app/sanctum/machina/core/registry/DefaultModelRegistryTest.kt — EXISTS, 5 tests (init-only), no resetConversation tests confirmed",
+        "core-runtime/src/main/kotlin/app/sanctum/machina/core/registry/ModelInitStatus.kt — Failed is data class Failed(val message: String) not Throwable"
+      ],
+      "critical_count": 1,
+      "major_count": 1,
+      "minor_count": 0
+    },
+    "3": {
+      "verdict": "changes_required",
+      "files_verified": [
+        "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt — EXISTS, bootstrapChatModelId confirmed at line 729, lastMsg = messageDao.lastByChat(id.id) confirmed at line 744, observeFirstReadyThenResume confirmed at line 832, LIGHT_FIELD_LABELS confirmed at line 1514-1519 containing MAX_TOKENS, classifyApplyLevel confirmed at line 1296, applyLightOverrides confirmed at line 442 (no resetConversation call yet), applySystemPromptAndReset confirmed at line 452 (calls resetConversation without reason), resetConversation() at line 329 (user-tap, no reason yet)",
+        "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt — EXISTS, applyLightOverrides_updatesConfigValues_noCleanup at line 1124 confirmed, applySystemPromptAndReset_resetsWithPrompt at line 1200 confirmed, resetConversation_clearsAll at line 1234 confirmed, FakeModelRegistry at line 1784 confirmed with lastResetSystemPrompt/cleanupCalls/initializeCalls but NO lastResetReason or resetReasons fields",
+        "core-runtime/src/main/kotlin/app/sanctum/machina/core/data/Config.kt — EXISTS, ConfigKeys.MAX_TOKENS confirmed at line 41"
+      ],
+      "critical_count": 1,
+      "major_count": 3,
+      "minor_count": 1
+    }
+  }
+}

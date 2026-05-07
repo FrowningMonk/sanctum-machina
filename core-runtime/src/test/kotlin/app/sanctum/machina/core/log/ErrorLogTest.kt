@@ -57,13 +57,95 @@ class ErrorLogTest {
       "history-write",
       "attachment-save",
       "attachment-read",
+      // Phase 3.6
+      "inference-reset",
     )
-    assertEquals("expected 14 allowed components", 14, allowed.size)
+    assertEquals("expected 15 allowed components", 15, allowed.size)
     for (component in allowed) {
       errorLog.e(component, "ok")
     }
     assertTrue("log file must exist", logFile.exists())
     assertEquals(allowed.size, logFile.readLines().size)
+  }
+
+  @Test
+  fun whitelistCount_is15() {
+    assertEquals(15, ALLOWED_COMPONENTS.size)
+    assertTrue("inference-reset must be whitelisted", "inference-reset" in ALLOWED_COMPONENTS)
+  }
+
+  @Test
+  fun inferenceResetComponent_acceptedByAllLevels() = runTest {
+    errorLog.e("inference-reset", "x")
+    errorLog.i("inference-reset", "x")
+    errorLog.w("inference-reset", "x")
+
+    assertTrue("log file must exist", logFile.exists())
+    val lines = logFile.readLines()
+    assertEquals(3, lines.size)
+    assertTrue("first line must start with ERROR prefix, got: ${lines[0]}", lines[0].startsWith("ERROR [inference-reset] "))
+    assertTrue("second line must start with INFO prefix, got: ${lines[1]}", lines[1].startsWith("INFO [inference-reset] "))
+    assertTrue("third line must start with WARN prefix, got: ${lines[2]}", lines[2].startsWith("WARN [inference-reset] "))
+  }
+
+  @Test
+  fun unknownComponent_stillRejected_negative(): Unit = runTest {
+    var eThrew = false
+    try {
+      errorLog.e("inference-reset-x", "x")
+    } catch (_: IllegalArgumentException) {
+      eThrew = true
+    }
+    assertTrue("e() must reject unknown component", eThrew)
+
+    var iThrew = false
+    try {
+      errorLog.i("inference-reset-x", "x")
+    } catch (_: IllegalArgumentException) {
+      iThrew = true
+    }
+    assertTrue("i() must reject unknown component", iThrew)
+
+    var wThrew = false
+    try {
+      errorLog.w("inference-reset-x", "x")
+    } catch (_: IllegalArgumentException) {
+      wThrew = true
+    }
+    assertTrue("w() must reject unknown component", wThrew)
+
+    assertFalse("whitelist rejection must not create log file", logFile.exists())
+  }
+
+  @Test
+  fun iAndW_lengthBoundingMatchesE() = runTest {
+    val longDesc = "a".repeat(600)
+    val longCauseMsg = "x".repeat(300)
+
+    errorLog.i("inference-reset", longDesc, RuntimeException(longCauseMsg))
+    errorLog.w("inference-reset", longDesc, RuntimeException(longCauseMsg))
+
+    val lines = logFile.readLines()
+    assertEquals(2, lines.size)
+
+    val infoPrefix = "INFO [inference-reset] "
+    val warnPrefix = "WARN [inference-reset] "
+    assertTrue("INFO line must start with prefix, got: ${lines[0]}", lines[0].startsWith(infoPrefix))
+    assertTrue("WARN line must start with prefix, got: ${lines[1]}", lines[1].startsWith(warnPrefix))
+
+    val infoDesc = lines[0].substringAfter(infoPrefix).substringBefore(" :: ")
+    val infoCause = lines[0].substringAfter(":: RuntimeException: ")
+    assertEquals(500, infoDesc.length)
+    assertTrue("INFO truncated description must be all 'a'", infoDesc.all { it == 'a' })
+    assertEquals(200, infoCause.length)
+    assertTrue("INFO truncated cause must be all 'x'", infoCause.all { it == 'x' })
+
+    val warnDesc = lines[1].substringAfter(warnPrefix).substringBefore(" :: ")
+    val warnCause = lines[1].substringAfter(":: RuntimeException: ")
+    assertEquals(500, warnDesc.length)
+    assertTrue("WARN truncated description must be all 'a'", warnDesc.all { it == 'a' })
+    assertEquals(200, warnCause.length)
+    assertTrue("WARN truncated cause must be all 'x'", warnCause.all { it == 'x' })
   }
 
   @Test

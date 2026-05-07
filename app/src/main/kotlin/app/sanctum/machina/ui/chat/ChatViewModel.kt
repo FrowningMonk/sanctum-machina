@@ -8,6 +8,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.sanctum.machina.R
+import app.sanctum.machina.core.common.MultimodalContentsBuilder
 import app.sanctum.machina.core.common.pcmToWav
 import app.sanctum.machina.core.common.wavToPcm
 import app.sanctum.machina.core.data.ConfigKeys
@@ -18,6 +19,7 @@ import app.sanctum.machina.core.log.ErrorLog
 import app.sanctum.machina.core.registry.ModelEntry
 import app.sanctum.machina.core.registry.ModelInitStatus
 import app.sanctum.machina.core.registry.ModelRegistry
+import app.sanctum.machina.core.registry.ResetReason
 import app.sanctum.machina.core.runtime.LlmModelHelper
 import app.sanctum.machina.core.settings.AppSettingsRepository
 import app.sanctum.machina.core.settings.proto.PerModelSettings
@@ -26,6 +28,9 @@ import app.sanctum.machina.data.dao.ChatDao
 import app.sanctum.machina.data.dao.MessageDao
 import app.sanctum.machina.data.model.MessageEntity
 import app.sanctum.machina.engine.WarmupCoordinator
+import com.google.ai.edge.litertlm.BenchmarkInfo
+import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.Message as LitertlmMessage
 import java.io.File
 import java.util.UUID
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -51,6 +56,38 @@ sealed interface ChatUiState {
     data object Loading : ChatUiState
     data class Ready(val isGenerating: Boolean) : ChatUiState
     data class Failed(val rawCause: String) : ChatUiState
+}
+
+private fun formatChatFooter(
+    context: Context,
+    ttftMs: Long,
+    totalSec: Double,
+    info: BenchmarkInfo?,
+    chunkCount: Int,
+): String {
+    // Prefer the runtime's per-decode tok/s when available — wired for
+    // litertlm releases that expose BenchmarkParams in EngineConfig (0.11+).
+    // litertlm 0.10 throws "Benchmark is not enabled" on every call, so
+    // `info` is always null today and we approximate decode rate from the
+    // streaming chunk count. For Gemma in litertlm one onMessage callback
+    // ≈ one decoded token, so chunks/sec is within ~1 token of true tok/s.
+    val decodeSec = (totalSec - ttftMs / 1000.0).coerceAtLeast(0.001)
+    val runtimeTps = info?.lastDecodeTokensPerSecond?.takeIf { it > 0.0 }
+    val tps = runtimeTps ?: (chunkCount / decodeSec)
+    return if (tps > 0.0 && (runtimeTps != null || chunkCount > 0)) {
+        context.getString(
+            R.string.ttft_with_tps_footer_format,
+            ttftMs.toInt(),
+            tps,
+            totalSec,
+        )
+    } else {
+        context.getString(
+            R.string.ttft_footer_format,
+            ttftMs.toInt(),
+            totalSec,
+        )
+    }
 }
 
 /**
@@ -263,6 +300,40 @@ constructor(
         initialValue = TopAppBarState.Loading(modelId = "", modelName = null),
     )
 
+    /**
+     * Settings IconButton readiness gate (Phase 3.6 / Task 6, Bug 2 fix).
+     *
+     * `true` iff the entry for the current chat-pinned model is
+     * [ModelInitStatus.Ready] AND `WarmupCoordinator.isWarmupInProgress` is
+     * false. Derived from the same three source flows as [topAppBarState] so
+     * the warmup-gate matches: a Ready entry that is mid-warmup must not
+     * surface as ready (Conversation is still being rebuilt under
+     * `lifecycleMutex`).
+     *
+     * Decoupled from [topAppBarState] because the Draft branch deliberately
+     * keeps returning [TopAppBarState.Draft] regardless of init-status — the
+     * model picker dropdown lives there. Settings gating needs the orthogonal
+     * boolean signal so a Ready Draft chat can open the sheet before the
+     * first send.
+     */
+    val engineReady: StateFlow<Boolean> = combine(
+        registry.models,
+        _chatModelId,
+        warmupCoordinator.isWarmupInProgress,
+    ) { models, modelId, warmupInFlight ->
+        if (modelId == null || warmupInFlight) return@combine false
+        val entry = models.firstOrNull { it.model.modelId == modelId }
+        entry?.initStatus is ModelInitStatus.Ready
+    }.stateIn(
+        scope = viewModelScope,
+        // Eagerly mirrors `topAppBarState` above — the two flows share source
+        // signals and the same UI surface (TopAppBar action gating). Using
+        // WhileSubscribed here would let `.value` lag behind the registry
+        // between sheet open/close cycles when no Compose collector is active.
+        started = SharingStarted.Eagerly,
+        initialValue = false,
+    )
+
     init {
         viewModelScope.launch { bootstrapChatModelId() }
         viewModelScope.launch { observeEngineState() }
@@ -330,7 +401,11 @@ constructor(
         viewModelScope.launch {
             val model = currentReadyModel() ?: return@launch
             val effective = effectiveSystemPrompt(model)
-            registry.resetConversation(model.name, systemPrompt = effective)
+            registry.resetConversation(
+                model.name,
+                systemPrompt = effective,
+                reason = ResetReason.USER,
+            )
             _messages.value = emptyList()
             _streamingMessage.value = null
             _attachments.value = emptyList()
@@ -445,7 +520,33 @@ constructor(
             val model = currentReadyModel() ?: return@launch
             val overrides = settingsRepository.observePerModelSettings(modelId).first()
             val defaults = computeDefaults(model)
-            model.configValues = EffectiveConfig.merge(defaults, overrides)
+            val merged = EffectiveConfig.merge(defaults, overrides)
+            model.configValues = merged
+            // Sampler params (topK/topP/temperature) are baked into the
+            // engine's `Conversation` at creation time (LiteRT-LM 0.10.0):
+            // mutating `configValues` alone is a silent no-op until the
+            // Conversation is recreated. registry.resetConversation re-reads
+            // the merged values when constructing the new ConversationConfig.
+            // UI history is NOT touched — Light tier is a sampler refresh,
+            // not a context wipe.
+            val effective = effectiveSystemPrompt(merged)
+            // Phase 3.6 Task 11: replay paired history for Persistent so a
+            // slider-Apply does not erase context the user can still see in
+            // the message list. Quick / Draft have no persistent history —
+            // the recreated Conversation matches the empty in-memory list.
+            val initial = when (val id = identity) {
+                is ChatIdentity.Persistent -> buildInitialMessages(
+                    chatId = id.id,
+                    dropUnpairedUserTail = false,
+                )
+                else -> emptyList()
+            }
+            registry.resetConversation(
+                model.name,
+                systemPrompt = effective,
+                reason = ResetReason.LIGHT_OVERRIDE,
+                initialMessages = initial,
+            )
         }
     }
 
@@ -458,7 +559,11 @@ constructor(
             val merged = EffectiveConfig.merge(defaults, overrides)
             model.configValues = merged
             val effective = effectiveSystemPrompt(merged)
-            registry.resetConversation(model.name, systemPrompt = effective)
+            registry.resetConversation(
+                model.name,
+                systemPrompt = effective,
+                reason = ResetReason.SYSTEM_PROMPT,
+            )
             _messages.value = emptyList()
             _streamingMessage.value = null
             _attachments.value = emptyList()
@@ -744,9 +849,46 @@ constructor(
                 val lastMsg = runCatching { messageDao.lastByChat(id.id) }
                     .onFailure { errorLog.e("history-read", "lastByChat failed for id=${id.id}", it) }
                     .getOrNull()
-                if (lastMsg?.role == ROLE_USER) {
-                    autoResumeTarget = lastMsg
-                    viewModelScope.launch { observeFirstReadyThenResume(id) }
+                // Phase 3.6 Bug-1 fix: every Persistent VM bootstrap must
+                // recreate the engine's Conversation so KV-cache from the
+                // prior chat does not leak into this one. The reset is
+                // gated on first Ready — DefaultModelRegistry would
+                // warning-skip a non-Ready engine and leave the cache dirty.
+                // Reuses `lastMsg` (already read for AC-R3 auto-resume) to
+                // distinguish DRAFT_COMMIT (unpaired USER tail = handover
+                // from Draft) from CHAT_SWITCH (any other state).
+                val resetReason = if (lastMsg?.role == ROLE_USER) {
+                    ResetReason.DRAFT_COMMIT
+                } else {
+                    ResetReason.CHAT_SWITCH
+                }
+                val pendingAutoResume = lastMsg?.takeIf { it.role == ROLE_USER }
+                if (pendingAutoResume != null) {
+                    autoResumeTarget = pendingAutoResume
+                }
+                // Phase 3.6 Task 11: replay paired history through
+                // `ConversationConfig.initialMessages` so the recreated
+                // Conversation starts with the same KV-cache the user left
+                // behind. Drop unpaired USER tail in DRAFT_COMMIT /
+                // mid-stream-kill scenarios — auto-resume below dispatches
+                // it as the first USER turn of the new Conversation.
+                val initialMessages = buildInitialMessages(
+                    chatId = id.id,
+                    dropUnpairedUserTail = pendingAutoResume != null,
+                )
+                // Reset and auto-resume run in a single coroutine so the
+                // resume's `helper.runInference` is invoked strictly AFTER
+                // `helper.resetConversation` has returned. Two sibling
+                // coroutines awaiting the same Ready edge would race: the
+                // reset's `withContext(Dispatchers.Default)` hop inside
+                // DefaultModelRegistry releases Main, letting the resume
+                // siblings fire against the still-dirty Conversation —
+                // exactly the KV leak Bug-1 closes.
+                viewModelScope.launch {
+                    observeFirstReadyThenReset(resetReason, initialMessages)
+                    if (pendingAutoResume != null) {
+                        observeFirstReadyThenResume(id)
+                    }
                 }
             }
             ChatIdentity.Quick, ChatIdentity.Draft -> {
@@ -778,6 +920,21 @@ constructor(
                     }
                 }
                 applyEffectiveConfigToModel()
+                // Post-3.6 fix: WarmupCoordinator created the Conversation
+                // with allowlist defaults — DataStore overrides applied above
+                // by `applyEffectiveConfigToModel` only landed in
+                // `model.configValues`, not in the engine's already-baked
+                // SamplerConfig / systemInstruction. Recreate the Conversation
+                // on first Ready so the user's first send actually uses the
+                // settings they had persisted (mirror of the Persistent
+                // CHAT_SWITCH path above). Empty `initialMessages` because
+                // Quick is incognito — no persistent history to replay.
+                viewModelScope.launch {
+                    observeFirstReadyThenReset(
+                        reason = ResetReason.QUICK_BOOTSTRAP,
+                        initialMessages = emptyList(),
+                    )
+                }
             }
         }
     }
@@ -802,8 +959,28 @@ constructor(
                 // clear path — the `_streamingMessage` value may linger
                 // internally but cannot become visible until [send] resets it.
                 val persistedEndsWithAssistant = persisted.lastOrNull()?.role == MessageRole.ASSISTANT
-                val visibleStreaming = if (persistedEndsWithAssistant) null else streaming
-                persisted + listOfNotNull(visibleStreaming)
+                if (persistedEndsWithAssistant) {
+                    // Phase 3.6 Task 12: MessageEntity does not store
+                    // `footer` (TTFT/latency are only meaningful for the
+                    // freshest reply, not the whole history). Without this
+                    // merge the footer would vanish the moment Room emits
+                    // the saved ASSISTANT row, because the streaming bubble
+                    // — the only carrier of footer — gets hidden by the
+                    // double-bubble guard above. Borrow its footer for the
+                    // last persisted row whenever the stream has finished
+                    // (`!streaming` ensures we don't paint a footer on a
+                    // still-running answer; on the next `send()` the
+                    // streaming bubble is reset and footer disappears
+                    // naturally).
+                    val freshFooter = streaming?.takeIf { !it.streaming }?.footer
+                    if (freshFooter != null) {
+                        persisted.dropLast(1) + persisted.last().copy(footer = freshFooter)
+                    } else {
+                        persisted
+                    }
+                } else {
+                    persisted + listOfNotNull(streaming)
+                }
             }.stateIn(
                 scope = viewModelScope,
                 started = SharingStarted.Eagerly,
@@ -834,6 +1011,38 @@ constructor(
         val target = autoResumeTarget ?: return
         if (autoResumeAttempted) return
         resumePendingAssistantPersistent(identity, target)
+    }
+
+    /**
+     * Persistent-mode Phase 3.6 Bug-1 hook (AC-1.1, AC-1.2). Suspends until
+     * the pinned engine first reaches [ChatUiState.Ready], then issues a
+     * single [registry.resetConversation] call so the next user turn starts
+     * with a fresh KV-cache and the merged sampler/system-prompt picked up
+     * by [applyEffectiveConfigToModel].
+     *
+     * Mirrors [observeFirstReadyThenResume]: a single `first { Ready }` call
+     * latches on the very first Ready emission. Subsequent flutters
+     * (Ready → Initializing → Ready, e.g. after [applyHeavySetting]) do NOT
+     * re-trigger — the heavy reinit creates a new engine and a new
+     * Conversation by construction, so a second reset would be redundant.
+     *
+     * Intentionally does NOT clear UI history — the chat's persisted Room
+     * rows must remain visible across the reset; only the engine-internal
+     * Conversation is recreated.
+     */
+    private suspend fun observeFirstReadyThenReset(
+        reason: ResetReason,
+        initialMessages: List<LitertlmMessage>,
+    ) {
+        _uiState.first { it is ChatUiState.Ready }
+        val model = currentReadyModel() ?: return
+        val effective = effectiveSystemPrompt(model)
+        registry.resetConversation(
+            model.name,
+            systemPrompt = effective,
+            reason = reason,
+            initialMessages = initialMessages,
+        )
     }
 
     /**
@@ -1123,6 +1332,7 @@ constructor(
     ) {
         val startMs = System.currentTimeMillis()
         var firstTokenMs = 0L
+        var chunkCount = 0
         val sb = StringBuilder()
         val thinkingSb = StringBuilder()
 
@@ -1135,7 +1345,7 @@ constructor(
         helper.runInference(
             model = model,
             input = text,
-            resultListener = { partial, done, partialThinking ->
+            resultListener = { partial, done, partialThinking, benchmarkInfo ->
                 val bubble = _streamingMessage.value
                 if (bubble?.interrupted == true) return@runInference
                 if (firstTokenMs == 0L && partial.isNotEmpty()) {
@@ -1146,6 +1356,7 @@ constructor(
                     _streamingMessage.update { it?.copy(thinkingText = thinkingSb.toString()) }
                 }
                 if (partial.isNotEmpty()) {
+                    chunkCount += 1
                     sb.append(partial)
                     _streamingMessage.update { it?.copy(text = sb.toString()) }
                 }
@@ -1153,10 +1364,8 @@ constructor(
                     val totalMs = System.currentTimeMillis() - startMs
                     val ttftMs = if (firstTokenMs > 0L) (firstTokenMs - startMs) else 0L
                     val totalSec = totalMs / 1000.0
-                    val footer = context.getString(
-                        R.string.ttft_footer_format,
-                        ttftMs.toInt(),
-                        totalSec,
+                    val footer = formatChatFooter(
+                        context, ttftMs, totalSec, benchmarkInfo, chunkCount,
                     )
                     // AC-R2: persist ASSISTANT only on done=true. The Room
                     // emission will trigger the atomic handover and clear
@@ -1229,6 +1438,7 @@ constructor(
     ) {
         val startMs = System.currentTimeMillis()
         var firstTokenMs = 0L
+        var chunkCount = 0
         val sb = StringBuilder()
         val thinkingSb = StringBuilder()
         val accumulateThinking = shouldAccumulateThinking(model)
@@ -1242,7 +1452,7 @@ constructor(
         helper.runInference(
             model = model,
             input = text,
-            resultListener = { partial, done, partialThinking ->
+            resultListener = { partial, done, partialThinking, benchmarkInfo ->
                 if (_messages.value.lastOrNull()?.interrupted == true) return@runInference
                 if (firstTokenMs == 0L && partial.isNotEmpty()) {
                     firstTokenMs = System.currentTimeMillis()
@@ -1253,6 +1463,7 @@ constructor(
                     updateLastAssistantInMemory { it.copy(thinkingText = snapshot) }
                 }
                 if (partial.isNotEmpty()) {
+                    chunkCount += 1
                     sb.append(partial)
                     updateLastAssistantInMemory { it.copy(text = sb.toString()) }
                 }
@@ -1260,10 +1471,8 @@ constructor(
                     val totalMs = System.currentTimeMillis() - startMs
                     val ttftMs = if (firstTokenMs > 0L) (firstTokenMs - startMs) else 0L
                     val totalSec = totalMs / 1000.0
-                    val footer = context.getString(
-                        R.string.ttft_footer_format,
-                        ttftMs.toInt(),
-                        totalSec,
+                    val footer = formatChatFooter(
+                        context, ttftMs, totalSec, benchmarkInfo, chunkCount,
                     )
                     updateLastAssistantInMemory { it.copy(streaming = false, footer = footer) }
                     onTerminal(true, false)
@@ -1297,9 +1506,14 @@ constructor(
         current: Map<String, Any>,
         target: Map<String, Any>,
     ): ApplyLevel {
-        val heavyChanged = current[ConfigKeys.ACCELERATOR.label] !=
+        val acceleratorChanged = current[ConfigKeys.ACCELERATOR.label] !=
             target[ConfigKeys.ACCELERATOR.label]
-        if (heavyChanged) return ApplyLevel.HEAVY
+        // Phase 3.6 Decision 4: `max_tokens` lives in `EngineConfig`,
+        // applied only at engine creation — must take the HEAVY path
+        // (cleanup+initialize), the same one accelerator uses.
+        val maxTokensChanged = current[ConfigKeys.MAX_TOKENS.label] !=
+            target[ConfigKeys.MAX_TOKENS.label]
+        if (acceleratorChanged || maxTokensChanged) return ApplyLevel.HEAVY
         val semiChanged = SEMI_LIGHT_FIELD_LABELS.any {
             current[it] != target[it]
         }
@@ -1410,6 +1624,64 @@ constructor(
         )
     }
 
+    /**
+     * Phase 3.6 Task 11: load paired persistent history for [chatId] and map
+     * each row into a `litertlm.Message` so [registry.resetConversation] can
+     * prefill it through `ConversationConfig.initialMessages` — restoring the
+     * KV-cache that the recreated `Conversation` would otherwise start empty
+     * (Decision 9, refined AC-1.1).
+     *
+     * If [dropUnpairedUserTail] is `true` and the last row is a USER row, that
+     * row is excluded from the prefill. The Draft→Persistent handover (and
+     * AC-R3 kill-mid-stream recovery) leaves the unpaired USER for
+     * [observeFirstReadyThenResume] to dispatch as the first turn of the new
+     * Conversation; replaying it here too would double-count the USER message
+     * in the new KV-cache.
+     *
+     * Reuses [decodeAttachmentsForEntity] so the prefill sees the same media
+     * payloads the UI history shows. Containment checks
+     * (`resolveInsideAttachmentsRoot`) and `attachment-read` logging are
+     * inherited from that helper. A row whose attachments fail the
+     * containment / decode checks is sent as a text-only Message — the UI
+     * already renders it the same way through `toDomainMessageWithAttachments`.
+     */
+    private suspend fun buildInitialMessages(
+        chatId: Long,
+        dropUnpairedUserTail: Boolean,
+    ): List<LitertlmMessage> {
+        val rows = runCatching { messageDao.getByChatId(chatId) }
+            .onFailure { errorLog.e("history-read", "getByChatId failed for id=$chatId", it) }
+            .getOrNull()
+            .orEmpty()
+        val effective = if (dropUnpairedUserTail && rows.lastOrNull()?.role == ROLE_USER) {
+            rows.dropLast(1)
+        } else {
+            rows
+        }
+        return effective.map { entity ->
+            val attachments = decodeAttachmentsForEntity(entity)
+            val images = attachments.filterIsInstance<Attachment.Image>().map { it.bitmap }
+            val audio = attachments.filterIsInstance<Attachment.Audio>().map { it.pcm }
+            val parts = MultimodalContentsBuilder.build(
+                text = entity.text,
+                images = images,
+                audio = audio,
+            )
+            val contents = Contents.of(parts)
+            // The `litertlm.Message` constructor is `internal` to its module,
+            // so out-of-module callers must go through the public Companion
+            // factories: `Message.user(Contents)` and `Message.model(Contents)`.
+            // Tools and channels are not needed for prefill (chat history rows
+            // never carry tool calls, and `Conversation.sendMessageAsync` is
+            // the only producer of channel-keyed payloads).
+            if (entity.role == ROLE_USER) {
+                LitertlmMessage.user(contents)
+            } else {
+                LitertlmMessage.model(contents)
+            }
+        }
+    }
+
     private fun decodeAttachmentsForEntity(entity: MessageEntity): List<Attachment> {
         val result = mutableListOf<Attachment>()
         val filesDir = context.filesDir
@@ -1511,11 +1783,15 @@ constructor(
         private const val MAX_IMAGES: Int = 10
         private const val MAX_IMAGE_EDGE: Int = 1024
 
+        // MAX_TOKENS is intentionally NOT here (Phase 3.6 Decision 4):
+        // `maxNumTokens` is a field of LiteRT-LM `EngineConfig`, not
+        // `ConversationConfig`. Light-tier Conversation recreation does not
+        // change the engine's token cap — only HEAVY (cleanup+initialize)
+        // does. See classifyApplyLevel HEAVY condition.
         private val LIGHT_FIELD_LABELS: Set<String> = setOf(
             ConfigKeys.TEMPERATURE.label,
             ConfigKeys.TOPK.label,
             ConfigKeys.TOPP.label,
-            ConfigKeys.MAX_TOKENS.label,
         )
 
         private val SEMI_LIGHT_FIELD_LABELS: Set<String> = setOf(

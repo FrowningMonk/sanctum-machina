@@ -19,12 +19,22 @@ package app.sanctum.machina.core.runtime
 import android.content.Context
 import android.graphics.Bitmap
 import app.sanctum.machina.core.data.Model
+import com.google.ai.edge.litertlm.BenchmarkInfo
 import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.ToolProvider
 import kotlinx.coroutines.CoroutineScope
 
+// `benchmarkInfo` is only populated on the terminal callback (`done = true`)
+// and only when the underlying engine exposes per-conversation stats — null
+// in tests / fakes and on intermediate streaming chunks.
 typealias ResultListener =
-  (partialResult: String, done: Boolean, partialThinkingResult: String?) -> Unit
+  (
+    partialResult: String,
+    done: Boolean,
+    partialThinkingResult: String?,
+    benchmarkInfo: BenchmarkInfo?,
+  ) -> Unit
 
 typealias CleanUpListener = () -> Unit
 
@@ -48,6 +58,7 @@ interface LlmModelHelper {
     systemInstruction: Contents? = null,
     tools: List<ToolProvider> = listOf(),
     enableConversationConstrainedDecoding: Boolean = false,
+    initialMessages: List<Message> = emptyList(),
   )
 
   fun cleanUp(model: Model, onDone: () -> Unit)

@@ -85,8 +85,22 @@ interface ModelRegistry {
    * Reset the LiteRT-LM conversation for [modelName] without rebuilding the engine. The string
    * [systemPrompt] (null = no system instruction) is converted internally to LiteRT-LM `Contents`.
    * Runs under the registry lifecycle mutex.
+   *
+   * [reason] classifies the call site for diagnostics (Phase 3.6 Decision 1) — there is **no
+   * default**, so each caller must pick one explicitly. The reason flows into the
+   * `inference-reset` `ErrorLog` channel as `reason=<NAME>`.
+   *
+   * [initialMessages] is prefilled at Conversation creation to restore KV-cache when re-entering
+   * a chat (Phase 3.6 Task 11 / Decision 9). Empty list = fresh-context reset (DRAFT_COMMIT,
+   * SYSTEM_PROMPT, USER, HEAVY); non-empty = paired-history replay
+   * (CHAT_SWITCH, LIGHT_OVERRIDE in Persistent identity).
    */
-  suspend fun resetConversation(modelName: String, systemPrompt: String? = null)
+  suspend fun resetConversation(
+    modelName: String,
+    systemPrompt: String? = null,
+    reason: ResetReason,
+    initialMessages: List<com.google.ai.edge.litertlm.Message> = emptyList(),
+  )
 
   /**
    * Read-only accessor used by Task 9 `ChatViewModel` to obtain a ready-to-run [Model] (with

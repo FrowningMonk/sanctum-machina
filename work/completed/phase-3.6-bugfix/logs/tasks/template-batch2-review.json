@@ -1,0 +1,110 @@
+{
+  "validator": "task-validator",
+  "batch": [6, 7, 8, 9, 10],
+  "iteration": 1,
+  "status": "approved",
+  "tasks": {
+    "6": "approved",
+    "7": "approved",
+    "8": "approved",
+    "9": "approved",
+    "10": "approved"
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": 7,
+      "section": "frontmatter",
+      "issue": "wave field uses string value 'audit' instead of a number. Template specifies `wave: 1` (number ≥ 1).",
+      "fix": "If the framework supports symbolic wave names (audit / final) — leave as is and add a note to tech-spec / decisions.md. Otherwise replace `wave: audit` with the next numeric wave (e.g. `wave: 5`)."
+    },
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": 8,
+      "section": "frontmatter",
+      "issue": "wave field uses string value 'audit' instead of a number.",
+      "fix": "Same as task 7 — confirm framework accepts symbolic waves or convert to numeric."
+    },
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": 9,
+      "section": "frontmatter",
+      "issue": "wave field uses string value 'audit' instead of a number.",
+      "fix": "Same as task 7 — confirm framework accepts symbolic waves or convert to numeric."
+    },
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": 10,
+      "section": "frontmatter",
+      "issue": "wave field uses string value 'final' instead of a number.",
+      "fix": "Same as task 7 — confirm framework accepts symbolic waves or convert to numeric."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 9,
+      "section": "Verification Steps / Automated",
+      "issue": "Task 9 is an audit task (skills: [test-master], reviewers: []), audit deliverable is a markdown report. Per task-creator rules and the per-task R1 hint in inputs, audit-wave tasks should have verify=[smoke] and no Automated subsection (deliverable is the report). Task 9 includes an `### Automated` subsection running gradle test suites. This is not strictly wrong (auditor needs green tests to audit), but it blurs the line between Test Audit (deliverable: audit report) and Pre-deploy QA (deliverable: gradle pass). Consider moving the gradle commands into ### Smoke as a 'sanity check before audit' step, leaving Automated empty / absent, to align with audit-task convention.",
+      "fix": "Move `./gradlew :core-runtime:testDebugUnitTest` and `./gradlew :app:testDebugUnitTest` from Automated to Smoke as preconditions ('audit only proceeds if tests are green'). Or accept current placement — not a critical violation."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 10,
+      "section": "Context Files",
+      "issue": "Two context links use absolute Windows path (`C:/AI-WORK/PhoneWrap/CLAUDE.md`) and PK paths via `~/.claude/skills/project-knowledge/references/`. Other tasks in this batch use relative `../../../.claude/skills/...`. Inconsistency: task 6/7 use `~/.claude/skills/...`, task 7/8/9 use `../../../.claude/skills/...`, task 10 mixes both. Not a critical issue (links may resolve correctly in either form), but worth aligning across batch.",
+      "fix": "Pick one style and apply consistently. Recommended: `~/.claude/skills/project-knowledge/...` (matches template) — works because PK lives at user home, identical for all tasks."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 6,
+      "section": "Context Files",
+      "issue": "PK path uses `~/.claude/skills/project-knowledge/references/` for project.md/architecture.md/patterns.md. Tasks 7/8/9 use `../../../.claude/skills/project-knowledge/references/`. Both probably resolve, but inconsistency across batch is a smell.",
+      "fix": "Align PK link style across all tasks in feature. Either all use `~/.claude/...` (template convention) or all use relative `../../../.claude/...`."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 8,
+      "section": "Verification Steps",
+      "issue": "Task 8 is audit-wave with verify: [smoke] — correct. But § Verification Steps has no `### User` subsection at all (it does have one in tasks 7 and 9 noting 'Не применимо'). For consistency with other audit tasks in the batch, an explicit User subsection stating it doesn't apply would be clearer. Currently absent — and template says 'Omit section if no user checks', so technically valid.",
+      "fix": "Optional: add `### User` with 'Не применимо — отчёт audit IS the deliverable' to mirror tasks 7 and 9 style. Or leave absent (per template guidance)."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 10,
+      "section": "Verify-user",
+      "issue": "Task 10 inputs note `verify: [smoke, user]` is correct because the task IS the user-verification gate. The Verify-user block is comprehensive and well-structured. Minor: AC-1.4 (non-Ready skip warning log) is verified by unit test, listed under § AC matrix — but AC-1.5 user step asks for `adb logcat` excerpt, which depends on USB-debug being available. Edge case is documented (deferred), good. No fix needed — flagging for awareness."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 8,
+    "critical": 0,
+    "major": 0,
+    "minor": 8
+  },
+  "checks_passed": {
+    "frontmatter_types": "all 5 tasks — yaml well-formed, status=planned, depends_on=array of numbers, skills=array, reviewers=array, verify=array",
+    "skill_correctness": "task 6 = code-writing (correct, code task). Task 7 = code-reviewing (correct, audit). Task 8 = security-auditor (correct, audit). Task 9 = test-master (correct, audit). Task 10 = pre-deploy-qa (correct, final QA).",
+    "skill_to_reviewers_mapping": "task 6 = [code-reviewer, security-auditor, test-reviewer] — matches default for code-writing. Tasks 7/8/9/10 = [] — matches catalog convention for audit / pre-deploy-qa skills.",
+    "verify_correctness_R1": "task 6 = [smoke, user] correct (delivers Settings IconButton gating change directly, Verify-user references that control). Task 7 = [smoke] correct (audit deliverable is markdown report, smoke = grep checks). Task 8 = [smoke] correct (audit, smoke = gradle assembleDebug + grep checks). Task 9 = [smoke] correct (audit). Task 10 = [smoke, user] correct (final QA includes user-driven Honor 200 smoke).",
+    "section_presence": "all 5 tasks have all required sections (Title, Required Skills, Description, What to do, TDD Anchor where applicable, Acceptance Criteria, Context Files, Verification Steps, Details, Reviewers, Post-completion).",
+    "tdd_anchor_handling": "task 6 has TDD Anchor (code-writing task, correct). Tasks 7/8/9/10 do not have TDD Anchor (audit/QA — no new code, correct).",
+    "no_placeholders": "no `[Task Name]`, `{round}`, `{reviewer-name}`, TODO, FIXME, TBD found in any task.",
+    "context_files_mandatory": "all 5 tasks include user-spec.md, tech-spec.md, decisions.md, project.md, architecture.md.",
+    "carry_forward_AC": "task 6 carries Decision 6 (engineReady) — ✓; AC-2.1/2.2/2.3 from user-spec preserved. Task 7/8/9/10 — audit/QA tasks reference tech-spec checks, no AC to carry forward.",
+    "carry_forward_TDD": "task 6 carries `engineReady_combinatorics` test from tech-spec § Testing Strategy — ✓.",
+    "decomposition_dependencies": "task 6 depends_on=[3], wave=4 > task 3's wave=3 — ✓. Tasks 7/8/9 depends_on=[1,2,3,4,5,6] — all exist. Task 10 depends_on=[7,8,9] — all exist. No cycles.",
+    "atomicity": "task 6 is one logical unit (engineReady + Settings gating + paired stale comment cleanup — cohesive). Tasks 7/8/9 are clearly scoped audits. Task 10 is final QA — single deliverable (pre-deploy-qa.md).",
+    "shared_resources": "no shared heavy resources (ML model, DB pool) declared in tech-spec, none needed for these tasks.",
+    "tech_spec_traceability": "task 6 modifies ChatViewModel.kt + ChatScreen.kt — matches tech-spec Implementation Task 6 Files-to-modify. Adds ChatViewModelTest.kt — implied by Testing Strategy. Tasks 7/8/9/10 deliverables match tech-spec exactly."
+  },
+  "summary": "All 5 tasks (6-10) approved. No critical or major findings. 8 minor stylistic / consistency issues — primarily wave-field-as-string for audit/final waves (4 instances, may be framework convention) and PK-path style inconsistency across batch. Skill / reviewer / verify mapping per inputs is correct: task 6 verify=[smoke,user] delivers UI control, audit tasks 7/8/9 verify=[smoke] correct, task 10 verify=[smoke,user] is the user-verification gate. Carry-forward from tech-spec preserved (Decision 6, engineReady_combinatorics test, AC-2.x). Dependencies correct (wave 4 > wave 3 for task 6, audit > all impl tasks, final > audit). Ready for next phase."
+}

@@ -1,0 +1,47 @@
+{
+  "verdict": "approve",
+  "summary": "Round 2 delta over commit 2bb21c6: the round-1 MAJOR race is structurally closed. `observeFirstReadyThenReset(reason)` and (when armed) `observeFirstReadyThenResume(id)` are now sequenced inside a single `viewModelScope.launch { ... }` at ChatViewModel.kt:795-800 — the resume's suspending body runs only after the reset's coroutine returns, which by Kotlin coroutine semantics means after `registry.resetConversation` (and therefore the under-`lifecycleMutex` `helper.resetConversation`) has fully completed and resumed the caller. The `withContext(Dispatchers.Default)` hop that previously released Main mid-reset can no longer be exploited because there is no sibling continuation queued behind it. The new test `bootstrapPersistent_draftCommit_resetsBeforeAutoResumeRunInference` (ChatViewModelTest.kt:1192-1223) pins this ordering on the canonical DRAFT_COMMIT shape (single unpaired USER row, Ready engine, Persistent bootstrap) by asserting `sharedCalls.indexOf(\"resetConversation\") < sharedCalls.indexOf(\"runInference\")`. The fix introduces no new injection / log / secret surface; OWASP A04 invariant restored. The previously noted MINOR (silent perma-Failed reset coroutine) is unchanged in this commit and is correctly deferred to Task 6 per its rationale.",
+  "findings": [
+    {
+      "severity": "info",
+      "owasp": "A04",
+      "category": "concurrency / race-fix verification",
+      "title": "Round-1 MAJOR race resolved — bootstrap reset and auto-resume now share one coroutine",
+      "location": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt:783-800 (Persistent branch of bootstrapChatModelId), :882-915 (the two observers, both `suspend fun`)",
+      "description": "The fix replaces the two sibling `viewModelScope.launch` calls with one. `observeFirstReadyThenReset` is `suspend fun`; calling it without a fresh `launch` makes its `_uiState.first { Ready }` and the `registry.resetConversation` call (which internally does `withContext(Dispatchers.Default) { lifecycleMutex.withLock { helper.resetConversation(...) } }`) run inline within the parent coroutine. By coroutine causality, `observeFirstReadyThenResume(id)` cannot start before `observeFirstReadyThenReset` returns; the Default-dispatcher hop now suspends the resume's logical predecessor rather than competing with a queued sibling on Main. `currentReadyModel()` inside `observeFirstReadyThenReset` (line 908) and inside `resumePendingAssistantPersistent` (line 934) re-reads `_chatModelId` and `registry.models.value` so a Ready→Initializing flutter between Ready-edge and resume returns null and the `?: return` short-circuits the dispatch — see check 2 below for the Ready→Failed nuance.",
+      "impact": "Round-1 KV-leak / cross-chat data-integrity vector closed.",
+      "recommendation": "No change."
+    },
+    {
+      "severity": "minor",
+      "owasp": "A09",
+      "category": "best-practice / observability",
+      "title": "Ready→Failed flutter between reset return and resume entry silently orphans the auto-resumed USER row",
+      "location": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt:882-887 (observeFirstReadyThenResume) and :930-958 (resumePendingAssistantPersistent)",
+      "description": "Ordering question raised in the prompt's check-2: with the chained launch, `observeFirstReadyThenResume` runs after the reset returns. Its first line `_uiState.first { Ready }` immediately re-checks the current state. If `_uiState` flutters Ready → Failed during the time `helper.resetConversation` was holding `lifecycleMutex` on Dispatchers.Default (e.g. an OOM or upstream engine crash surfaced via `updateUiStateFromEntry` on Main), this `first` predicate may either re-suspend (waiting for the next Ready emission) or — if Ready has already arrived again — pass and call `resumePendingAssistantPersistent`. In the pass-through case `currentReadyModel()` at line 934 re-reads `registry.models.value` and returns null on a stale Failed entry, so dispatch is correctly skipped; this is the SAFE branch (no orphan inference). In the re-suspend case the resume coroutine waits indefinitely for the next Ready, mirroring the round-1 minor (`observeFirstReadyThenReset` on perma-Failed). `autoResumeAttempted` is NOT flipped (line 938 only fires after the `currentReadyModel()` null-check succeeds inside `resumePendingAssistantPersistent`), so a future VM cold-start on the same chat re-arms correctly — there is no permanent leak of the unpaired USER row. Net assessment: ACCEPTABLE, no new security boundary crossed and the flutter scenario is rare and recoverable; document rather than fix in Task 3. CWE-778 (insufficient logging) at most.",
+      "impact": "On a Ready → Failed flutter during the reset's mutex window, the auto-resumed first answer to the unpaired USER row is delayed until the next Ready (engine reload) and produces no `errorLog` trace explaining the wait. Same observability gap as the round-1 perma-Failed minor; same Task-6 deferral applies.",
+      "recommendation": "Acceptable to defer. When Task 6 introduces `engineReady: StateFlow<Boolean>` and revisits both observers, fold a single `errorLog.w(\"inference-resume\", \"orphaned: ${terminalStatus}\")` into the same race-Ready-vs-terminal predicate proposed in round-1's minor. No code change required for Task 3.",
+      "cwe": "CWE-778"
+    },
+    {
+      "severity": "info",
+      "owasp": "A04",
+      "category": "test-coverage / regression-pinning",
+      "title": "Regression test pins the ordering against a future re-introduction of sibling launches",
+      "location": "app/src/test/kotlin/app/sanctum/machina/ui/chat/ChatViewModelTest.kt:1192-1223 (`bootstrapPersistent_draftCommit_resetsBeforeAutoResumeRunInference`)",
+      "description": "The test exercises the exact DRAFT_COMMIT shape that round-1 flagged: a Persistent VM bootstrapped on chat 7 with one unpaired USER row, a Ready engine published before VM construction. After `advanceUntilIdle()` it asserts `sharedCalls.indexOf(\"resetConversation\") < sharedCalls.indexOf(\"runInference\")`. `sharedCalls` is the shared event log fed by both `FakeModelRegistry` (records `resetConversation`) and `FakeLlmHelper` (records `runInference`) — see ChatViewModelTest.kt:84-92 — so a future refactor that splits the chained launch back into siblings would fail this assertion regardless of dispatcher tuning, because under `runTest(dispatcher)` (UnconfinedTestDispatcher) sibling launches resume in launch order and the regression would resurface. The test does not pin the precise mutex/withContext semantics (those are owned by DefaultModelRegistry's own tests), but it does pin the contract Task 3 cares about: reset is observed before runInference. Coverage adequate for the AC-1.2 / DRAFT_COMMIT regression class; no additional test required at the ChatViewModel level.",
+      "impact": "None — this is a positive observation about the new test.",
+      "recommendation": "No change."
+    },
+    {
+      "severity": "info",
+      "owasp": "A09",
+      "category": "best-practice / deferred",
+      "title": "Round-1 MINOR (silent perma-Failed reset coroutine) unchanged — Task 6 deferral confirmed",
+      "location": "app/src/main/kotlin/app/sanctum/machina/ui/chat/ChatViewModel.kt:907 (`_uiState.first { it is ChatUiState.Ready }` inside observeFirstReadyThenReset)",
+      "description": "The round-1 MINOR (no `errorLog.w(\"inference-reset\", ...)` when the reset coroutine parks indefinitely on a perma-Failed engine) is untouched by commit 2bb21c6. Cancellation via `viewModelScope.cancel()` remains sound; this is a diagnostic gap, not a resource leak. Task 6's planned `engineReady: StateFlow<Boolean>` is the natural integration point for a `Ready || terminalFailed` race predicate that emits a single `inference-reset` warning on the Failed branch (Task 1's whitelist already permits this tag). Acceptable to defer per the prompt's check-4 — no new finding, this entry just confirms the round-1 MINOR's status carries forward unchanged.",
+      "impact": "None for Task 3.",
+      "recommendation": "Track as Task 6 dependency; no Task-3 action."
+    }
+  ]
+}

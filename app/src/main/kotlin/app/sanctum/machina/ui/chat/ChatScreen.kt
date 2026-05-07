@@ -104,6 +104,7 @@ private fun ChatScreenBody(
     val attachments by viewModel.attachments.collectAsStateWithLifecycle()
     val modelCaps by viewModel.modelCaps.collectAsStateWithLifecycle()
     val topAppBarState by viewModel.topAppBarState.collectAsStateWithLifecycle()
+    val engineReady by viewModel.engineReady.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     val resources = LocalResources.current
@@ -130,6 +131,7 @@ private fun ChatScreenBody(
         val isGenerating = (uiState as? ChatUiState.Ready)?.isGenerating == true
         ReadyContent(
             topAppBarState = topAppBarState,
+            engineReady = engineReady,
             isQuickMode = isQuick,
             reinitInProgress = reinitInProgress,
             messages = messages,
@@ -199,6 +201,7 @@ private fun FailedContent(rawCause: String, onBack: () -> Unit) {
 @Composable
 private fun ReadyContent(
     topAppBarState: TopAppBarState,
+    engineReady: Boolean,
     isQuickMode: Boolean,
     reinitInProgress: Boolean,
     messages: List<Message>,
@@ -267,17 +270,18 @@ private fun ReadyContent(
         audioButtonEnabled = !hasAudioAttachment,
     )
 
-    // Settings gate (Phase-3 debt 1): the heavy-apply path teardowns/initializes
-    // the engine directly; it must only run when the engine is idle-Ready and
-    // no reinit is already in flight. Disabling the button whenever the UI is
-    // not in Ready(isGenerating=false) or a reinit is running makes the tech-
-    // spec Decision 3 race unreachable — `lifecycleMutex` is free at tap time.
-    // Settings/Reset are only meaningful when an engine is Ready. During
-    // cross-model reinit (topAppBarState=Loading) or an explicit Failed
-    // state the sheet gate below would refuse to render anyway — disabling
-    // the buttons keeps the tap a no-op visible in the UI.
-    val engineUsable = topAppBarState is TopAppBarState.Ready
-    val settingsEnabled = engineUsable && !isGenerating && !reinitInProgress
+    // Settings/Reset gate (Phase-3 debt 1 + Phase-3.6 Bug 2 fix): the heavy-
+    // apply path teardowns/initializes the engine directly; it must only run
+    // when the engine is Ready and no reinit is in flight, so `lifecycleMutex`
+    // is free at tap time (tech-spec Decision 3 race unreachable). The
+    // readiness signal is `viewModel.engineReady` rather than
+    // `topAppBarState is TopAppBarState.Ready` because the Draft branch of
+    // `deriveTopAppBarState` keeps returning `TopAppBarState.Draft` even after
+    // warmup completes — its model picker dropdown lives on that state.
+    // `engineReady` is the orthogonal boolean that flips true for Draft and
+    // Persistent alike once the entry hits Ready and warmup is no longer in
+    // flight (tech-spec Decision 6).
+    val settingsEnabled = engineReady && !isGenerating && !reinitInProgress
 
     Scaffold(
         topBar = {
@@ -305,7 +309,7 @@ private fun ReadyContent(
                             contentDescription = stringResource(R.string.chat_action_settings),
                         )
                     }
-                    IconButton(onClick = onReset, enabled = engineUsable && !isGenerating) {
+                    IconButton(onClick = onReset, enabled = engineReady && !isGenerating) {
                         Icon(
                             imageVector = Icons.Outlined.Refresh,
                             contentDescription = stringResource(R.string.chat_action_reset),
@@ -325,9 +329,6 @@ private fun ReadyContent(
                 // instead of max(IME, nav-bar), leaving a visible empty strip under the
                 // input panel when the keyboard opens.
                 .consumeWindowInsets(innerPadding)
-                // AC-U4: lift the input bar above the IME. Depends on
-                // `WindowCompat.setDecorFitsSystemWindows(window, false)`
-                // already set by MainActivity.
                 .imePadding(),
         ) {
             MessageList(
@@ -415,7 +416,7 @@ private fun ChatTopAppBarTitle(
     onModelPicked: (String) -> Unit,
 ) {
     if (isQuickMode) {
-        QuickIncognitoTitle(state = state)
+        QuickIncognitoTitle(state = state, onLoadClicked = onLoadClicked)
         return
     }
     when (state) {
@@ -431,32 +432,91 @@ private fun ChatTopAppBarTitle(
 }
 
 @Composable
-private fun QuickIncognitoTitle(state: TopAppBarState) {
-    val modelName = when (state) {
-        is TopAppBarState.Ready -> state.modelName
-        else -> null
-    }
+private fun QuickIncognitoTitle(
+    state: TopAppBarState,
+    onLoadClicked: (String) -> Unit,
+) {
+    // Phase 3.6 Task 13: branch by state so the user gets the same warmup
+    // signal Persistent has (`LoadingTitle`). Earlier this composable
+    // collapsed every non-Ready state to «Быстрый чат», hiding the engine
+    // is-loading state behind a static label.
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Icon(
-                imageVector = SanctumIcons.IconEyeOff,
-                contentDescription = stringResource(R.string.chat_topappbar_incognito_desc),
-                modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.onSurface,
+        when (state) {
+            is TopAppBarState.Loading -> IncognitoLoadingRow(modelName = state.modelName)
+            is TopAppBarState.Failed -> IncognitoFailedRow(
+                modelId = state.modelId,
+                onLoadClicked = onLoadClicked,
             )
-            Text(
-                text = modelName ?: stringResource(R.string.chat_topappbar_quick_subtitle),
-                style = MaterialTheme.typography.titleMedium,
-            )
+            is TopAppBarState.Ready -> IncognitoReadyRow(modelName = state.modelName)
+            // Draft is unreachable for Quick (deriveTopAppBarState routes
+            // ChatIdentity.Quick through the Ready/Loading/Failed branch),
+            // but keep a defensive fallback so a future refactor that
+            // accidentally lands Draft here doesn't crash.
+            is TopAppBarState.Draft -> IncognitoReadyRow(modelName = null)
         }
         Text(
             text = stringResource(R.string.chat_topappbar_quick_subtitle),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+@Composable
+private fun IncognitoReadyRow(modelName: String?) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(
+            imageVector = SanctumIcons.IconEyeOff,
+            contentDescription = stringResource(R.string.chat_topappbar_incognito_desc),
+            modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = modelName ?: stringResource(R.string.chat_topappbar_quick_subtitle),
+            style = MaterialTheme.typography.titleMedium,
+        )
+    }
+}
+
+@Composable
+private fun IncognitoLoadingRow(modelName: String?) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(14.dp),
+            strokeWidth = 2.dp,
+        )
+        val text = if (modelName != null) {
+            stringResource(R.string.chat_topappbar_loading_model, modelName)
+        } else {
+            stringResource(R.string.chat_topappbar_reloading)
+        }
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun IncognitoFailedRow(modelId: String, onLoadClicked: (String) -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(
+            imageVector = SanctumIcons.IconEyeOff,
+            contentDescription = stringResource(R.string.chat_topappbar_incognito_desc),
+            modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.onSurface,
+        )
+        FailedLoadButton(modelId = modelId, onLoadClicked = onLoadClicked)
     }
 }
 

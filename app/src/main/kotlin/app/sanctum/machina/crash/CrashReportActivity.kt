@@ -6,6 +6,7 @@ import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -81,6 +82,7 @@ class CrashReportActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // Keep the crash screen out of Recents thumbnails and OEM screen-capture collectors.
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+        enableEdgeToEdge()
         logExportManager = LogExportManager(applicationContext)
 
         setContent {
