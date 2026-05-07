@@ -257,17 +257,23 @@ object LlmChatModelHelper : LlmModelHelper {
 
     val callback = object : MessageCallback {
       override fun onMessage(message: Message) {
-        resultListener(message.toString(), false, message.channels["thought"])
+        resultListener(message.toString(), false, message.channels["thought"], null)
       }
 
       override fun onDone() {
-        resultListener("", true, null)
+        // litertlm 0.10 exposes Conversation.getBenchmarkInfo() but the
+        // Kotlin EngineConfig has no BenchmarkParams field, so the JNI
+        // call always throws "Benchmark is not enabled". Pass null until
+        // we bump to a release that wires BenchmarkParams through —
+        // tracked in work/research/mtp-research.md §6 Step 4. Caller
+        // approximates decode tok/s from streaming chunks meanwhile.
+        resultListener("", true, null, null)
       }
 
       override fun onError(throwable: Throwable) {
         if (throwable is CancellationException) {
           Log.e(TAG, "The inference is cancelled.")
-          resultListener("", true, null)
+          resultListener("", true, null, null)
         } else {
           Log.e(TAG, "onError", throwable)
           onError("Error: ${throwable.message}")

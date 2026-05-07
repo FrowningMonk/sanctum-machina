@@ -119,7 +119,7 @@ class ChatViewModelTest {
 
         vm.send("hello")
         advanceUntilIdle()
-        fakeHelper.lastResultListener?.invoke("ok", true, null)
+        fakeHelper.lastResultListener?.invoke("ok", true, null, null)
         advanceUntilIdle()
 
         assertEquals(
@@ -280,7 +280,7 @@ class ChatViewModelTest {
             ?: error("Persistent send must call runInference")
 
         // Stream a token — the in-memory bubble must be observable.
-        listener.invoke("partial", false, null)
+        listener.invoke("partial", false, null, null)
         advanceUntilIdle()
         assertTrue(
             "during streaming, the in-memory bubble must be visible",
@@ -288,7 +288,7 @@ class ChatViewModelTest {
         )
 
         // Engine signals done — VM persists ASSISTANT; simulate Room re-emitting.
-        listener.invoke("", true, null)
+        listener.invoke("", true, null, null)
         advanceUntilIdle()
         val assistantRow = MessageEntity(
             id = 2L, chatId = 7L, role = "assistant", text = "partial", createdAt = 20L,
@@ -359,8 +359,8 @@ class ChatViewModelTest {
         val beforeDone = fakeChatRepository.insertedMessages.count { it.role == "assistant" }
         assertEquals("no ASSISTANT row must exist before done=true", 0, beforeDone)
 
-        listener.invoke("hel", false, null)
-        listener.invoke("lo", false, null)
+        listener.invoke("hel", false, null, null)
+        listener.invoke("lo", false, null, null)
         advanceUntilIdle()
         assertEquals(
             "AC-R2: streaming tokens must not trigger intermediate ASSISTANT writes",
@@ -368,7 +368,7 @@ class ChatViewModelTest {
             fakeChatRepository.insertedMessages.count { it.role == "assistant" },
         )
 
-        listener.invoke("", true, null)
+        listener.invoke("", true, null, null)
         advanceUntilIdle()
         assertEquals(
             "AC-R2: exactly one ASSISTANT write on done=true",
@@ -414,7 +414,7 @@ class ChatViewModelTest {
         vm.send("hi")
         advanceUntilIdle()
         val listener = fakeHelper.lastResultListener ?: error("send must invoke runInference")
-        listener.invoke("partial", false, null)
+        listener.invoke("partial", false, null, null)
         advanceUntilIdle()
 
         vm.stop()
@@ -1092,9 +1092,9 @@ class ChatViewModelTest {
         advanceUntilIdle()
 
         val listener = fakeHelper.lastResultListener ?: error("send must invoke runInference")
-        listener.invoke("hello", false, "thought-1 ")
-        listener.invoke(" world", false, "thought-2")
-        listener.invoke("", true, null)
+        listener.invoke("hello", false, "thought-1 ", null)
+        listener.invoke(" world", false, "thought-2", null)
+        listener.invoke("", true, null, null)
 
         val assistant = vm.messages.value.last { it.role == MessageRole.ASSISTANT }
         assertEquals("hello world", assistant.text)
@@ -1737,7 +1737,7 @@ class ChatViewModelTest {
 
         vm.send("first turn")
         advanceUntilIdle()
-        fakeHelper.lastResultListener?.invoke("ok", true, null)
+        fakeHelper.lastResultListener?.invoke("ok", true, null, null)
         vm.addImageBitmap(stubBitmap())
         advanceUntilIdle()
 
@@ -1782,7 +1782,7 @@ class ChatViewModelTest {
         advanceUntilIdle()
         vm.send("hi")
         advanceUntilIdle()
-        fakeHelper.lastResultListener?.invoke("ok", true, null)
+        fakeHelper.lastResultListener?.invoke("ok", true, null, null)
         vm.addImageBitmap(stubBitmap())
         advanceUntilIdle()
         assertNotEquals(0, vm.messages.value.size)

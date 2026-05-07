@@ -28,6 +28,7 @@ import app.sanctum.machina.data.dao.ChatDao
 import app.sanctum.machina.data.dao.MessageDao
 import app.sanctum.machina.data.model.MessageEntity
 import app.sanctum.machina.engine.WarmupCoordinator
+import com.google.ai.edge.litertlm.BenchmarkInfo
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Message as LitertlmMessage
 import java.io.File
@@ -55,6 +56,38 @@ sealed interface ChatUiState {
     data object Loading : ChatUiState
     data class Ready(val isGenerating: Boolean) : ChatUiState
     data class Failed(val rawCause: String) : ChatUiState
+}
+
+private fun formatChatFooter(
+    context: Context,
+    ttftMs: Long,
+    totalSec: Double,
+    info: BenchmarkInfo?,
+    chunkCount: Int,
+): String {
+    // Prefer the runtime's per-decode tok/s when available — wired for
+    // litertlm releases that expose BenchmarkParams in EngineConfig (0.11+).
+    // litertlm 0.10 throws "Benchmark is not enabled" on every call, so
+    // `info` is always null today and we approximate decode rate from the
+    // streaming chunk count. For Gemma in litertlm one onMessage callback
+    // ≈ one decoded token, so chunks/sec is within ~1 token of true tok/s.
+    val decodeSec = (totalSec - ttftMs / 1000.0).coerceAtLeast(0.001)
+    val runtimeTps = info?.lastDecodeTokensPerSecond?.takeIf { it > 0.0 }
+    val tps = runtimeTps ?: (chunkCount / decodeSec)
+    return if (tps > 0.0 && (runtimeTps != null || chunkCount > 0)) {
+        context.getString(
+            R.string.ttft_with_tps_footer_format,
+            ttftMs.toInt(),
+            tps,
+            totalSec,
+        )
+    } else {
+        context.getString(
+            R.string.ttft_footer_format,
+            ttftMs.toInt(),
+            totalSec,
+        )
+    }
 }
 
 /**
@@ -1299,6 +1332,7 @@ constructor(
     ) {
         val startMs = System.currentTimeMillis()
         var firstTokenMs = 0L
+        var chunkCount = 0
         val sb = StringBuilder()
         val thinkingSb = StringBuilder()
 
@@ -1311,7 +1345,7 @@ constructor(
         helper.runInference(
             model = model,
             input = text,
-            resultListener = { partial, done, partialThinking ->
+            resultListener = { partial, done, partialThinking, benchmarkInfo ->
                 val bubble = _streamingMessage.value
                 if (bubble?.interrupted == true) return@runInference
                 if (firstTokenMs == 0L && partial.isNotEmpty()) {
@@ -1322,6 +1356,7 @@ constructor(
                     _streamingMessage.update { it?.copy(thinkingText = thinkingSb.toString()) }
                 }
                 if (partial.isNotEmpty()) {
+                    chunkCount += 1
                     sb.append(partial)
                     _streamingMessage.update { it?.copy(text = sb.toString()) }
                 }
@@ -1329,10 +1364,8 @@ constructor(
                     val totalMs = System.currentTimeMillis() - startMs
                     val ttftMs = if (firstTokenMs > 0L) (firstTokenMs - startMs) else 0L
                     val totalSec = totalMs / 1000.0
-                    val footer = context.getString(
-                        R.string.ttft_footer_format,
-                        ttftMs.toInt(),
-                        totalSec,
+                    val footer = formatChatFooter(
+                        context, ttftMs, totalSec, benchmarkInfo, chunkCount,
                     )
                     // AC-R2: persist ASSISTANT only on done=true. The Room
                     // emission will trigger the atomic handover and clear
@@ -1405,6 +1438,7 @@ constructor(
     ) {
         val startMs = System.currentTimeMillis()
         var firstTokenMs = 0L
+        var chunkCount = 0
         val sb = StringBuilder()
         val thinkingSb = StringBuilder()
         val accumulateThinking = shouldAccumulateThinking(model)
@@ -1418,7 +1452,7 @@ constructor(
         helper.runInference(
             model = model,
             input = text,
-            resultListener = { partial, done, partialThinking ->
+            resultListener = { partial, done, partialThinking, benchmarkInfo ->
                 if (_messages.value.lastOrNull()?.interrupted == true) return@runInference
                 if (firstTokenMs == 0L && partial.isNotEmpty()) {
                     firstTokenMs = System.currentTimeMillis()
@@ -1429,6 +1463,7 @@ constructor(
                     updateLastAssistantInMemory { it.copy(thinkingText = snapshot) }
                 }
                 if (partial.isNotEmpty()) {
+                    chunkCount += 1
                     sb.append(partial)
                     updateLastAssistantInMemory { it.copy(text = sb.toString()) }
                 }
@@ -1436,10 +1471,8 @@ constructor(
                     val totalMs = System.currentTimeMillis() - startMs
                     val ttftMs = if (firstTokenMs > 0L) (firstTokenMs - startMs) else 0L
                     val totalSec = totalMs / 1000.0
-                    val footer = context.getString(
-                        R.string.ttft_footer_format,
-                        ttftMs.toInt(),
-                        totalSec,
+                    val footer = formatChatFooter(
+                        context, ttftMs, totalSec, benchmarkInfo, chunkCount,
                     )
                     updateLastAssistantInMemory { it.copy(streaming = false, footer = footer) }
                     onTerminal(true, false)

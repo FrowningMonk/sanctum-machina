@@ -35,8 +35,12 @@
   <string name="chat_input_placeholder">Сообщение</string>
   <string name="chat_message_interrupted_suffix"> (прервано)</string>
 
-  <!-- Chat TTFT footer -->
+  <!-- Chat TTFT footer.
+       `ttft_footer_format` is the fallback when the runtime does not
+       expose decode tok/s (e.g. test fakes); `ttft_with_tps_footer_format`
+       is used whenever litertlm `BenchmarkInfo` is available. -->
   <string name="ttft_footer_format">TTFT %1$dms · %2$.1fs total</string>
+  <string name="ttft_with_tps_footer_format">TTFT %1$dms · %2$.1f tok/s · %3$.1fs total</string>
 
   <!-- TopAppBar actions (used across chat and model-manager surfaces) -->
   <string name="chat_action_settings">Настройки модели</string>
