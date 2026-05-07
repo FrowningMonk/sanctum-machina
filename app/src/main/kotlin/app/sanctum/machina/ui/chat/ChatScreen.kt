@@ -416,7 +416,7 @@ private fun ChatTopAppBarTitle(
     onModelPicked: (String) -> Unit,
 ) {
     if (isQuickMode) {
-        QuickIncognitoTitle(state = state)
+        QuickIncognitoTitle(state = state, onLoadClicked = onLoadClicked)
         return
     }
     when (state) {
@@ -432,32 +432,91 @@ private fun ChatTopAppBarTitle(
 }
 
 @Composable
-private fun QuickIncognitoTitle(state: TopAppBarState) {
-    val modelName = when (state) {
-        is TopAppBarState.Ready -> state.modelName
-        else -> null
-    }
+private fun QuickIncognitoTitle(
+    state: TopAppBarState,
+    onLoadClicked: (String) -> Unit,
+) {
+    // Phase 3.6 Task 13: branch by state so the user gets the same warmup
+    // signal Persistent has (`LoadingTitle`). Earlier this composable
+    // collapsed every non-Ready state to «Быстрый чат», hiding the engine
+    // is-loading state behind a static label.
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Icon(
-                imageVector = SanctumIcons.IconEyeOff,
-                contentDescription = stringResource(R.string.chat_topappbar_incognito_desc),
-                modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.onSurface,
+        when (state) {
+            is TopAppBarState.Loading -> IncognitoLoadingRow(modelName = state.modelName)
+            is TopAppBarState.Failed -> IncognitoFailedRow(
+                modelId = state.modelId,
+                onLoadClicked = onLoadClicked,
             )
-            Text(
-                text = modelName ?: stringResource(R.string.chat_topappbar_quick_subtitle),
-                style = MaterialTheme.typography.titleMedium,
-            )
+            is TopAppBarState.Ready -> IncognitoReadyRow(modelName = state.modelName)
+            // Draft is unreachable for Quick (deriveTopAppBarState routes
+            // ChatIdentity.Quick through the Ready/Loading/Failed branch),
+            // but keep a defensive fallback so a future refactor that
+            // accidentally lands Draft here doesn't crash.
+            is TopAppBarState.Draft -> IncognitoReadyRow(modelName = null)
         }
         Text(
             text = stringResource(R.string.chat_topappbar_quick_subtitle),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+@Composable
+private fun IncognitoReadyRow(modelName: String?) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(
+            imageVector = SanctumIcons.IconEyeOff,
+            contentDescription = stringResource(R.string.chat_topappbar_incognito_desc),
+            modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = modelName ?: stringResource(R.string.chat_topappbar_quick_subtitle),
+            style = MaterialTheme.typography.titleMedium,
+        )
+    }
+}
+
+@Composable
+private fun IncognitoLoadingRow(modelName: String?) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(14.dp),
+            strokeWidth = 2.dp,
+        )
+        val text = if (modelName != null) {
+            stringResource(R.string.chat_topappbar_loading_model, modelName)
+        } else {
+            stringResource(R.string.chat_topappbar_reloading)
+        }
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun IncognitoFailedRow(modelId: String, onLoadClicked: (String) -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(
+            imageVector = SanctumIcons.IconEyeOff,
+            contentDescription = stringResource(R.string.chat_topappbar_incognito_desc),
+            modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.onSurface,
+        )
+        FailedLoadButton(modelId = modelId, onLoadClicked = onLoadClicked)
     }
 }
 

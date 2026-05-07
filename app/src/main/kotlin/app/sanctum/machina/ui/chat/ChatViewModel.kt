@@ -911,8 +911,28 @@ constructor(
                 // clear path — the `_streamingMessage` value may linger
                 // internally but cannot become visible until [send] resets it.
                 val persistedEndsWithAssistant = persisted.lastOrNull()?.role == MessageRole.ASSISTANT
-                val visibleStreaming = if (persistedEndsWithAssistant) null else streaming
-                persisted + listOfNotNull(visibleStreaming)
+                if (persistedEndsWithAssistant) {
+                    // Phase 3.6 Task 12: MessageEntity does not store
+                    // `footer` (TTFT/latency are only meaningful for the
+                    // freshest reply, not the whole history). Without this
+                    // merge the footer would vanish the moment Room emits
+                    // the saved ASSISTANT row, because the streaming bubble
+                    // — the only carrier of footer — gets hidden by the
+                    // double-bubble guard above. Borrow its footer for the
+                    // last persisted row whenever the stream has finished
+                    // (`!streaming` ensures we don't paint a footer on a
+                    // still-running answer; on the next `send()` the
+                    // streaming bubble is reset and footer disappears
+                    // naturally).
+                    val freshFooter = streaming?.takeIf { !it.streaming }?.footer
+                    if (freshFooter != null) {
+                        persisted.dropLast(1) + persisted.last().copy(footer = freshFooter)
+                    } else {
+                        persisted
+                    }
+                } else {
+                    persisted + listOfNotNull(streaming)
+                }
             }.stateIn(
                 scope = viewModelScope,
                 started = SharingStarted.Eagerly,
