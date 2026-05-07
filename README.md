@@ -14,7 +14,7 @@ Airplane mode on; everything below runs without network:
 
 ![Airplane mode demo](docs/media/demo-airplane-mode.webp)
 
-Multi-turn chat — Python codegen, then a privacy-first AI pitch reshaped into a tagline, a tweet, and a Spanish translation:
+Multiple persistent chats kept independent — switch from a Python codegen session to a privacy-first AI pitch (tagline → tweet → Spanish), then come back to the first chat and continue exactly where you left off. Each chat keeps its own KV-cache, settings, and message history:
 
 ![Chat demo](docs/media/demo-chat.webp)
 
@@ -41,6 +41,16 @@ Built on the [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) engine: we
 - Pre-flight RAM gate — models that need more memory than the device has are blocked from download.
 - Per-message metrics in the chat footer: TTFT and decode tok/s.
 - Crash recovery, background model warm-up, diagnostic log export.
+
+## Known issues
+
+A few quirks and gaps that exist on day one — tracked, not surprises:
+
+- **SwiftKey leaves a gap below the chat input bar on Honor 200** ([#1](../../issues/1)). IME-design behaviour, not an app layout bug — Gboard / system keyboard render flush.
+- **"Max tokens" controls context window size, not response length** ([#2](../../issues/2)) — upstream LiteRT-LM 0.10 semantics.
+- **Chat messages cannot be copied or selected** ([#3](../../issues/3)) — long-press is not wired up yet.
+- **Only the first photo is saved to history when multiple are sent in one message** ([#4](../../issues/4)). All photos still flow into the model's reply; only history is single-image.
+- **Tested only on Honor 200** ([#5](../../issues/5)) — other Android 12+ devices should work but are unverified; reports welcome.
 
 ## Privacy
 
