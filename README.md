@@ -4,9 +4,19 @@
 
 > Local multimodal LLM client for Android. Models run entirely on-device — no cloud, no network, no telemetry.
 
-A fork of [Google AI Edge Gallery](https://github.com/google-ai-edge/gallery) with a custom UI, persistent chat history, and a shared-context layer for everyday use.
+A fork of [Google AI Edge Gallery](https://github.com/google-ai-edge/gallery) focused on LLM chat — with a custom UI, persistent chat history, and an incognito quick-chat mode.
 
 ---
+
+## Demo
+
+Airplane mode on; everything below runs without network:
+
+<video src="docs/media/demo-airplane-mode.mp4" controls muted autoplay loop width="320"></video>
+
+Multi-turn chat — Python codegen, then a privacy-first AI pitch reshaped into a tagline, a tweet, and a Spanish translation:
+
+<video src="docs/media/demo-chat.mp4" controls muted autoplay loop width="320"></video>
 
 ## Status
 
@@ -18,16 +28,18 @@ APK files are on the [Releases](../../releases) page. Download the latest one, o
 
 ## What it is
 
-A thin wrapper around the [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) engine: model discovery, downloads, engine lifecycle, UI, and settings. The engine and the models themselves are binary artifacts shipped by Google and the community; we orchestrate them.
+Built on the [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) engine: we own the model discovery, downloads, engine lifecycle, chat UI with persistent history, settings, and diagnostics. The engine and the models themselves are binary artifacts from Google and the community; we orchestrate them.
 
 ## Features
 
 - On-device LLM inference (Android 12+).
-- Support for **Gemma 4** models (E2B, E4B) from the HuggingFace [`litert-community`](https://huggingface.co/litert-community) repository.
+- **Gemma 4** models (E2B, E4B) from the HuggingFace [`litert-community`](https://huggingface.co/litert-community) repository.
 - Multimodal input: text, image (gallery / camera), short audio clip.
-- Separate thinking channel for models that support it.
+- Separate **reasoning channel** for models that support it.
 - Per-model inference settings: temperature, top-K, top-P, max tokens, accelerator, system prompt.
-- Persistent chat history (Room).
+- Persistent chat history with a sidebar drawer (rename, delete, sections by date), plus an incognito **quick-chat** mode.
+- Pre-flight RAM gate — models that need more memory than the device has are blocked from download.
+- Per-message metrics in the chat footer: TTFT and decode tok/s.
 - Crash recovery, background model warm-up, diagnostic log export.
 
 ## Privacy

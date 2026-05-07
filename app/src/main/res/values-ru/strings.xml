@@ -106,6 +106,10 @@
 
   <!-- About screen -->
   <string name="about_title">О приложении</string>
+  <!-- Filename of the About-screen markdown asset, picked per-locale. The
+       value is resolved via `getString` (a hardcoded id), never composed
+       from user input — preserves D17 path-traversal protection. -->
+  <string name="about_asset">about_ru.md</string>
   <string name="about_version_format">Версия %1$s</string>
   <string name="about_version_unknown">неизвестна</string>
   <string name="about_attribution">Построено на Google AI Edge Gallery · Gemma · LiteRT-LM</string>

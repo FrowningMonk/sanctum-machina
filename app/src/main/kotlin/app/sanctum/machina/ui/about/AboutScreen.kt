@@ -38,9 +38,6 @@ import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-// Hardcoded asset name — never from state/user input (D17 path-traversal protection).
-private const val ABOUT_ASSET = "about.md"
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AboutScreen(
@@ -48,11 +45,15 @@ fun AboutScreen(
 ) {
     val context = LocalContext.current
     val fallback = stringResource(R.string.about_load_failed)
+    // Asset filename comes from a string resource (about_en.md / about_ru.md
+    // depending on locale). The value is hardcoded in strings.xml, never
+    // composed from user input — D17 path-traversal protection preserved.
+    val assetName = stringResource(R.string.about_asset)
 
-    val markdown by produceState(initialValue = "", key1 = context, key2 = fallback) {
+    val markdown by produceState(initialValue = "", key1 = assetName, key2 = fallback) {
         value = withContext(Dispatchers.IO) {
             try {
-                context.assets.open(ABOUT_ASSET).bufferedReader().use { it.readText() }
+                context.assets.open(assetName).bufferedReader().use { it.readText() }
             } catch (_: IOException) {
                 fallback
             }
