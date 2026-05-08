@@ -1,7 +1,0 @@
-{
-  "verdict": "approve",
-  "owasp_relevant": ["A09 logging/monitoring", "A03 injection (log injection)", "A04 insecure design (drift between sibling APIs)"],
-  "findings": [],
-  "decision5_resolved": true,
-  "decision5_evidence": "All three levels (e/i/w at ErrorLog.kt:84-94) are thin wrappers that delegate to one private write() at ErrorLog.kt:96-124, which calls buildLine() (line 108) which calls sanitize() for both description (line 132) and cause.message (line 135) with the same MAX_DESCRIPTION_LEN=500 / MAX_CAUSE_MESSAGE_LEN=200 caps. There is no parallel formatter, so the drift vector flagged by Decision 5 (e.g. a warning path interpolating Throwable.message without sanitize/length-bound) is structurally impossible. Whitelist enforcement (require(component in ALLOWED_COMPONENTS) at line 102) precedes mutex/Dispatchers.IO acquisition (lines 105-106), so attacker-controlled component strings cannot smuggle a partial file write. ErrorLogTest.iAndW_lengthBoundingMatchesE empirically asserts 500-char description / 200-char cause caps for both i() and w(); unknownComponent_stillRejected_negative asserts IllegalArgumentException + no file creation across all three levels. CancellationException re-throw preserved (lines 117-118); mutex serialisation preserved (single mutex field at line 82); no new file paths, no new permissions, no SAF surface; KDoc contains no PII or secrets."
-}
