@@ -170,10 +170,12 @@ class EffectiveConfigTest {
 
     @Test
     fun merge_overridesCannotMutateMaxContextLength() {
-        // Strong-form proto-builder bypass: defaults carry MAX_CONTEXT_LENGTH plus every key the
-        // merge currently consumes; override is a default-instance PerModelSettings. The merge
-        // contract must preserve "32000" — even if a future proto edit added max_context_length,
-        // this test locks the absence at the merge seam.
+        // Strong-form Decision 6 lock: even if `merge`'s body grew a new branch that consumed
+        // overrides for MAX_CONTEXT_LENGTH, the proto has no `max_context_length` field — so
+        // there is nowhere for an override to come from. This test pins both halves:
+        // (1) the structural absence of `hasMaxContextLength()` on PerModelSettings, and
+        // (2) the merge behaviour: defaults are echoed verbatim when the override proto is
+        //     a default-instance, including MAX_CONTEXT_LENGTH and every other carried key.
         val defaultsFull: Map<String, Any> = mapOf(
             ConfigKeys.MAX_CONTEXT_LENGTH.label to "32000",
             ConfigKeys.SYSTEM_PROMPT_DEFAULT.label to "be helpful",
@@ -188,9 +190,18 @@ class EffectiveConfigTest {
 
         val result = EffectiveConfig.merge(defaultsFull, overrides)
 
-        assertEquals("32000", result[ConfigKeys.MAX_CONTEXT_LENGTH.label])
-        // Future-proofing: pin that the proto has no max_context_length field. If a future edit
-        // adds one, this assertion fails loudly and the merge logic above must be re-audited.
+        // (2) Every key in defaultsFull must survive the merge unchanged. This is stronger than
+        // asserting just MAX_CONTEXT_LENGTH: if a future regression silently mutated any key in
+        // the default-instance arm, the assertion fails.
+        assertEquals(
+            "default-instance override must echo defaults verbatim",
+            defaultsFull,
+            result,
+        )
+
+        // (1) Proto-schema lock — the load-bearing assertion. If a future proto edit accidentally
+        // added `max_context_length`, this assertion fails loudly and the merge logic at line 30+
+        // must grow a guard or the schema must roll back.
         val hasMaxContextMethod = PerModelSettings::class.java.declaredMethods
             .any { it.name == "hasMaxContextLength" }
         assertFalse(
