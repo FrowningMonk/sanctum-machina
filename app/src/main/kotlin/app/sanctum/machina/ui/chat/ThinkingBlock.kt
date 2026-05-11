@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ArrowDropUp
@@ -109,11 +110,24 @@ fun ThinkingBlock(
                     }
                     .padding(start = 12.dp),
             ) {
-                SafeMarkdown(
-                    text = thinkingText,
-                    smallFontSize = true,
-                    textColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (!inProgress) {
+                    // Selection gated symmetrically with the main assistant
+                    // bubble (D4): live thinking stream mutates ~50ms cadence,
+                    // active SelectionContainer would lose cursor each frame.
+                    SelectionContainer {
+                        SafeMarkdown(
+                            text = thinkingText,
+                            smallFontSize = true,
+                            textColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                } else {
+                    SafeMarkdown(
+                        text = thinkingText,
+                        smallFontSize = true,
+                        textColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
