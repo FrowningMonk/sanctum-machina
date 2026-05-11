@@ -5,8 +5,10 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.provider.Settings
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,6 +35,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -47,6 +50,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -231,6 +235,14 @@ private fun ReadyContent(
     // the audio sheet, though AC-19 ON_PAUSE closes it on backgrounding.
     var showCameraSheet by rememberSaveable { mutableStateOf(false) }
     var showAudioSheet by rememberSaveable { mutableStateOf(false) }
+    // Sticky-to-bottom state — hoisted in ReadyContent (D10) so the
+    // onSend callback below can reset it before forwarding to the VM,
+    // ensuring the autoscroll effect re-fires unconditionally after a
+    // user send (Free-scroll AC item 5). Intentionally NOT
+    // rememberSaveable: rotation / process recreate interrupts the
+    // active stream, so a fresh pinned-to-bottom posture is the
+    // correct reset (task `Edge cases`).
+    var userScrolledAway by remember { mutableStateOf(false) }
     val hasAudioAttachment = attachments.any { it is Attachment.Audio }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -241,10 +253,17 @@ private fun ReadyContent(
     val sendRef = rememberUpdatedState(onSend)
     val stopRef = rememberUpdatedState(onStop)
     val pickImagesRef = rememberUpdatedState(onPickImages)
+    // `callbacks` below is built with `remember { ... }` once per composition,
+    // so any captured value goes stale across recompositions. The send-reset
+    // setter must reach `userScrolledAway` reliably, so route it through
+    // `rememberUpdatedState` exactly like sendRef/stopRef above.
+    val onUserScrolledAwayChange: (Boolean) -> Unit = { userScrolledAway = it }
+    val resetScrolledAwayRef = rememberUpdatedState(onUserScrolledAwayChange)
     val callbacks = remember {
         MultimodalInputCallbacks(
             onTextChange = { text = it },
             onSend = {
+                resetScrolledAwayRef.value(false)
                 sendRef.value(text)
                 text = ""
             },
@@ -334,6 +353,8 @@ private fun ReadyContent(
             MessageList(
                 messages = messages,
                 supportThinking = modelCaps.supportThinking,
+                userScrolledAway = userScrolledAway,
+                onUserScrolledAwayChange = onUserScrolledAwayChange,
                 modifier = Modifier.weight(1f),
             )
             if (attachments.isNotEmpty()) {
@@ -678,9 +699,48 @@ private fun Context.openAppSettings() {
 private fun MessageList(
     messages: List<Message>,
     supportThinking: Boolean,
+    userScrolledAway: Boolean,
+    onUserScrolledAwayChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+    // `isAtBottom` reflects whether the last item is fully visible: its
+    // index matches the list's last index AND its `offset + size` fits
+    // inside `viewportEndOffset`. Reads only from `listState.layoutInfo`,
+    // a snapshot state — so the `derivedStateOf` wrapper only invalidates
+    // when layoutInfo actually shifts, not on every scroll frame, and the
+    // closure has nothing stale to capture (note: `totalItemsCount - 1` is
+    // equivalent to `messages.lastIndex` since the LazyColumn renders one
+    // item per message; the symmetric alternative `remember(listState,
+    // messages) { derivedStateOf { ... } }` would re-allocate the derived
+    // state on every list mutation, which streaming makes per-token —
+    // worse than substituting the equivalent layoutInfo read. If this
+    // LazyColumn ever grows non-message rows (separators, date headers,
+    // typing indicators), revisit: the 1:1 assumption would break.).
+    // Empty/short lists naturally report `true` (last visible item ==
+    // last index, content shorter than viewport).
+    val isAtBottom by remember(listState) {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            last == null ||
+                (last.index == info.totalItemsCount - 1 &&
+                    last.offset + last.size <= info.viewportEndOffset)
+        }
+    }
+    // Detect "user took control": a touch-driven DragInteraction.Start
+    // while the list is not pinned to the bottom flips the sticky flag
+    // off (D7). Programmatic `animateScrollToItem` does not emit
+    // DragInteraction events, so the autoscroll effect below and the
+    // FAB onClick cannot self-trigger this flag.
+    LaunchedEffect(listState) {
+        listState.interactionSource.interactions.collect { interaction ->
+            if (interaction is DragInteraction.Start && !isAtBottom) {
+                onUserScrolledAwayChange(true)
+            }
+        }
+    }
     // AC-8 autoscroll — single combined effect keyed on list size and the
     // growing length of BOTH the last message's body and its thinking
     // block so streaming reasoning also re-scrolls. `scrollOffset =
@@ -688,25 +748,58 @@ private fun MessageList(
     // item, which keeps newly-emitted tokens visible even when the
     // assistant bubble grows past the viewport height — plain
     // `animateScrollToItem(lastIndex)` would anchor the top of the item
-    // and clip the bottom during long streams.
+    // and clip the bottom during long streams. The `!userScrolledAway ||
+    // isAtBottom` guard makes the autoscroll sticky-to-bottom: if the
+    // user is reading mid-list we leave the viewport alone; if they're
+    // already pinned to the bottom we keep following.
     val lastTextLen = messages.lastOrNull()?.text?.length ?: 0
     val lastThinkingLen = messages.lastOrNull()?.thinkingText?.length ?: 0
     LaunchedEffect(messages.size, lastTextLen, lastThinkingLen) {
-        if (messages.isNotEmpty()) {
+        if (messages.isNotEmpty() && (!userScrolledAway || isAtBottom)) {
             listState.animateScrollToItem(
                 index = messages.lastIndex,
                 scrollOffset = Int.MAX_VALUE / 2,
             )
         }
     }
-    LazyColumn(
-        modifier = modifier.fillMaxWidth(),
-        state = listState,
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        items(messages) { message ->
-            MessageBubble(message = message, supportThinking = supportThinking)
+    // `fillMaxSize` (not `fillMaxWidth`) is mandatory here: the outer
+    // weight slot supplies the height, and FAB alignment to BottomEnd
+    // requires the Box to actually occupy that height — otherwise it
+    // would collapse to the LazyColumn's content height and the FAB
+    // would sit above the input bar instead of over the message list.
+    Box(modifier = modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            state = listState,
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(messages) { message ->
+                MessageBubble(message = message, supportThinking = supportThinking)
+            }
+        }
+        AnimatedVisibility(
+            visible = userScrolledAway && !isAtBottom,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 16.dp, bottom = 16.dp),
+        ) {
+            FloatingActionButton(
+                onClick = {
+                    coroutineScope.launch {
+                        listState.animateScrollToItem(
+                            index = messages.lastIndex,
+                            scrollOffset = Int.MAX_VALUE / 2,
+                        )
+                        onUserScrolledAwayChange(false)
+                    }
+                },
+            ) {
+                Icon(
+                    imageVector = SanctumIcons.IconChevronDown,
+                    contentDescription = stringResource(R.string.chat_scroll_to_bottom),
+                )
+            }
         }
     }
 }

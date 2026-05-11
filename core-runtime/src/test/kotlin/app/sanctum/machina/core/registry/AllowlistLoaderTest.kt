@@ -338,6 +338,107 @@ class AllowlistLoaderTest {
     assertEquals("", model.configValues[ConfigKeys.SYSTEM_PROMPT_DEFAULT.label])
   }
 
+  // --- Phase 3.7 Task 1: maxContextLength range validation + toModel propagation ----------
+
+  /** Compose a minimal model JSON with explicit `maxContextLength`. */
+  private fun maxContextJson(maxContextLength: Int): String =
+    """{"models":[{"name":"x","modelId":"litert-community/ok","modelFile":"a.lm",
+    "commitHash":"7fa1d78473894f7e736a21d920c3aa80f950c0db","sizeInBytes":1,
+    "minDeviceMemoryInGb":4,"taskTypes":["llm_chat"],
+    "defaultConfig":{"topK":64,"temperature":1.0,"accelerators":"gpu,cpu",
+    "maxTokens":4000,"maxContextLength":$maxContextLength}}]}"""
+
+  @Test
+  fun parse_rejectsMaxContextLengthZero() {
+    val result = parseRaw(maxContextJson(0))
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected maxContextLength in message: $msg", msg.contains("maxContextLength"))
+    assertTrue("expected range marker in message: $msg", msg.contains("1024..131072"))
+  }
+
+  @Test
+  fun parse_rejectsMaxContextLengthNegative() {
+    val result = parseRaw(maxContextJson(-1))
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected range marker in message: $msg", msg.contains("1024..131072"))
+  }
+
+  @Test
+  fun parse_rejectsMaxContextLengthOverCeiling() {
+    val result = parseRaw(maxContextJson(200000))
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected range marker in message: $msg", msg.contains("1024..131072"))
+  }
+
+  @Test
+  fun parse_acceptsMaxContextLengthBoundary_lo() {
+    val parsed = parseRaw(maxContextJson(1024)).getOrThrow()
+    assertEquals(1024, parsed.single().defaultConfig?.maxContextLength)
+  }
+
+  @Test
+  fun parse_acceptsMaxContextLengthBoundary_hi() {
+    val parsed = parseRaw(maxContextJson(131072)).getOrThrow()
+    assertEquals(131072, parsed.single().defaultConfig?.maxContextLength)
+  }
+
+  @Test
+  fun parse_acceptsMaxContextLengthMissing() {
+    // No defaultConfig key for maxContextLength — must pass (range check is null-tolerant).
+    val json =
+      """{"models":[{"name":"x","modelId":"litert-community/ok","modelFile":"a.lm",
+      "commitHash":"7fa1d78473894f7e736a21d920c3aa80f950c0db","sizeInBytes":1,
+      "minDeviceMemoryInGb":4,"taskTypes":["llm_chat"],
+      "defaultConfig":{"topK":64,"temperature":1.0,"accelerators":"gpu,cpu","maxTokens":4000}}]}"""
+    val parsed = parseRaw(json).getOrThrow()
+    assertEquals(null, parsed.single().defaultConfig?.maxContextLength)
+  }
+
+  @Test
+  fun loadFromStream_logsRejectionForOutOfRangeMaxContextLength() = runTest {
+    val loader = AllowlistLoader(context, errorLog)
+
+    val result = loader.loadFromStream(maxContextJson(0).byteInputStream(Charsets.UTF_8))
+
+    assertTrue("rejected entries must not reach the registry", result.isFailure)
+    assertTrue("errors.log must exist after rejection", errorLogFile.exists())
+    val lines = errorLogFile.readLines()
+    assertEquals("expected exactly one log entry, got: $lines", 1, lines.size)
+    val entry = lines.single()
+    assertTrue("missing 'download' component tag in: $entry", entry.contains("download"))
+    assertTrue("missing 'model rejected' in: $entry", entry.contains("model rejected"))
+    assertTrue("missing maxContextLength marker in: $entry", entry.contains("maxContextLength"))
+  }
+
+  @Test
+  fun toModel_propagatesMaxContextLengthIntoConfigValues() {
+    // AllowedModel.toModel() must surface defaultConfig.maxContextLength as a String value-carrier
+    // on Model.configValues, keyed by MAX_CONTEXT_LENGTH.label.
+    val model = parseRaw(maxContextJson(32000)).getOrThrow().single().toModel().apply { preProcess() }
+    assertEquals(
+      "MAX_CONTEXT_LENGTH must reach configValues as a String (LabelConfig carrier shape)",
+      "32000",
+      model.configValues[ConfigKeys.MAX_CONTEXT_LENGTH.label],
+    )
+  }
+
+  @Test
+  fun toModel_omitsMaxContextLengthWhenDefaultConfigMissing() {
+    val json =
+      """{"models":[{"name":"x","modelId":"litert-community/ok","modelFile":"a.lm",
+      "commitHash":"7fa1d78473894f7e736a21d920c3aa80f950c0db","sizeInBytes":1,
+      "minDeviceMemoryInGb":4,"taskTypes":["llm_chat"],
+      "defaultConfig":{"topK":64,"temperature":1.0,"accelerators":"gpu,cpu","maxTokens":4000}}]}"""
+    val model = parseRaw(json).getOrThrow().single().toModel().apply { preProcess() }
+    assertFalse(
+      "configValues must not contain MAX_CONTEXT_LENGTH when defaultConfig omits it",
+      model.configValues.containsKey(ConfigKeys.MAX_CONTEXT_LENGTH.label),
+    )
+  }
+
   @Test
   fun defaultConfig_missingEntirely_systemPromptDefaultEmpty() {
     // When `defaultConfig` is absent, the safe-call chain `defaultConfig?.systemPromptDefault`

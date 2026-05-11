@@ -34,6 +34,7 @@
   <string name="chat_load_failed_title">Не удалось загрузить модель. Скачайте заново.</string>
   <string name="chat_input_placeholder">Сообщение</string>
   <string name="chat_message_interrupted_suffix"> (прервано)</string>
+  <string name="chat_scroll_to_bottom">Прокрутить вниз</string>
 
   <!-- Chat TTFT footer.
        `ttft_footer_format` is the fallback when the runtime does not
@@ -54,7 +55,7 @@
   <string name="settings_temperature_label">Температура</string>
   <string name="settings_top_k_label">Top-K</string>
   <string name="settings_top_p_label">Top-P</string>
-  <string name="settings_max_tokens_label">Максимум токенов</string>
+  <string name="settings_context_window_label">Окно контекста</string>
   <string name="settings_enable_thinking_label">Ризонинг</string>
   <string name="settings_accelerator_label">Ускоритель</string>
   <string name="settings_accelerator_gpu">GPU</string>

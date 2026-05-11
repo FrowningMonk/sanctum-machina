@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -83,10 +84,20 @@ fun MessageBubble(
             if (message.text.isNotEmpty() || message.interrupted) {
                 val display = message.text + interruptedSuffix
                 if (isUser) {
-                    Text(
-                        text = display,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
+                    // User text never streams, so wrap unconditionally.
+                    SelectionContainer {
+                        Text(
+                            text = display,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                } else if (!message.streaming) {
+                    // Skip SelectionContainer while the assistant bubble is
+                    // mutating mid-stream — Compose loses selection cursor
+                    // each recomposition and renders broken anchor handles.
+                    SelectionContainer {
+                        SafeMarkdown(text = display)
+                    }
                 } else {
                     SafeMarkdown(text = display)
                 }
