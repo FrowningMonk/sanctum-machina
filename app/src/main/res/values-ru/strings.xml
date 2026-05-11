@@ -34,6 +34,7 @@
   <string name="chat_load_failed_title">Не удалось загрузить модель. Скачайте заново.</string>
   <string name="chat_input_placeholder">Сообщение</string>
   <string name="chat_message_interrupted_suffix"> (прервано)</string>
+  <string name="chat_scroll_to_bottom">Прокрутить вниз</string>
 
   <!-- Chat TTFT footer.
        `ttft_footer_format` is the fallback when the runtime does not

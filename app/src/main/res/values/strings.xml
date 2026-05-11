@@ -34,6 +34,7 @@
   <string name="chat_load_failed_title">Failed to load model. Please redownload.</string>
   <string name="chat_input_placeholder">Message</string>
   <string name="chat_message_interrupted_suffix"> (interrupted)</string>
+  <string name="chat_scroll_to_bottom">Scroll to bottom</string>
 
   <!-- Chat TTFT footer.
        `ttft_footer_format` is the fallback when the runtime does not
