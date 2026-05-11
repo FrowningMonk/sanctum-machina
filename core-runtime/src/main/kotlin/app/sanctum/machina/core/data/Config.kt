@@ -226,7 +226,7 @@ fun createLlmChatConfigs(
         NumberSliderConfig(
           key = ConfigKeys.TEMPERATURE,
           sliderMin = 0.0f,
-          sliderMax = 2.0f,
+          sliderMax = 1.3f,
           defaultValue = defaultTemperature,
           valueType = ValueType.FLOAT,
         ),
