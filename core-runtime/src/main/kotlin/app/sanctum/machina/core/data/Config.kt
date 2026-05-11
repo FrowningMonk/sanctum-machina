@@ -39,6 +39,7 @@ data class ConfigKey(val id: String, val label: String)
 
 object ConfigKeys {
   val MAX_TOKENS = ConfigKey("max_tokens", "Max tokens")
+  val MAX_CONTEXT_LENGTH = ConfigKey("max_context_length", "Max context length")
   val TOPK = ConfigKey("topk", "TopK")
   val TOPP = ConfigKey("topp", "TopP")
   val TEMPERATURE = ConfigKey("temperature", "Temperature")
@@ -199,18 +200,12 @@ fun createLlmChatConfigs(
   supportThinking: Boolean = false,
   defaultSystemPrompt: String = "",
 ): List<Config> {
-  var maxTokensConfig: Config =
+  // MAX_TOKENS stays as a LabelConfig value-carrier on every path. The dormant
+  // NumberSliderConfig-morphing branch was removed in Phase 3.7 Task 1 — MAX_CONTEXT_LENGTH
+  // is emitted as a sibling LabelConfig below so the slider UI can read it as the upper bound
+  // without mutating the MAX_TOKENS shape.
+  val maxTokensConfig: Config =
     LabelConfig(key = ConfigKeys.MAX_TOKENS, defaultValue = "$defaultMaxToken")
-  if (defaultMaxContextLength != null) {
-    maxTokensConfig =
-      NumberSliderConfig(
-        key = ConfigKeys.MAX_TOKENS,
-        sliderMin = 2000f,
-        sliderMax = defaultMaxContextLength.toFloat(),
-        defaultValue = defaultMaxToken.toFloat(),
-        valueType = ValueType.INT,
-      )
-  }
   val configs =
     listOf(
         maxTokensConfig,
@@ -249,6 +244,11 @@ fun createLlmChatConfigs(
   configs.add(
     LabelConfig(key = ConfigKeys.SYSTEM_PROMPT_DEFAULT, defaultValue = defaultSystemPrompt)
   )
+  if (defaultMaxContextLength != null) {
+    configs.add(
+      LabelConfig(key = ConfigKeys.MAX_CONTEXT_LENGTH, defaultValue = defaultMaxContextLength.toString())
+    )
+  }
   return configs
 }
 

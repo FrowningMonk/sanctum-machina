@@ -19,6 +19,10 @@ private const val MAX_SIZE_BYTES: Long = 10_737_418_240L // 10 GB
 private const val URL_PREFIX = "https://huggingface.co/"
 private const val MIN_DEVICE_MEMORY_GB_RANGE_LO = 1
 private const val MIN_DEVICE_MEMORY_GB_RANGE_HI = 64
+// Phase 3.7 Task 1 (Decision 11): defence-in-depth bounds on AllowedModelConfig.maxContextLength
+// so a future allowlist edit cannot propagate an out-of-range value to LiteRT-LM `max_num_tokens`.
+private const val MAX_CONTEXT_LENGTH_RANGE_LO = 1024
+private const val MAX_CONTEXT_LENGTH_RANGE_HI = 131072
 
 // Each segment: one or more of [A-Za-z0-9._-], but never contains ".." — prevents
 // post-normalization escape from the litert-community org pin (e.g. `..`, `foo/..`).
@@ -89,6 +93,11 @@ class AllowlistLoader @Inject constructor(
         require(minMemory in MIN_DEVICE_MEMORY_GB_RANGE_LO..MIN_DEVICE_MEMORY_GB_RANGE_HI) {
           "minDeviceMemoryInGb=$minMemory not in " +
             "$MIN_DEVICE_MEMORY_GB_RANGE_LO..$MIN_DEVICE_MEMORY_GB_RANGE_HI: ${m.modelId}"
+        }
+        val maxContext = m.defaultConfig?.maxContextLength
+        require(maxContext == null || maxContext in MAX_CONTEXT_LENGTH_RANGE_LO..MAX_CONTEXT_LENGTH_RANGE_HI) {
+          "maxContextLength=$maxContext not in " +
+            "$MAX_CONTEXT_LENGTH_RANGE_LO..$MAX_CONTEXT_LENGTH_RANGE_HI: ${m.modelId}"
         }
         require(m.toModel().url.startsWith(URL_PREFIX)) {
           "Download URL must start with '$URL_PREFIX' for ${m.modelId}"

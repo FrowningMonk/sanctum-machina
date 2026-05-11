@@ -88,6 +88,11 @@ fun InferenceSettingsBottomSheet(
     val maxTokens = remember(effective) {
         mutableIntStateOf((effective[ConfigKeys.MAX_TOKENS.label] as? Int) ?: 1024)
     }
+    // Slider upper bound = per-model context window (allowlist `maxContextLength`, plumbed as a
+    // LabelConfig whose defaultValue is String — Decision 6: no proto override path for this key,
+    // so the effective value for this label is always a String). Absence-fallback `8192` covers a
+    // future allowlist row that omits the field (not reachable from current bundled rows).
+    val effectiveCapacity = (effective[ConfigKeys.MAX_CONTEXT_LENGTH.label] as? String)?.toIntOrNull() ?: 8192
     val enableThinking = remember(effective) {
         mutableStateOf((effective[ConfigKeys.ENABLE_THINKING.label] as? Boolean) ?: false)
     }
@@ -149,10 +154,10 @@ fun InferenceSettingsBottomSheet(
                 range = 0f..1f,
             )
             IntSliderField(
-                label = stringResource(R.string.settings_max_tokens_label),
+                label = stringResource(R.string.settings_context_window_label),
                 state = maxTokens,
-                range = 256..8192,
-                step = 256,
+                range = 1024..effectiveCapacity,
+                step = 1024,
             )
             if (supportThinking) {
                 BooleanSwitchField(

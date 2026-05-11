@@ -3,6 +3,7 @@ package app.sanctum.machina.ui.chat
 import app.sanctum.machina.core.data.ConfigKeys
 import app.sanctum.machina.core.settings.proto.PerModelSettings
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -138,5 +139,63 @@ class EffectiveConfigTest {
         assertEquals(1, result.size)
         assertEquals(0.3f, result[ConfigKeys.TEMPERATURE.label])
         assertNotSame(empty, result)
+    }
+
+    // --- Phase 3.7 Task 1: MAX_CONTEXT_LENGTH propagation ---
+
+    @Test
+    fun merge_carriesMaxContextLengthFromDefaults() {
+        val defaultsWithCapacity = defaults + (ConfigKeys.MAX_CONTEXT_LENGTH.label to "32000")
+        val result = EffectiveConfig.merge(defaultsWithCapacity, overrides = null)
+
+        // Carrier is a LabelConfig whose defaultValue is String — Model.preProcess copies it
+        // verbatim, so the effective map carries String("32000"), not Int(32000).
+        assertEquals("32000", result[ConfigKeys.MAX_CONTEXT_LENGTH.label])
+        assertTrue(
+            "MAX_CONTEXT_LENGTH must remain a String through merge",
+            result[ConfigKeys.MAX_CONTEXT_LENGTH.label] is String,
+        )
+    }
+
+    @Test
+    fun merge_omitsMaxContextLengthWhenAbsentFromDefaults() {
+        // No spurious null in the merged map when the key is absent from defaults — the merge
+        // contract must not synthesise keys that weren't in defaults.
+        val result = EffectiveConfig.merge(defaults, overrides = null)
+        assertFalse(
+            "MAX_CONTEXT_LENGTH must not appear when defaults omit it",
+            result.containsKey(ConfigKeys.MAX_CONTEXT_LENGTH.label),
+        )
+    }
+
+    @Test
+    fun merge_overridesCannotMutateMaxContextLength() {
+        // Strong-form proto-builder bypass: defaults carry MAX_CONTEXT_LENGTH plus every key the
+        // merge currently consumes; override is a default-instance PerModelSettings. The merge
+        // contract must preserve "32000" — even if a future proto edit added max_context_length,
+        // this test locks the absence at the merge seam.
+        val defaultsFull: Map<String, Any> = mapOf(
+            ConfigKeys.MAX_CONTEXT_LENGTH.label to "32000",
+            ConfigKeys.SYSTEM_PROMPT_DEFAULT.label to "be helpful",
+            ConfigKeys.TEMPERATURE.label to 0.7f,
+            ConfigKeys.TOPK.label to 40,
+            ConfigKeys.TOPP.label to 0.95f,
+            ConfigKeys.MAX_TOKENS.label to "4000",
+            ConfigKeys.ENABLE_THINKING.label to true,
+            ConfigKeys.ACCELERATOR.label to "GPU",
+        )
+        val overrides = PerModelSettings.getDefaultInstance()
+
+        val result = EffectiveConfig.merge(defaultsFull, overrides)
+
+        assertEquals("32000", result[ConfigKeys.MAX_CONTEXT_LENGTH.label])
+        // Future-proofing: pin that the proto has no max_context_length field. If a future edit
+        // adds one, this assertion fails loudly and the merge logic above must be re-audited.
+        val hasMaxContextMethod = PerModelSettings::class.java.declaredMethods
+            .any { it.name == "hasMaxContextLength" }
+        assertFalse(
+            "PerModelSettings must not expose hasMaxContextLength() — Decision 6 invariant",
+            hasMaxContextMethod,
+        )
     }
 }

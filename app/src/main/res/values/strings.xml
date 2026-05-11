@@ -54,7 +54,7 @@
   <string name="settings_temperature_label">Temperature</string>
   <string name="settings_top_k_label">Top-K</string>
   <string name="settings_top_p_label">Top-P</string>
-  <string name="settings_max_tokens_label">Max tokens</string>
+  <string name="settings_context_window_label">Context window</string>
   <string name="settings_enable_thinking_label">Reasoning</string>
   <string name="settings_accelerator_label">Accelerator</string>
   <string name="settings_accelerator_gpu">GPU</string>

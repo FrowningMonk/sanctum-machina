@@ -67,6 +67,7 @@ data class AllowedModel(
           defaultTopP = defaultConfig?.topP ?: DEFAULT_TOPP,
           defaultTemperature = defaultConfig?.temperature ?: DEFAULT_TEMPERATURE,
           defaultMaxToken = maxToken,
+          defaultMaxContextLength = defaultConfig?.maxContextLength,
           accelerators = accelerators,
           defaultSystemPrompt = systemPromptDefault,
         )
