@@ -141,7 +141,7 @@ fun InferenceSettingsBottomSheet(
             FloatSliderField(
                 label = stringResource(R.string.settings_temperature_label),
                 state = temperature,
-                range = 0f..2f,
+                range = 0f..1.3f,
             )
             IntSliderField(
                 label = stringResource(R.string.settings_top_k_label),
