@@ -238,7 +238,10 @@ private fun ReadyContent(
     // Sticky-to-bottom state — hoisted in ReadyContent (D10) so the
     // onSend callback below can reset it before forwarding to the VM,
     // ensuring the autoscroll effect re-fires unconditionally after a
-    // user send (Free-scroll AC item 5).
+    // user send (Free-scroll AC item 5). Intentionally NOT
+    // rememberSaveable: rotation / process recreate interrupts the
+    // active stream, so a fresh pinned-to-bottom posture is the
+    // correct reset (task `Edge cases`).
     var userScrolledAway by remember { mutableStateOf(false) }
     val hasAudioAttachment = attachments.any { it is Attachment.Audio }
     val context = LocalContext.current
@@ -709,8 +712,14 @@ private fun MessageList(
     // when layoutInfo actually shifts, not on every scroll frame, and the
     // closure has nothing stale to capture (note: `totalItemsCount - 1` is
     // equivalent to `messages.lastIndex` since the LazyColumn renders one
-    // item per message). Empty/short lists naturally report `true` (last
-    // visible item == last index, content shorter than viewport).
+    // item per message; the symmetric alternative `remember(listState,
+    // messages) { derivedStateOf { ... } }` would re-allocate the derived
+    // state on every list mutation, which streaming makes per-token —
+    // worse than substituting the equivalent layoutInfo read. If this
+    // LazyColumn ever grows non-message rows (separators, date headers,
+    // typing indicators), revisit: the 1:1 assumption would break.).
+    // Empty/short lists naturally report `true` (last visible item ==
+    // last index, content shorter than viewport).
     val isAtBottom by remember(listState) {
         derivedStateOf {
             val info = listState.layoutInfo
