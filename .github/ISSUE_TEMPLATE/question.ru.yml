@@ -1,0 +1,11 @@
+name: Вопрос или обсуждение
+description: Не баг и не запрос фичи — общий вопрос по проекту, сборке, моделям, поведению
+labels: ["question"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Вопрос
+      description: Опишите, что вас интересует. Если речь о конкретной модели или устройстве — упомяните их.
+    validations:
+      required: true

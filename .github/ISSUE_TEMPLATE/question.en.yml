@@ -1,0 +1,11 @@
+name: Question or discussion
+description: Not a bug or a feature — a general question about the project, build, models, or behaviour
+labels: ["question"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: Describe what you'd like to know. If it's about a specific model or device — mention them.
+    validations:
+      required: true

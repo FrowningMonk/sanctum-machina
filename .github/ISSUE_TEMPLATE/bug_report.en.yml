@@ -1,0 +1,53 @@
+name: Bug report
+description: Something works differently from how it should
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Describe the problem. Expected vs actual behaviour.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Opened ...
+        2. Tapped ...
+        3. Saw ...
+    validations:
+      required: true
+
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+      description: Tag from Releases, or `git describe` output if built from source.
+      placeholder: v0.4.0-public
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Device and Android version
+      placeholder: Honor 200, Android 14
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: LLM model
+      description: If the bug is tied to a specific model.
+      placeholder: Gemma-4-E2B-it-litert-lm
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Optional but very helpful. If you can — export via Diagnostics → Save log and attach the file or paste the text. Remove personal data before submitting.
+      render: shell

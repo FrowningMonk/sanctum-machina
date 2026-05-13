@@ -47,8 +47,6 @@ Built on the [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) engine: we
 A few quirks and gaps that exist on day one — tracked, not surprises:
 
 - **SwiftKey leaves a gap below the chat input bar on Honor 200** ([#1](../../issues/1)). IME-design behaviour, not an app layout bug — Gboard / system keyboard render flush.
-- **"Max tokens" controls context window size, not response length** ([#2](../../issues/2)) — upstream LiteRT-LM 0.10 semantics.
-- **Chat messages cannot be copied or selected** ([#3](../../issues/3)) — long-press is not wired up yet.
 - **Only the first photo is saved to history when multiple are sent in one message** ([#4](../../issues/4)). All photos still flow into the model's reply; only history is single-image.
 - **Tested only on Honor 200** ([#5](../../issues/5)) — other Android 12+ devices should work but are unverified; reports welcome.
 

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Vulnerability (EN)
+    url: https://github.com/FrowningMonk/sanctum-machina/security/advisories/new
+    about: For sensitive issues, use Private Vulnerability Reporting (see SECURITY.md).
+  - name: Уязвимость (RU)
+    url: https://github.com/FrowningMonk/sanctum-machina/security/advisories/new
+    about: Если детали чувствительные, используйте Private Vulnerability Reporting (см. SECURITY.ru.md).

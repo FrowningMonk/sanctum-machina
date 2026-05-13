@@ -1,0 +1,53 @@
+name: Баг
+description: Что-то работает не так, как должно
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: Что произошло
+      description: Опишите проблему. Ожидаемое и фактическое поведение.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Шаги воспроизведения
+      placeholder: |
+        1. Открыл ...
+        2. Нажал ...
+        3. Увидел ...
+    validations:
+      required: true
+
+  - type: input
+    id: app-version
+    attributes:
+      label: Версия приложения
+      description: Тег из Releases или вывод `git describe`, если собирали из исходников.
+      placeholder: v0.4.0-public
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Устройство и Android
+      placeholder: Honor 200, Android 14
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Модель LLM
+      description: Если баг связан с конкретной моделью.
+      placeholder: Gemma-4-E2B-it-litert-lm
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Логи
+      description: Опционально, но сильно помогает диагностике. Если можете — экспортируйте через Диагностика → Сохранить лог и приложите файл или вставьте текст. Перед отправкой уберите персональные данные.
+      render: shell
