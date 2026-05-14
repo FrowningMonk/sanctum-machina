@@ -11,6 +11,10 @@ import com.tom_roush.pdfbox.pdmodel.font.PDType1Font
 import java.io.File
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -30,8 +34,8 @@ class PdfTextExtractorTest {
   private lateinit var malformedHeader: File
 
   // Robolectric isolates each test in its own ClassLoader sandbox — Companion-
-  // level statics are reset per test, so fixtures are rebuilt in @Before instead
-  // of @BeforeClass. The build is a few hundred ms total; acceptable.
+  // level statics are reset per test, so fixtures are rebuilt in @Before
+  // instead of @BeforeClass. The build is a few hundred ms total; acceptable.
   @Before
   fun setUp() {
     ctx = ApplicationProvider.getApplicationContext()
@@ -56,10 +60,18 @@ class PdfTextExtractorTest {
       ).apply { encryptionKeyLength = 128 }
       doc.protect(policy)
     }
+    // scanned_image fixture is a single page with no text-drawing content —
+    // PDFTextStripper yields an empty string for it. That is functionally
+    // equivalent to a true image-only page for this contract.
     scannedImage = newPdf("scanned_image.pdf") { doc -> doc.addPage(PDPage()) }
     malformedHeader = File(fixturesDir, "malformed_header.pdf").also {
       it.writeBytes("This is not a PDF file.\n".toByteArray(Charsets.UTF_8))
     }
+  }
+
+  @After
+  fun tearDown() {
+    if (::fixturesDir.isInitialized) fixturesDir.deleteRecursively()
   }
 
   private fun newPdf(name: String, build: (PDDocument) -> Unit): File =
@@ -98,53 +110,54 @@ class PdfTextExtractorTest {
   fun extractsOnePagePdf_yieldsSinglePageWithText() = runTest {
     val (extractor, logger) = newExtractor()
     val pages = extractor.extract(onePage).toList()
-    check(pages.size == 1) { "expected 1 page, got ${pages.size}" }
-    check(pages[0].page == 1)
-    check(pages[0].text.isNotBlank()) { "expected non-blank text, got '${pages[0].text}'" }
-    check(logger.events.isEmpty()) { "expected no errors, got ${logger.events}" }
+    assertEquals(1, pages.size)
+    assertEquals(1, pages[0].page)
+    assertTrue("expected non-blank text, got '${pages[0].text}'", pages[0].text.isNotBlank())
+    assertTrue("expected no errors, got ${logger.events}", logger.events.isEmpty())
   }
 
   @Test
   fun extractsFiftyPagePdf_yieldsFiftyPages() = runTest {
     val (extractor, logger) = newExtractor()
     val pages = extractor.extract(fiftyPages).toList()
-    check(pages.size == 50) { "expected 50 pages, got ${pages.size}" }
+    assertEquals(50, pages.size)
     pages.forEachIndexed { idx, p ->
-      check(p.page == idx + 1)
-      check(p.text.isNotBlank()) { "page ${p.page} has empty text" }
+      assertEquals(idx + 1, p.page)
+      assertTrue("page ${p.page} has empty text", p.text.isNotBlank())
     }
-    check(logger.events.isEmpty()) { "expected no errors, got ${logger.events}" }
+    assertTrue("expected no errors, got ${logger.events}", logger.events.isEmpty())
   }
 
   @Test
   fun encryptedPdf_yieldsNothingAndLogsError() = runTest {
     val (extractor, logger) = newExtractor()
     val pages = extractor.extract(encrypted).toList()
-    check(pages.isEmpty()) { "expected no pages, got ${pages.size}" }
-    check(logger.events.isNotEmpty()) { "expected at least one logged event" }
-    check(
-      logger.events.any { it.first.contains("encrypted") || it.first.contains("open failed") },
-    ) { "expected encrypted-related log, got ${logger.events}" }
+    assertTrue("expected no pages, got ${pages.size}", pages.isEmpty())
+    assertNotNull(
+      "expected an 'encrypted' log entry, got ${logger.events}",
+      logger.events.firstOrNull { it.first.startsWith("encrypted ") },
+    )
   }
 
   @Test
   fun scannedImagePdf_yieldsEmptyTextForEachPage() = runTest {
     val (extractor, logger) = newExtractor()
     val pages = extractor.extract(scannedImage).toList()
-    check(pages.size == 1) { "expected 1 page, got ${pages.size}" }
-    check(pages[0].text.isBlank()) { "expected blank text, got '${pages[0].text}'" }
-    check(logger.events.isEmpty()) { "expected no errors, got ${logger.events}" }
+    assertEquals(1, pages.size)
+    assertTrue("expected blank text, got '${pages[0].text}'", pages[0].text.isBlank())
+    assertTrue("expected no errors, got ${logger.events}", logger.events.isEmpty())
   }
 
   @Test
   fun malformedPdf_yieldsNothingAndLogsError_doesNotCrash() = runTest {
     val (extractor, logger) = newExtractor()
     val pages = extractor.extract(malformedHeader).toList()
-    check(pages.isEmpty()) { "expected no pages, got ${pages.size}" }
-    check(logger.events.isNotEmpty()) { "expected at least one logged event" }
-    check(logger.events.any { it.second != null }) {
-      "expected a logged Throwable, got ${logger.events}"
-    }
+    assertTrue("expected no pages, got ${pages.size}", pages.isEmpty())
+    assertTrue("expected at least one logged event", logger.events.isNotEmpty())
+    assertTrue(
+      "expected a logged Throwable, got ${logger.events}",
+      logger.events.any { it.second != null },
+    )
   }
 
   @Test
@@ -164,13 +177,12 @@ class PdfTextExtractorTest {
     val fivePages = newPdf("five_pages.pdf") { doc -> repeat(5) { doc.addPage(PDPage()) } }
 
     val pages = extractor.extract(fivePages, perPageTimeoutMs = timeoutMs).toList()
-    check(pages.size == 4) { "expected 4 pages (3 timed out), got ${pages.size}" }
-    check(pages.map { it.page } == listOf(1, 2, 4, 5)) {
-      "expected pages 1,2,4,5; got ${pages.map { it.page }}"
-    }
-    check(logger.events.any { it.first.contains("page=$slowPage") }) {
-      "expected a timeout log for page=$slowPage, got ${logger.events}"
-    }
+    assertEquals(4, pages.size)
+    assertEquals(listOf(1, 2, 4, 5), pages.map { it.page })
+    assertNotNull(
+      "expected a timeout log for page=$slowPage, got ${logger.events}",
+      logger.events.firstOrNull { it.first.startsWith("timeout page=$slowPage ") },
+    )
   }
 
   private class RecordingLogger : PdfParseLogger {
