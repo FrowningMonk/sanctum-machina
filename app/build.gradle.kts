@@ -52,6 +52,12 @@ android {
     testOptions {
         unitTests.isIncludeAndroidResources = true
     }
+
+    // Make Room-generated schema JSON files visible to `MigrationTestHelper` on the
+    // instrumentation runtime (it reads them from app assets under `schemas/<dbClass>/N.json`).
+    sourceSets {
+        getByName("androidTest").assets.srcDirs("$projectDir/schemas")
+    }
 }
 
 ksp {

@@ -5,9 +5,13 @@ import androidx.room.Room
 import app.sanctum.machina.core.log.ErrorLog
 import app.sanctum.machina.data.ChatRepository
 import app.sanctum.machina.data.DefaultChatRepository
+import app.sanctum.machina.data.MIGRATION_1_2
 import app.sanctum.machina.data.SanctumDatabase
 import app.sanctum.machina.data.dao.ChatDao
 import app.sanctum.machina.data.dao.MessageDao
+import app.sanctum.machina.data.dao.ProjectDao
+import app.sanctum.machina.data.dao.ProjectEmbeddingDao
+import app.sanctum.machina.data.dao.ProjectFileDao
 import app.sanctum.machina.engine.AppCorruptionState
 import dagger.Binds
 import dagger.Module
@@ -107,12 +111,33 @@ abstract class AppModule {
     @Singleton
     fun provideMessageDao(database: SanctumDatabase): MessageDao = database.messageDao()
 
+    @Provides
+    @Singleton
+    fun provideProjectDao(database: SanctumDatabase): ProjectDao = database.projectDao()
+
+    @Provides
+    @Singleton
+    fun provideProjectFileDao(database: SanctumDatabase): ProjectFileDao =
+      database.projectFileDao()
+
+    @Provides
+    @Singleton
+    fun provideProjectEmbeddingDao(database: SanctumDatabase): ProjectEmbeddingDao =
+      database.projectEmbeddingDao()
+
+    // `MIGRATION_1_2` is registered on BOTH the first-attempt builder and the
+    // post-corruption rebuild path (Decision 13). The corruption catch branch
+    // renames the v1 file and creates a fresh DB — Room still installs the v2
+    // schema directly from the @Database annotation in that path, so the
+    // migration list is irrelevant there, but registering it keeps both
+    // builders identical and avoids subtle divergence if v3 lands later.
     private fun buildSanctumDatabase(context: Context): SanctumDatabase =
       Room.databaseBuilder(
         context.applicationContext,
         SanctumDatabase::class.java,
         SanctumDatabase.DATABASE_NAME,
       )
+        .addMigrations(MIGRATION_1_2)
         .addCallback(SanctumDatabase.ForeignKeysOnOpenCallback)
         .build()
 

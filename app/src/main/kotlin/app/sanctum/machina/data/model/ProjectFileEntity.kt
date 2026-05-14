@@ -7,7 +7,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 
 @Entity(
-    tableName = "chats",
+    tableName = "project_files",
     foreignKeys = [
         ForeignKey(
             entity = ProjectEntity::class,
@@ -17,28 +17,34 @@ import androidx.room.PrimaryKey
         ),
     ],
     indices = [
-        Index(value = ["last_message_at"]),
         Index(value = ["project_id"]),
+        Index(value = ["project_id", "content_hash"], unique = true),
     ],
 )
-data class ChatEntity(
+data class ProjectFileEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0L,
 
     @ColumnInfo(name = "project_id")
-    val projectId: Long? = null,
+    val projectId: Long,
 
-    @ColumnInfo(name = "model_id")
-    val modelId: String,
+    @ColumnInfo(name = "file_name")
+    val fileName: String,
 
-    val title: String? = null,
+    @ColumnInfo(name = "relative_path")
+    val relativePath: String,
 
-    @ColumnInfo(name = "is_manually_titled", defaultValue = "0")
-    val isManuallyTitled: Int = 0,
+    @ColumnInfo(name = "content_hash")
+    val contentHash: String,
+
+    val status: String,
+
+    @ColumnInfo(name = "status_message")
+    val statusMessage: String? = null,
+
+    @ColumnInfo(name = "chunk_count")
+    val chunkCount: Int? = null,
 
     @ColumnInfo(name = "created_at")
     val createdAt: Long,
-
-    @ColumnInfo(name = "last_message_at")
-    val lastMessageAt: Long,
 )
