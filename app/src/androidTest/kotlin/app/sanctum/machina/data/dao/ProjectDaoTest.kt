@@ -156,24 +156,24 @@ class ProjectDaoTest {
                 lastMessageAt = 1L,
             )
         )
-        val messageId = messageDao.insert(
+        messageDao.insert(
             MessageEntity(chatId = chatId, role = "user", text = "hi", createdAt = 1L)
         )
+        // Sanity-check the seed row landed before we cascade it away.
+        assertEquals(1, messageDao.countByChatId(chatId))
 
         dao.deleteById(projectId)
 
         assertNull(dao.getById(projectId))
         assertNull(fileDao.getById(fileId))
         assertNull(embeddingDao.getById(embeddingId))
-        // chats + messages cascade through projects → chats → messages.
         assertNull(chatDao.getById(chatId))
-        // messageDao has no getById; use lastByChat — chat is gone so any message is also gone.
-        assertNull(messageDao.lastByChat(chatId))
-        assertEquals(0, messageDao.countByChatId(chatId))
-        // Ensure no orphan row sneaked through by checking the deleted ids directly.
-        assertNull(
-            "deleted message must be gone after project cascade",
-            messageId.let { id -> messageDao.getByChatId(chatId).find { it.id == id } },
+        // Chained cascade: project → chat → message. messageDao has no getById, so probe
+        // via the chat-scoped count which must be zero once the chat row itself is gone.
+        assertEquals(
+            "messages must cascade through chats on project delete",
+            0,
+            messageDao.countByChatId(chatId),
         )
     }
 }

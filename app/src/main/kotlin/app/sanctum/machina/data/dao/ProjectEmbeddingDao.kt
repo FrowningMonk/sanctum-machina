@@ -55,7 +55,8 @@ interface ProjectEmbeddingDao {
             "pe.chunk_text AS chunk_text, pe.embedding_blob AS embedding_blob " +
             "FROM project_embeddings pe " +
             "INNER JOIN project_files pf ON pf.id = pe.file_id " +
-            "WHERE pe.project_id = :projectId AND pf.status = 'ready'",
+            "WHERE pe.project_id = :projectId AND pf.status = 'ready' " +
+            "ORDER BY pe.id ASC",
     )
     suspend fun allByProjectAndReadyFiles(projectId: Long): List<EmbeddingRow>
 }

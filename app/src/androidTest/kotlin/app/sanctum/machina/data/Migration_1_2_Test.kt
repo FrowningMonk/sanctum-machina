@@ -1,5 +1,6 @@
 package app.sanctum.machina.data
 
+import android.database.sqlite.SQLiteConstraintException
 import androidx.room.Room
 import androidx.room.testing.MigrationTestHelper
 import androidx.sqlite.db.SupportSQLiteDatabase
@@ -7,7 +8,6 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -76,10 +76,11 @@ class Migration_1_2_Test {
             assertEquals(0, it.getInt(0))
         }
 
-        // Spot-check per-column preservation on the first message.
+        // Spot-check per-column preservation on the first message, including the new
+        // `citations` column (must be NULL on every legacy row).
         v2.query(
             "SELECT chat_id, role, text, thinking_text, image_path, audio_path, " +
-                "created_at, token_count FROM messages WHERE id = 1",
+                "created_at, token_count, citations FROM messages WHERE id = 1",
         ).use { cursor ->
             assertTrue(cursor.moveToFirst())
             assertEquals(1L, cursor.getLong(0))
@@ -90,6 +91,7 @@ class Migration_1_2_Test {
             assertTrue(cursor.isNull(5))
             assertEquals(3_000L + 1, cursor.getLong(6))
             assertTrue(cursor.isNull(7))
+            assertTrue("citations must be NULL on legacy rows", cursor.isNull(8))
         }
 
         v2.close()
@@ -217,17 +219,60 @@ class Migration_1_2_Test {
                 it.moveToFirst()
                 assertEquals(1, it.getInt(0))
             }
-            // FK is enforced — attempting an orphan chat fails.
+            // FK is enforced — attempting an orphan chat fails with the precise
+            // SQLite constraint exception, not just any throwable.
             var threw = false
             try {
                 support.execSQL(
                     "INSERT INTO chats (project_id, model_id, title, is_manually_titled, " +
                         "created_at, last_message_at) VALUES (9999, 'm', NULL, 0, 1, 1)",
                 )
-            } catch (e: Throwable) {
+            } catch (e: SQLiteConstraintException) {
                 threw = true
             }
             assertTrue("Orphan chat insert with non-existent project_id must fail under FK", threw)
+
+            // Exercise the project_files → project_embeddings cascade end-to-end on the
+            // migrated DB (not just on a fresh inMemory v2 build) so we catch any FK
+            // mismatch between the migration's CREATE statements and Room's expectations.
+            val projectDao = db.projectDao()
+            val fileDao = db.projectFileDao()
+            val embeddingDao = db.projectEmbeddingDao()
+            kotlinx.coroutines.runBlocking {
+                val projectId = projectDao.insert(
+                    app.sanctum.machina.data.model.ProjectEntity(
+                        name = "migrated-cascade",
+                        createdAt = 1L,
+                    )
+                )
+                val fileId = fileDao.insert(
+                    app.sanctum.machina.data.model.ProjectFileEntity(
+                        projectId = projectId,
+                        fileName = "a.pdf",
+                        relativePath = "projects/$projectId/docs/a.pdf",
+                        contentHash = "h-cascade",
+                        status = "ready",
+                        createdAt = 1L,
+                    )
+                )
+                val embId = embeddingDao.insertAll(
+                    listOf(
+                        app.sanctum.machina.data.model.ProjectEmbeddingEntity(
+                            projectId = projectId,
+                            fileId = fileId,
+                            page = 1,
+                            chunkText = "chunk",
+                            embeddingBlob = byteArrayOf(1, 2, 3),
+                        )
+                    )
+                ).single()
+                fileDao.deleteById(fileId)
+                assertEquals(
+                    "project_embeddings must cascade from project_files on migrated DB",
+                    null,
+                    embeddingDao.getById(embId),
+                )
+            }
         } finally {
             db.close()
             // Clean up the on-disk DB file so a re-run of this test does not see leftovers.
@@ -355,8 +400,4 @@ class Migration_1_2_Test {
         return out
     }
 
-    @Suppress("UNUSED_PARAMETER")
-    private fun assertNullCol(cursor: android.database.Cursor, idx: Int) {
-        assertNull(cursor.getString(idx))
-    }
 }

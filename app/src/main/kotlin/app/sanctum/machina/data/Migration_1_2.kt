@@ -12,10 +12,12 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  *  3. CREATE `project_embeddings` (FKs → projects + project_files, indices on both).
  *  4. Recreate `chats` so the existing v1 `project_id` column gains an `ON DELETE CASCADE`
  *     FK to `projects(id)` — SQLite has no `ADD FOREIGN KEY`. v1 rows are preserved
- *     column-for-column; the FK is not validated on existing rows (legal SQLite behaviour:
- *     `PRAGMA foreign_keys = ON` only checks rows touched *after* the constraint is in
- *     place, and v1 cannot hold non-null `project_id` values that match a real project
- *     since `projects` did not exist yet).
+ *     column-for-column. Room runs migrations with `PRAGMA foreign_keys = OFF`, so the
+ *     `INSERT INTO chats_new SELECT * FROM chats` does not validate FKs against the
+ *     freshly-created (and empty) `projects` table — in practice the legacy values are
+ *     either NULL (the only state ever produced by the v1 codebase) or already-stale and
+ *     get a `PRAGMA foreign_key_check` flag on next open. The constraint applies to all
+ *     writes performed after the migration via the normal runtime path.
  *  5. ALTER `messages` to add the nullable `citations` TEXT column for Decision 7 JSON
  *     blob storage.
  *

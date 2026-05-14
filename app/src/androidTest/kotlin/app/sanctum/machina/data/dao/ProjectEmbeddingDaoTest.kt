@@ -76,7 +76,7 @@ class ProjectEmbeddingDaoTest {
     )
 
     @Test
-    fun insertAllReturnsIdsInOrder() = runBlocking {
+    fun insertAllReturnsDistinctIdsAlignedWithInputOrder() = runBlocking {
         val fileId = insertFile("h1")
         val ids = dao.insertAll(
             listOf(
@@ -86,7 +86,14 @@ class ProjectEmbeddingDaoTest {
             )
         )
         assertEquals(3, ids.size)
-        assertEquals(3, ids.toSet().size) // all distinct
+        assertEquals("returned ids must be distinct", 3, ids.toSet().size)
+        // Room's @Insert returns the rowids in the order of the insertion list, and the
+        // AUTOINCREMENT PK is monotonic on an empty table — assert both invariants.
+        assertEquals(ids.sorted(), ids)
+        for (i in ids.indices) {
+            val loaded = dao.getById(ids[i])
+            assertEquals("input #$i must round-trip to id ${ids[i]}", i + 1, loaded!!.page)
+        }
     }
 
     @Test

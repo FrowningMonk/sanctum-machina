@@ -9,8 +9,14 @@ import app.sanctum.machina.data.SanctumDatabase
 import app.sanctum.machina.data.model.ProjectEmbeddingEntity
 import app.sanctum.machina.data.model.ProjectEntity
 import app.sanctum.machina.data.model.ProjectFileEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -96,7 +102,7 @@ class ProjectFileDaoTest {
     }
 
     @Test
-    fun observeByProjectIsScopedAndReactive() = runBlocking {
+    fun observeByProjectIsScopedToProject() = runBlocking {
         dao.insert(file(projectId = projectAId, contentHash = "ha"))
         dao.insert(file(projectId = projectBId, contentHash = "hb"))
 
@@ -107,6 +113,27 @@ class ProjectFileDaoTest {
         assertEquals(1, b.size)
         assertEquals(projectAId, a.single().projectId)
         assertEquals(projectBId, b.single().projectId)
+    }
+
+    @Test
+    fun observeByProjectEmitsOnInsert() = runBlocking {
+        val emissions = MutableSharedFlow<List<ProjectFileEntity>>(replay = 0, extraBufferCapacity = 16)
+        val job = launch(Dispatchers.IO) {
+            dao.observeByProject(projectAId).collect { emissions.emit(it) }
+        }
+
+        val initial = withTimeout(2_000L) { emissions.first() }
+        assertEquals(0, initial.size)
+
+        val waitUpdated = async(Dispatchers.IO) { emissions.first { it.isNotEmpty() } }
+        delay(50L)
+        dao.insert(file(projectId = projectAId, contentHash = "live"))
+
+        val updated = withTimeout(5_000L) { waitUpdated.await() }
+        assertEquals(1, updated.size)
+        assertEquals("live", updated.single().contentHash)
+
+        job.cancel()
     }
 
     @Test
@@ -127,6 +154,8 @@ class ProjectFileDaoTest {
         } catch (e: SQLiteConstraintException) {
             // expected
         }
+        // Constraint violation must not leave a second row behind.
+        assertEquals(1, dao.observeByProject(projectAId).first().size)
     }
 
     @Test
