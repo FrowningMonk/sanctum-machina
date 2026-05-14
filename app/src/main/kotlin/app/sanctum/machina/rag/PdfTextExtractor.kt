@@ -34,7 +34,7 @@ fun interface PdfParseLogger {
  * Page-tagged PDF text extractor over `pdfbox-android` (Decision 9).
  *
  * Defensive against hostile or malformed PDFs:
- *   * each page is wrapped in [withTimeoutOrNull] (default 5 s). The timeout is
+ *   * each page is wrapped in [withTimeoutOrNull] (default 10 s). The timeout is
  *     **cooperative**: pdfbox's `PDFTextStripper.getText` does not check
  *     `isActive`, so a hostile page can keep the underlying IO thread parked
  *     for the full duration of its native loop even after `withTimeoutOrNull`
@@ -158,7 +158,12 @@ class PdfTextExtractor internal constructor(
   }
 
   companion object {
-    const val DEFAULT_PER_PAGE_TIMEOUT_MS: Long = 5_000L
+    // 10 s default — gives a healthy margin on slower / older devices where
+    // a large image-heavy page can legitimately take several seconds. Spec
+    // R-8 originally cited 5 s; raising to 10 s on user feedback. The attack
+    // window grows linearly (a hostile per-page infinite loop sits on one
+    // IO thread for 10 s instead of 5 s before being skipped) — still bounded.
+    const val DEFAULT_PER_PAGE_TIMEOUT_MS: Long = 10_000L
 
     /**
      * Hard cap on pages processed per document. Above this, the rest is
