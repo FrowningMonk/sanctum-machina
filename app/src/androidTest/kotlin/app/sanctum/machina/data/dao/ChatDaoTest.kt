@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.sanctum.machina.data.SanctumDatabase
 import app.sanctum.machina.data.model.ChatEntity
+import app.sanctum.machina.data.model.ProjectEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -68,9 +69,12 @@ class ChatDaoTest {
 
     @Test
     fun insertAndGetByIdPreservesProjectIdValue() = runBlocking {
+        // v2 added an FK chats.project_id → projects(id); insert a parent project first
+        // so the round-trip exercises the link without tripping FK enforcement.
+        val projectId = db.projectDao().insert(ProjectEntity(name = "p", createdAt = 1L))
         val id = dao.insert(
             ChatEntity(
-                projectId = 42L,
+                projectId = projectId,
                 modelId = "m",
                 createdAt = 1L,
                 lastMessageAt = 1L
@@ -78,7 +82,7 @@ class ChatDaoTest {
         )
 
         val chat = dao.getById(id)!!
-        assertEquals(42L, chat.projectId)
+        assertEquals(projectId, chat.projectId)
     }
 
     @Test
