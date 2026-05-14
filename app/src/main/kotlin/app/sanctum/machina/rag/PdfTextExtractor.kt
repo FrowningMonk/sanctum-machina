@@ -59,6 +59,7 @@ class PdfTextExtractor internal constructor(
   private val context: Context,
   private val logger: PdfParseLogger,
   private val pageReader: PageReader,
+  private val maxPages: Int = MAX_PAGES,
 ) {
 
   constructor(context: Context, logger: PdfParseLogger) :
@@ -116,9 +117,9 @@ class PdfTextExtractor internal constructor(
         return@flow
       }
       val rawPageCount = doc.numberOfPages
-      val pageCount = rawPageCount.coerceAtMost(MAX_PAGES)
-      if (rawPageCount > MAX_PAGES) {
-        logger.log("page-cap file=$safeName pages=$rawPageCount cap=$MAX_PAGES", null)
+      val pageCount = rawPageCount.coerceAtMost(maxPages)
+      if (rawPageCount > maxPages) {
+        logger.log("page-cap file=$safeName pages=$rawPageCount cap=$maxPages", null)
       }
       for (i in 1..pageCount) {
         currentCoroutineContext().ensureActive()
@@ -168,7 +169,10 @@ class PdfTextExtractor internal constructor(
     const val MAX_PAGES: Int = 2_000
 
     private const val MAX_LOG_NAME_LEN: Int = 120
-    private val CONTROL_WS = Regex("[\\n\\r\\t]")
+    // All C0 controls (U+0000..U+001F) and DEL (U+007F). Aligns the substitution
+    // with the function name `sanitizeName` and blocks log-injection vectors
+    // beyond the obvious \n\r\t.
+    private val CONTROL_WS = Regex("[\\x00-\\x1F\\x7F]")
 
     private val initLock = Any()
 

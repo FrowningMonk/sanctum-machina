@@ -96,12 +96,18 @@ class PdfTextExtractorTest {
 
   private fun newExtractor(
     pageReader: PdfTextExtractor.PageReader? = null,
+    maxPages: Int = PdfTextExtractor.MAX_PAGES,
   ): Pair<PdfTextExtractor, RecordingLogger> {
     val logger = RecordingLogger()
-    val extractor = if (pageReader == null) {
+    val extractor = if (pageReader == null && maxPages == PdfTextExtractor.MAX_PAGES) {
       PdfTextExtractor(ctx, logger)
     } else {
-      PdfTextExtractor(ctx, logger, pageReader)
+      PdfTextExtractor(
+        ctx,
+        logger,
+        pageReader ?: PdfTextExtractor.PageReader { _, page -> "page-$page" },
+        maxPages,
+      )
     }
     return extractor to logger
   }
@@ -157,6 +163,23 @@ class PdfTextExtractorTest {
     assertTrue(
       "expected a logged Throwable, got ${logger.events}",
       logger.events.any { it.second != null },
+    )
+  }
+
+  @Test
+  fun pageCountAboveCap_truncatesAndLogsOnce() = runTest {
+    val cap = 3
+    val (extractor, logger) = newExtractor(maxPages = cap)
+    val tenPages = newPdf("ten_pages.pdf") { doc -> repeat(10) { doc.addPage(PDPage()) } }
+
+    val pages = extractor.extract(tenPages).toList()
+    assertEquals(cap, pages.size)
+    assertEquals(listOf(1, 2, 3), pages.map { it.page })
+    val capLogs = logger.events.filter { it.first.startsWith("page-cap ") }
+    assertEquals("expected exactly one page-cap log, got ${logger.events}", 1, capLogs.size)
+    assertTrue(
+      "expected page-cap log to mention pages=10 and cap=$cap, got '${capLogs[0].first}'",
+      capLogs[0].first.contains("pages=10") && capLogs[0].first.contains("cap=$cap"),
     )
   }
 
