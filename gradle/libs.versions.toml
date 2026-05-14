@@ -32,6 +32,7 @@ composeRichtext = "1.0.0-alpha02"
 room = "2.7.1"
 androidxTestRunner = "1.6.2"
 androidxTestExtJunit = "1.2.1"
+pdfboxAndroid = "2.0.27.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -76,6 +77,7 @@ room-compiler = { group = "androidx.room", name = "room-compiler", version.ref =
 room-testing  = { group = "androidx.room", name = "room-testing",  version.ref = "room" }
 androidx-test-runner   = { group = "androidx.test",     name = "runner", version.ref = "androidxTestRunner" }
 androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestExtJunit" }
+pdfbox-android = { group = "com.tom-roush", name = "pdfbox-android", version.ref = "pdfboxAndroid" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

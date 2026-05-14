@@ -104,6 +104,9 @@ dependencies {
     // so :app must depend on it directly.
     implementation(libs.androidx.datastore)
 
+    // Phase 4 Decision 9: Tom Roush pdfbox-android fork (Apache 2.0).
+    implementation(libs.pdfbox.android)
+
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)
