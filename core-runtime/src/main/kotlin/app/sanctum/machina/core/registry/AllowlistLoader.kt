@@ -5,6 +5,8 @@ import androidx.annotation.VisibleForTesting
 import app.sanctum.machina.core.data.AllowedModel
 import app.sanctum.machina.core.data.Model
 import app.sanctum.machina.core.data.ModelAllowlist
+import app.sanctum.machina.core.data.TASK_ID_LLM_CHAT
+import app.sanctum.machina.core.data.TASK_ID_LLM_EMBEDDING
 import app.sanctum.machina.core.log.ErrorLog
 import com.google.gson.Gson
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -39,6 +41,13 @@ private const val PATH_TRAVERSAL = ".."
 // Phase 4 Task 1 (Decision 11): Matryoshka truncation enum from EmbeddingGemma model card.
 // Any other value is rejected at parse time — vector store is fixed-dim per project.
 private val MATRYOSHKA_EMBEDDING_DIMS = setOf(128, 256, 512, 768)
+
+// Phase 4 Task 1 (round-1 review: security upper bounds): chunkSize is the working set per
+// chunk (chars of UTF-8 text); 65_536 is a loose ceiling well above any sane PDF page. topK is
+// the retrieval fan-out; 256 is generous compared to RagSliderBounds slider top (10) and bounds
+// any UI-driven setting from a future schema edit.
+private const val CHUNK_SIZE_MAX = 65_536
+private const val TOP_K_MAX = 256
 
 @Singleton
 class AllowlistLoader @Inject constructor(
@@ -114,19 +123,30 @@ class AllowlistLoader @Inject constructor(
         require(m.taskTypes.isNotEmpty()) {
           "taskTypes must be non-empty: ${m.modelId}"
         }
+        // Phase 4 Task 1 (Decision 4): single-purpose enforcement — a row CANNOT mix
+        // llm_embedding with chat tasks. Mixed taskTypes would produce an incoherent Model
+        // (LITERT_INTERPRETER runtime + chat configs + isLlm=true). Reviewers round-1 major
+        // finding.
+        val hasEmbedding = TASK_ID_LLM_EMBEDDING in m.taskTypes
+        val hasChat = TASK_ID_LLM_CHAT in m.taskTypes
+        require(!(hasEmbedding && hasChat)) {
+          "taskTypes must not mix '$TASK_ID_LLM_EMBEDDING' with chat tasks " +
+            "(${m.taskTypes}): ${m.modelId}"
+        }
         // Phase 4 Task 1 (Decision 11): when defaultRagConfig is present, validate against
         // EmbeddingGemma's documented bounds. Absent → null is fine (chat rows leave it null).
         val ragCfg = m.defaultRagConfig
         if (ragCfg != null) {
-          require(ragCfg.chunkSize > 0) {
-            "defaultRagConfig.chunkSize must be > 0: ${m.modelId} has ${ragCfg.chunkSize}"
+          require(ragCfg.chunkSize in 1..CHUNK_SIZE_MAX) {
+            "defaultRagConfig.chunkSize=${ragCfg.chunkSize} must be in 1..$CHUNK_SIZE_MAX: " +
+              "${m.modelId}"
           }
           require(ragCfg.chunkOverlap >= 0 && ragCfg.chunkOverlap < ragCfg.chunkSize) {
             "defaultRagConfig.chunkOverlap=${ragCfg.chunkOverlap} must be in " +
               "[0, chunkSize=${ragCfg.chunkSize}): ${m.modelId}"
           }
-          require(ragCfg.topK > 0) {
-            "defaultRagConfig.topK must be > 0: ${m.modelId} has ${ragCfg.topK}"
+          require(ragCfg.topK in 1..TOP_K_MAX) {
+            "defaultRagConfig.topK=${ragCfg.topK} must be in 1..$TOP_K_MAX: ${m.modelId}"
           }
           require(ragCfg.embeddingDim in MATRYOSHKA_EMBEDDING_DIMS) {
             "defaultRagConfig.embeddingDim=${ragCfg.embeddingDim} must be one of " +

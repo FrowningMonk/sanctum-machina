@@ -554,6 +554,114 @@ class AllowlistLoaderTest {
   }
 
   @Test
+  fun rejects_mixed_task_types_embedding_and_chat() {
+    // Decision 4: single-purpose enforcement — a row may not advertise both llm_embedding
+    // and chat tasks. The Model would otherwise come out incoherent: LITERT_INTERPRETER
+    // runtime AND isLlm=true AND populated chat configs.
+    val json = embeddingGemmaJson(taskTypes = "[\"llm_embedding\",\"llm_chat\"]")
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected mix marker: $msg", msg.contains("must not mix"))
+  }
+
+  @Test
+  fun rejects_zero_or_negative_chunk_size() {
+    val json = embeddingGemmaJson(
+      defaultRagConfig =
+        "{\"chunkSize\":0,\"chunkOverlap\":0,\"topK\":4,\"embeddingDim\":768}",
+    )
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected chunkSize marker: $msg", msg.contains("chunkSize"))
+  }
+
+  @Test
+  fun rejects_oversized_chunk_size() {
+    // Defense-in-depth: parser refuses Int.MAX_VALUE-class values so a future schema edit
+    // can't OOM the chunker downstream (security-auditor round-1 low finding).
+    val json = embeddingGemmaJson(
+      defaultRagConfig =
+        "{\"chunkSize\":100000,\"chunkOverlap\":100,\"topK\":4,\"embeddingDim\":768}",
+    )
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected chunkSize range marker: $msg",
+      msg.contains("chunkSize") && msg.contains("65536"))
+  }
+
+  @Test
+  fun rejects_negative_chunk_overlap() {
+    val json = embeddingGemmaJson(
+      defaultRagConfig =
+        "{\"chunkSize\":800,\"chunkOverlap\":-1,\"topK\":4,\"embeddingDim\":768}",
+    )
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected chunkOverlap marker: $msg", msg.contains("chunkOverlap"))
+  }
+
+  @Test
+  fun rejects_zero_or_negative_top_k() {
+    val json = embeddingGemmaJson(
+      defaultRagConfig =
+        "{\"chunkSize\":800,\"chunkOverlap\":100,\"topK\":0,\"embeddingDim\":768}",
+    )
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected topK marker: $msg", msg.contains("topK"))
+  }
+
+  @Test
+  fun rejects_oversized_top_k() {
+    val json = embeddingGemmaJson(
+      defaultRagConfig =
+        "{\"chunkSize\":800,\"chunkOverlap\":100,\"topK\":1000,\"embeddingDim\":768}",
+    )
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected topK range marker: $msg",
+      msg.contains("topK") && msg.contains("256"))
+  }
+
+  @Test
+  fun accepts_embedder_row_without_default_rag_config() {
+    // Contract pin: defaultRagConfig is OPTIONAL on embedder rows. Spec implies it but the
+    // parser does not require it (validation only fires when the field is present). If a
+    // future row ships without ragDefaults, the Model lands with defaultRagConfig=null and
+    // T9 falls back to its hardcoded RagDefaults baseline. Test guards this contract.
+    val jsonNoRag = """{"models":[{"name":"x","modelId":"litert-community/embeddinggemma-300m",
+      "modelFile":"a.tflite","commitHash":"e054b9751a203d96508b87532585e20730f23ef6",
+      "sizeInBytes":1,"minDeviceMemoryInGb":4,"taskTypes":["llm_embedding"]}]}"""
+    val parsed = parseRaw(jsonNoRag).getOrThrow()
+    val model = parsed.single().toModel()
+    assertEquals(RuntimeType.LITERT_INTERPRETER, model.runtimeType)
+    assertEquals(null, model.defaultRagConfig)
+  }
+
+  @Test
+  fun best_for_task_types_parsed_when_present() {
+    // bestForTaskTypes was promoted to first-class on AllowedModel in this task (was Gson-
+    // silently-ignored before). Pin that the JSON field reaches the parsed object.
+    val parsed = parseRaw(embeddingGemmaJson()).getOrThrow().single()
+    // The default fixture omits bestForTaskTypes → must be null.
+    assertEquals(null, parsed.bestForTaskTypes)
+
+    val withBest = """{"models":[{"name":"x","modelId":"litert-community/embeddinggemma-300m",
+      "modelFile":"a.tflite","commitHash":"e054b9751a203d96508b87532585e20730f23ef6",
+      "sizeInBytes":1,"minDeviceMemoryInGb":4,"taskTypes":["llm_embedding"],
+      "bestForTaskTypes":["llm_embedding"],
+      "defaultRagConfig":{"chunkSize":800,"chunkOverlap":100,"topK":4,"embeddingDim":768}}]}"""
+    val withBestParsed = parseRaw(withBest).getOrThrow().single()
+    assertEquals(listOf("llm_embedding"), withBestParsed.bestForTaskTypes)
+  }
+
+  @Test
   fun parses_real_bundled_allowlist_with_three_rows() {
     // Asserts the bundled prod asset (after adding EmbeddingGemma row in this task)
     // contains all three rows and they all parse — aggregate doesn't fail-fast.

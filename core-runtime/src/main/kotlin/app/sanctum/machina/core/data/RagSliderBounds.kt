@@ -39,12 +39,14 @@ object RagSliderBounds {
   const val chunkSizeStep: Int = 100
 
   /**
-   * `chunkOverlap` in characters. Cross-knob constraint `overlap < chunkSize` lives in the
-   * ViewModel gate — this range is the slider's standalone domain. Upper bound 400 is the
-   * largest sensible overlap for the smallest chunkSize on the slider; in practice the gate
-   * narrows it further at runtime.
+   * `chunkOverlap` in characters. The cross-knob constraint `overlap < chunkSize` lives in
+   * the ViewModel gate. Upper bound MUST stay strictly below [chunkSizeRange]`.first` so the
+   * slider never proposes a permanently-invalid (overlap >= current chunkSize) region:
+   * round-1 review finding (overlap upper of 400 against chunkSize lower of 200 was
+   * unreachable). 175 = chunkSize_min(200) − one step(25); guarantees at least one valid
+   * overlap value at the smallest chunkSize.
    */
-  val chunkOverlapRange: IntRange = 0..400
+  val chunkOverlapRange: IntRange = 0..175
   const val chunkOverlapStep: Int = 25
 
   /**

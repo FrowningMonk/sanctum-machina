@@ -48,13 +48,22 @@ class EmbeddingGemmaEngine {
   @Volatile private var tokenizer: Tokenizer? = null
 
   /**
-   * Load the .tflite graph onto LiteRT with a GPU-then-CPU accelerator order. Idempotent if
-   * called twice with the same file (subsequent calls reload). Suspending so the native open
-   * runs on [Dispatchers.IO] off the caller's thread.
+   * Load the .tflite graph onto LiteRT with a GPU-then-CPU accelerator order. Idempotent —
+   * any prior engine is released before the new one is opened. Suspending so the native
+   * open runs on [Dispatchers.IO] off the caller's thread.
    *
-   * @param modelFile bundled-or-downloaded .tflite file (resolved via [com.google.ai.edge.litertlm]
-   *   helpers in the registry, NOT directly from assets — the spike asset row is downloaded).
-   * @param tokenizerFile sentencepiece.model file (extraDataFiles companion of the .tflite).
+   * Failure recovery contract: if any step after the model successfully opens fails (e.g.
+   * tokenizer creation throws), the partially-loaded native [CompiledModel] is closed before
+   * the result is returned as failure. Callers can retry without leaking a native handle.
+   *
+   * **Spec deviation [code-reviewer round 1 minor]:** task spec lists `initialize(Context, File)`.
+   * This implementation widens to `(Context, File, File)` — the SentencePiece tokenizer is a
+   * separate file (`sentencepiece.model`) bundled alongside the .tflite on HF, and the
+   * tokenizer must be wired before the engine can encode. Logged in decisions.md.
+   *
+   * @param context Application or any [Context] (Decision 3: no Application reach-up).
+   * @param modelFile downloaded .tflite file (resolved by the registry from [Model.getPath]).
+   * @param tokenizerFile `sentencepiece.model` companion file (extraDataFiles entry).
    */
   suspend fun initialize(
     context: Context,
@@ -68,8 +77,19 @@ class EmbeddingGemmaEngine {
           "tokenizer file missing: ${tokenizerFile.absolutePath}"
         }
         releaseEngineInternal()
-        compiledModel = openWithAcceleratorOrder(modelFile, accelerators = ACCELERATOR_ORDER)
-        tokenizer = Tokenizer.create(tokenizerFile)
+        val opened = openWithAcceleratorOrder(modelFile, accelerators = ACCELERATOR_ORDER)
+        val tok: Tokenizer = try {
+          Tokenizer.create(tokenizerFile)
+        } catch (t: Throwable) {
+          // Tokenizer construction failed AFTER model open — close the native handle so a
+          // retry doesn't leak it. Re-throw so `runCatching` records the failure.
+          try { opened.close() } catch (closeError: Throwable) {
+            Log.w(TAG, "CompiledModel.close failed during init-rollback", closeError)
+          }
+          throw t
+        }
+        compiledModel = opened
+        tokenizer = tok
       }
     }
   }
@@ -94,9 +114,20 @@ class EmbeddingGemmaEngine {
     return runInference(model, tokenIds)
   }
 
-  /** Free native resources. Idempotent. Safe to call from any thread. */
+  /**
+   * Free native resources. Idempotent. Safe to call from any thread.
+   *
+   * Synchronization contract:
+   *  - **Concurrent `encode()` during release** — the registry's responsibility (Decision 2:
+   *    EmbedderRegistry holds `encodeMutex` across encode + release transitions).
+   *  - **Concurrent `initialize()` during release** — the registry's responsibility as well.
+   *    `initialize()` uses suspending [lifecycleMutex]; this method uses a plain
+   *    `synchronized(this)` snapshot because it must remain non-suspending (callable from a
+   *    `Closeable`-style cleanup path / finalizer). The two locks are NOT the same monitor,
+   *    so a registry that calls both APIs from multiple coroutines must serialize them
+   *    externally. Within a single coroutine the ordering is well-defined.
+   */
   fun releaseEngine() {
-    // Concurrent encode() during release is the registry's responsibility (Decision 2).
     // We snapshot under `synchronized(this)` so a racing initialize() can't observe a
     // half-cleared state.
     val (modelToClose, tokenizerToClose) = synchronized(this) {
