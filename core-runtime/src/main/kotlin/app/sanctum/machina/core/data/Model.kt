@@ -36,7 +36,24 @@ enum class RuntimeType {
   @SerializedName("unknown") UNKNOWN,
   @SerializedName("litert_lm") LITERT_LM,
   @SerializedName("aicore") AICORE,
+  // Phase 4 Task 1 (Decision 4): EmbeddingGemma runs on the regular LiteRT Interpreter
+  // runtime (NOT litert-lm). Derived by AllowlistLoader from `taskTypes` containing
+  // "llm_embedding"; never serialized from the allowlist JSON directly.
+  @SerializedName("litert_interpreter") LITERT_INTERPRETER,
 }
+
+/**
+ * Phase 4 Task 1 (Decision 11): defaults for RAG parameters, carried per-model from the
+ * allowlist row's `defaultRagConfig` block. Present only on embedder rows (taskTypes contains
+ * `llm_embedding`); null for chat models. Used as the floor for per-project overrides
+ * (`projects.rag_overrides_json`) — see ProjectSettingsViewModel (Task 9).
+ */
+data class RagDefaults(
+  val chunkSize: Int,
+  val chunkOverlap: Int,
+  val topK: Int,
+  val embeddingDim: Int,
+)
 
 enum class AICoreModelReleaseStage {
   @SerializedName("stable") STABLE,
@@ -93,6 +110,12 @@ data class Model(
   var configValues: Map<String, Any> = mapOf(),
   var prevConfigValues: Map<String, Any> = mapOf(),
   var totalBytes: Long = 0L,
+  /**
+   * Phase 4 Task 1 (Decision 11): RAG parameter defaults from the allowlist row.
+   * Non-null only for embedder rows; consumed by ProjectSettingsViewModel as the
+   * baseline before per-project overrides are merged.
+   */
+  val defaultRagConfig: RagDefaults? = null,
 ) {
   init {
     normalizedName = NORMALIZE_NAME_REGEX.replace(name, "_")
