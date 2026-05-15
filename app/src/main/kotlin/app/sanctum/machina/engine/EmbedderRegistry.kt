@@ -40,7 +40,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 private const val LOG_INIT = "embed-init"
-private const val MODEL_ID_EMBEDDER = "litert-community/embeddinggemma-300m"
 private const val TOKENIZER_FILE_NAME = "sentencepiece.model"
 private const val TASK_TYPE_QUERY = "retrieval_query"
 
@@ -62,8 +61,8 @@ private const val TASK_TYPE_QUERY = "retrieval_query"
  * and may trigger re-warmup on the next call (Decision 2 trigger-points).
  *
  * **Hook points** (wired downstream by their owning task):
- *  - [ProjectDetailViewModel] Task 9: `init { viewModelScope.launch { embedderRegistry.warmup() } }`.
- *  - [ChatViewModel] Task 11: `init { if (chat.project_id != null) viewModelScope.launch { embedderRegistry.warmup() } }`.
+ *  - ProjectDetailViewModel (Task 9): `init { viewModelScope.launch { embedderRegistry.warmup() } }`.
+ *  - ChatViewModel (Task 11): `init { if (chat.project_id != null) viewModelScope.launch { embedderRegistry.warmup() } }`.
  *
  * The registry exposes only the *suspend warmup()* — call-sites decide their own dispatch
  * scope; the registry's own scope is reserved for the idle-teardown loop.
@@ -78,6 +77,11 @@ open class EmbedderRegistry @VisibleForTesting(otherwise = VisibleForTesting.PRI
   private val engineDispatcher: CoroutineDispatcher,
   private val clock: () -> Long,
   private val idleTimeoutMillis: Long,
+  /**
+   * Period between idle-teardown checks. Pass [Long.MAX_VALUE] to suppress the loop entirely
+   * (used by tests that do not assert on idle behaviour — a perpetually-rescheduling `delay()`
+   * conflicts with `runTest`'s terminal drain).
+   */
   private val idleCheckIntervalMillis: Long,
 ) {
 
@@ -150,6 +154,13 @@ open class EmbedderRegistry @VisibleForTesting(otherwise = VisibleForTesting.PRI
         engine.initialize(context, modelFile, tokenizerFile)
       }
     } catch (ce: CancellationException) {
+      // Singleton-lifetime fail-loud: do NOT leave `_state` stuck in Initializing if the
+      // caller's scope (typically a ViewModelScope on ProjectDetailViewModel / ChatViewModel)
+      // is cancelled mid-warmup. The next warmup() retries from a clean slate; encode()
+      // arriving in the meantime sees NotDownloaded and throws EmbedderNotReadyException with
+      // a self-explanatory state instead of "still initializing".
+      _state.value = EmbedderState.NotDownloaded
+      runCatching { errorLog.i(LOG_INIT, "warmup cancelled") }
       throw ce
     } catch (t: Throwable) {
       Result.failure(t)
@@ -158,7 +169,12 @@ open class EmbedderRegistry @VisibleForTesting(otherwise = VisibleForTesting.PRI
     initResult
       .onSuccess { _state.value = EmbedderState.Ready }
       .onFailure { cause ->
-        val reason = cause.message?.takeIf { it.isNotBlank() } ?: "init failed"
+        // Include the leaf cause class so UI snackbars (Task 9 / Task 11) can surface
+        // GPU-driver-broke vs OOM nuance — the engine wraps native errors in IllegalStateException,
+        // so without this the user-facing reason is always the generic outer message.
+        val leafClass = cause::class.simpleName.orEmpty().ifEmpty { "Throwable" }
+        val outer = cause.message?.takeIf { it.isNotBlank() } ?: "init failed"
+        val reason = "$leafClass: $outer"
         _state.value = EmbedderState.Failed(reason, cause)
         runCatching { errorLog.e(LOG_INIT, "warmup failed", cause) }
       }
@@ -205,7 +221,18 @@ open class EmbedderRegistry @VisibleForTesting(otherwise = VisibleForTesting.PRI
   private suspend fun releaseEngineLocked() {
     if (_state.value !is EmbedderState.Ready) return
     withContext(engineDispatcher) {
-      runCatching { engine.releaseEngine() }
+      try {
+        engine.releaseEngine()
+      } catch (ce: CancellationException) {
+        // Preserve structured cancellation — propagate so the caller's scope cancellation
+        // is not silently swallowed by a generic Throwable catch.
+        throw ce
+      } catch (t: Throwable) {
+        // Native release is idempotent + synchronized inside `EmbeddingGemmaEngine`; a throw
+        // here means the implementation broke its contract. Log and continue — flipping to
+        // Idle is still correct because the registry's view of the engine is "gone".
+        runCatching { errorLog.w(LOG_INIT, "release threw", t) }
+      }
     }
     _state.value = EmbedderState.Idle
   }
@@ -249,8 +276,18 @@ open class EmbedderRegistry @VisibleForTesting(otherwise = VisibleForTesting.PRI
   companion object {
     /** Decision 2: 5-min idle window before automatic teardown in MVP. */
     @JvmField val DEFAULT_IDLE_TIMEOUT_MILLIS: Long = 5.minutes.inWholeMilliseconds
-    /** Quarter-window check interval — keeps the worst-case teardown delay bounded at ~6.25 min. */
+    /**
+     * One-minute check interval — worst-case teardown latency is
+     * `DEFAULT_IDLE_TIMEOUT_MILLIS + DEFAULT_IDLE_CHECK_INTERVAL_MILLIS` ≈ 6 min.
+     */
     @JvmField val DEFAULT_IDLE_CHECK_INTERVAL_MILLIS: Long = 1.minutes.inWholeMilliseconds
+
+    /**
+     * HF `modelId` for the embedder allowlist row consumed by warmup. Exposed here so future
+     * consumers (IngestWorker, RagInjector, UI gates) reference one source of truth — see
+     * Decision 12 (model card row) + Task 1 deviation in decisions.md.
+     */
+    const val MODEL_ID_EMBEDDER: String = "litert-community/embeddinggemma-300m"
   }
 }
 

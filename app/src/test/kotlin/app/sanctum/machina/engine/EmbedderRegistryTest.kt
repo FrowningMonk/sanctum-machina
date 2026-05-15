@@ -23,6 +23,7 @@ import app.sanctum.machina.core.registry.ModelRegistry
 import app.sanctum.machina.core.registry.ResetReason
 import com.google.ai.edge.litertlm.Message
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
@@ -39,6 +40,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -184,9 +186,15 @@ class EmbedderRegistryTest {
     val state = registry.state.value
     assertTrue("state must be Failed, got $state", state is EmbedderState.Failed)
     val failed = state as EmbedderState.Failed
-    assertEquals("native delegate refused GPU", failed.reason)
+    // Reason is prefixed with the leaf cause class so UI snackbars (Task 9 / Task 11) can
+    // distinguish GPU-driver-broke from OOM at a glance — see EmbedderRegistry.warmupLocked.
+    assertEquals("IllegalStateException: native delegate refused GPU", failed.reason)
     assertSame(cause, failed.cause)
 
+    // No `awaitLogFile()` poll: `errorLog.e` is awaited inline inside `warmupLocked()`'s
+    // suspend chain (it suspends on the inner `withContext(Dispatchers.IO)`), so by the time
+    // `registry.warmup()` returns the IO write has completed. WarmupCoordinatorTest needs
+    // a poll because its `errorLog.e` runs inside a fire-and-forget `scope.launch { ... }`.
     assertTrue("error log file must be created", errorLogFile.exists())
     val lines = errorLogFile.readLines()
     assertTrue(
@@ -218,16 +226,35 @@ class EmbedderRegistryTest {
 
   @Test
   fun warmup_serializesConcurrentCalls() = runRegistryTest {
+    // Gates the first `engine.initialize` so the next four warmup() calls actually contend
+    // for `encodeMutex` instead of slipping through the `if (state is Ready) return`
+    // fast-path. Without this gating, removing the mutex entirely would leave the test green
+    // (the litmus that flagged the previous version of this test).
     seedDownloadStatus(ModelDownloadStatusType.SUCCEEDED)
+    val release = CompletableDeferred<Unit>()
+    engine.initializeHandler = {
+      release.await()
+      Result.success(Unit)
+    }
     val registry = newRegistry()
 
     val jobs = List(5) { launch { registry.warmup() } }
+    advanceUntilIdle()
+
+    assertEquals(
+      "while parked on the gate, only ONE coroutine should have entered initialize()",
+      1,
+      engine.initCalls,
+    )
+    assertEquals(EmbedderState.Initializing, registry.state.value)
+
+    release.complete(Unit)
     advanceUntilIdle()
     jobs.forEach { it.join() }
 
     assertEquals(EmbedderState.Ready, registry.state.value)
     assertEquals(
-      "encodeMutex must serialise warmup — engine.initialize called exactly once",
+      "initialize() must still be called exactly once after every warmup returns",
       1,
       engine.initCalls,
     )
@@ -311,8 +338,11 @@ class EmbedderRegistryTest {
     val out = registry.encode(listOf("hello", "world"), "retrieval_document")
 
     assertEquals(2, out.size)
-    assertSame("engine.encode result must be proxied verbatim", expected, out[0])
-    assertSame(expected, out[1])
+    // Value-equality, not reference-equality — the contract is "right values come back",
+    // not "no defensive copy". The `encode.encodeCalls` assertion below is what proves the
+    // delegation actually went through `engine.encode` for each text in the batch.
+    assertArrayEquals("engine.encode result must be proxied verbatim", expected, out[0], 0f)
+    assertArrayEquals(expected, out[1], 0f)
     assertEquals(
       listOf("hello" to "retrieval_document", "world" to "retrieval_document"),
       engine.encodeCalls,
@@ -331,7 +361,7 @@ class EmbedderRegistryTest {
 
     val result = registry.encodeQuery("искомый текст")
 
-    assertSame(expected, result)
+    assertArrayEquals(expected, result, 0f)
     assertEquals(listOf("искомый текст" to "retrieval_query"), engine.encodeCalls)
   }
 
@@ -378,6 +408,81 @@ class EmbedderRegistryTest {
     assertEquals(1, engine.closeCalls)
   }
 
+  // NOTE on idle-teardown LOOP wiring coverage:
+  //   The production `startIdleTeardownLoop()` (`scope.launch { while(isActive) { delay(N);
+  //   maybeReleaseIdle() } }`) cannot be exercised under `runTest` + `StandardTestDispatcher`
+  //   without re-introducing the perpetual-reschedule hang that motivated the
+  //   `idleCheckIntervalMillis = Long.MAX_VALUE` opt-out in the test harness. The single
+  //   integration test we attempted (commit reverted; see commit log) caused `runTest`'s
+  //   terminal drain to fight the loop's `delay()` rescheduling even after explicit
+  //   `registryScope.cancel()`. The teardown CONDITION is verified by
+  //   `idleTeardown_after_5min_no_encode_releases_engine` (calls `maybeReleaseIdle()`
+  //   directly); the loop WIRING (init-launch, while-isActive, delay) is verified by code
+  //   review only. Acknowledged trade-off — revisit when kotlinx-coroutines-test exposes
+  //   a non-blocking drain mode for cancelled scopes.
+
+  @Test
+  fun releaseEngine_isNoOp_whenNotReady() = runRegistryTest {
+    seedDownloadStatus(ModelDownloadStatusType.NOT_DOWNLOADED)
+    val registry = newRegistry()
+    registry.warmup()
+    advanceUntilIdle()
+    assertEquals(EmbedderState.NotDownloaded, registry.state.value)
+
+    registry.releaseEngine()
+
+    assertEquals(
+      "releaseEngine() must not change state when registry is not Ready",
+      EmbedderState.NotDownloaded,
+      registry.state.value,
+    )
+    assertEquals(
+      "engine.releaseEngine() must not be invoked when there is no engine to release",
+      0,
+      engine.closeCalls,
+    )
+  }
+
+  @Test
+  fun releaseEngine_setsStateIdle_evenWhenEngineThrows() = runRegistryTest {
+    seedDownloadStatus(ModelDownloadStatusType.SUCCEEDED)
+    engine.releaseHandler = { throw RuntimeException("close failed") }
+    val registry = newRegistry()
+    registry.warmup()
+    advanceUntilIdle()
+    assertEquals(EmbedderState.Ready, registry.state.value)
+
+    registry.releaseEngine()
+
+    assertEquals(
+      "state must flip to Idle even when the engine's release throws",
+      EmbedderState.Idle,
+      registry.state.value,
+    )
+    assertEquals(1, engine.closeCalls)
+  }
+
+  @Test
+  fun warmup_passes_resolvedModelFile_and_tokenizerFile_to_engine() = runRegistryTest {
+    seedDownloadStatus(ModelDownloadStatusType.SUCCEEDED)
+    val registry = newRegistry()
+    registry.warmup()
+    advanceUntilIdle()
+
+    val args = engine.lastInitArgs ?: error("expected initialize() to have been invoked")
+    val (_, modelFile, tokenizerFile) = args
+    // The fixture model resolves the embedder .tflite via `downloadFileName` and falls back
+    // to `sentencepiece.model` for the tokenizer (no extraDataFile in the allowlist row yet).
+    assertTrue(
+      "modelFile path must end with the embedder .tflite filename, got: ${modelFile.absolutePath}",
+      modelFile.absolutePath.endsWith("embeddinggemma-300M_seq2048_mixed-precision.tflite"),
+    )
+    assertTrue(
+      "tokenizerFile path must end with the SentencePiece tokenizer filename, got: ${tokenizerFile.absolutePath}",
+      tokenizerFile.absolutePath.endsWith("sentencepiece.model"),
+    )
+  }
+
   @Test
   fun warmup_after_failed_retries_initialize() = runRegistryTest {
     seedDownloadStatus(ModelDownloadStatusType.SUCCEEDED)
@@ -401,8 +506,6 @@ class EmbedderRegistryTest {
 
   private companion object {
     val DEFAULT_IDLE_TIMEOUT_MILLIS: Long = EmbedderRegistry.DEFAULT_IDLE_TIMEOUT_MILLIS
-    val DEFAULT_IDLE_CHECK_INTERVAL_MILLIS: Long =
-      EmbedderRegistry.DEFAULT_IDLE_CHECK_INTERVAL_MILLIS
   }
 
   private fun embedderModel(): Model = Model(
@@ -430,8 +533,17 @@ private class FakeEmbedderEngine : EmbedderEngine {
     private set
   val encodeCalls: MutableList<Pair<String, String>> = mutableListOf()
 
+  /**
+   * Last `(context, modelFile, tokenizerFile)` triple passed to [initialize]. Lets one
+   * happy-path test assert the registry resolves the right files without making every test
+   * carry the boilerplate.
+   */
+  var lastInitArgs: Triple<Context, File, File>? = null
+
   var initializeHandler: suspend () -> Result<Unit> = { Result.success(Unit) }
   var encodeHandler: (String, String) -> FloatArray = { _, _ -> FloatArray(0) }
+  /** Optional hook letting tests assert the registry tolerates a throwing release. */
+  var releaseHandler: () -> Unit = {}
 
   override suspend fun initialize(
     context: Context,
@@ -439,6 +551,7 @@ private class FakeEmbedderEngine : EmbedderEngine {
     tokenizerFile: File,
   ): Result<Unit> {
     initCalls++
+    lastInitArgs = Triple(context, modelFile, tokenizerFile)
     return initializeHandler()
   }
 
@@ -449,6 +562,7 @@ private class FakeEmbedderEngine : EmbedderEngine {
 
   override fun releaseEngine() {
     closeCalls++
+    releaseHandler()
   }
 }
 
