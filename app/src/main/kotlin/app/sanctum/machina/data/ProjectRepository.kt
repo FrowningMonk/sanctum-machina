@@ -122,4 +122,26 @@ interface ProjectRepository {
    * escape (defence-in-depth — the path leaves the safe scope through `inputData`).
    */
   suspend fun enqueueIngest(projectId: Long, fileId: Long, filePath: String)
+
+  /**
+   * Task 9 / Decision 11 reindex-required tier: flip `[fileId]` back to `status = 'pending'`
+   * (clearing `status_message`), delete any previously-persisted `project_embeddings` rows for
+   * that file via FK cascade on row delete, and enqueue a fresh `IngestWorker` run.
+   *
+   * Used by the failed-document banner («Переиндексировать» action) and by the per-document
+   * overflow «Переиндексировать» menu item. Missing file id → no-op (idempotent for double-tap).
+   */
+  suspend fun reindexFile(fileId: Long)
+
+  /**
+   * Task 9 / Decision 11 reindex-required tier: writes new `chunkSize` / `chunkOverlap` into the
+   * project's `rag_overrides_json` (preserving the other knobs from the current effective
+   * settings), flips every `project_files` row in the project back to `status = 'pending'`,
+   * cascade-deletes their `project_embeddings`, and enqueues an `IngestWorker` run per file
+   * (sharing the project's unique work name — IngestEnqueuer serialises via `APPEND_OR_REPLACE`).
+   *
+   * Single transaction for the DB mutations; ingest enqueues happen after commit so a Room
+   * failure does not leave WorkManager with stale work for rows that never flipped to pending.
+   */
+  suspend fun applyReindexRequired(projectId: Long, chunkSize: Int, chunkOverlap: Int)
 }

@@ -15,6 +15,7 @@ import app.sanctum.machina.core.embedder.EmbedderEngine
 import app.sanctum.machina.core.embedder.EmbeddingGemmaEngine
 import app.sanctum.machina.core.worker.IngestEnqueuer
 import app.sanctum.machina.core.worker.WorkManagerIngestEnqueuer
+import app.sanctum.machina.engine.EmbedderGate
 import app.sanctum.machina.engine.EmbedderRegistry
 import dagger.Binds
 import dagger.Module
@@ -47,6 +48,15 @@ abstract class EngineModule {
   @Binds
   @Singleton
   abstract fun bindEmbedder(impl: EmbedderRegistry): Embedder
+
+  /**
+   * Task 9: narrow UI-side surface (state + warmup) consumed by `ProjectDetailViewModel`.
+   * Bound to the same singleton — `Embedder` (encode) and `EmbedderGate` (state) are different
+   * facets of one runtime, not two engines.
+   */
+  @Binds
+  @Singleton
+  abstract fun bindEmbedderGate(impl: EmbedderRegistry): EmbedderGate
 
   /**
    * Task 7: production [IngestEnqueuer] wraps `WorkManager.enqueueUniqueWork`. The

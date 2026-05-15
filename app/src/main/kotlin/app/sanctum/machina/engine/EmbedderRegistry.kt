@@ -85,7 +85,7 @@ open class EmbedderRegistry @VisibleForTesting(otherwise = VisibleForTesting.PRI
    * conflicts with `runTest`'s terminal drain).
    */
   private val idleCheckIntervalMillis: Long,
-) : Embedder {
+) : Embedder, EmbedderGate {
 
   @Inject
   constructor(
@@ -112,7 +112,7 @@ open class EmbedderRegistry @VisibleForTesting(otherwise = VisibleForTesting.PRI
   private val _state: MutableStateFlow<EmbedderState> = MutableStateFlow(EmbedderState.NotDownloaded)
 
   /** Hot stream of the current registry state — observed by UI gates (FAB enabled, snackbar). */
-  open val state: StateFlow<EmbedderState> = _state.asStateFlow()
+  override val state: StateFlow<EmbedderState> = _state.asStateFlow()
 
   /**
    * Serialises every transition: `warmup` / `encode` / `encodeQuery` / `releaseEngine` /
@@ -134,7 +134,7 @@ open class EmbedderRegistry @VisibleForTesting(otherwise = VisibleForTesting.PRI
    * through [encodeMutex] — exactly one [EmbedderEngine.initialize] runs even with N parallel
    * `launch { warmup() }` calls.
    */
-  open suspend fun warmup() {
+  override suspend fun warmup() {
     encodeMutex.withLock { warmupLocked() }
   }
 

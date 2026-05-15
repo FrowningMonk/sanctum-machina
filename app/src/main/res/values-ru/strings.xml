@@ -208,4 +208,62 @@
   <string name="ingest_status_failed_cancelled">Прервано</string>
   <string name="ingest_status_failed_generic">Ошибка индексации</string>
   <string name="ingest_status_failed_path">Внутренняя ошибка пути</string>
+
+  <!-- Phase 4 Task 9: Project screens (create / detail / settings) + RAG settings. -->
+  <!-- Drawer entry for creating a project (lives in the Projects section). -->
+  <string name="drawer_new_project">Новый проект</string>
+
+  <!-- ProjectCreateScreen -->
+  <string name="project_create_title">Новый проект</string>
+  <string name="project_create_name_label">Имя проекта</string>
+  <string name="project_create_default_model_label">Модель по умолчанию (опционально)</string>
+  <string name="project_create_default_model_unset">Использовать глобальную по умолчанию</string>
+  <string name="project_create_confirm_btn">Создать</string>
+  <string name="project_create_cancel_btn">Отмена</string>
+
+  <!-- ProjectDetailScreen -->
+  <string name="project_detail_chats_section">Чаты</string>
+  <string name="project_detail_documents_section">Документы</string>
+  <string name="project_detail_no_documents">Документов пока нет</string>
+  <string name="project_detail_no_chats">Чатов пока нет</string>
+  <string name="project_detail_add_document_fab">Добавить документы</string>
+  <string name="project_detail_new_chat_fab">Новый чат</string>
+  <string name="project_detail_embedder_not_downloaded_snackbar">Загрузите модель эмбеддингов</string>
+  <string name="project_detail_embedder_not_downloaded_cta">Открыть Model Manager</string>
+  <string name="project_detail_duplicate_document_toast">Документ уже в проекте</string>
+  <string name="project_detail_import_failed_toast">Не удалось загрузить документ</string>
+  <string name="project_detail_failed_docs_banner_title">Индексация была прервана для этих документов</string>
+  <string name="project_detail_failed_docs_reindex_action">Переиндексировать</string>
+  <string name="project_detail_failed_docs_dismiss_action">Скрыть</string>
+  <string name="project_detail_overflow_settings">Настройки проекта</string>
+  <string name="project_detail_overflow_delete">Удалить проект</string>
+  <string name="project_detail_delete_confirm_title">Удалить проект?</string>
+  <string name="project_detail_delete_confirm_body">Все чаты и документы в этом проекте будут удалены. Это нельзя отменить.</string>
+  <string name="project_detail_delete_confirm_yes">Удалить</string>
+  <string name="project_detail_delete_confirm_no">Отмена</string>
+  <string name="project_detail_file_overflow_reindex">Переиндексировать</string>
+  <string name="project_detail_file_overflow_delete">Удалить</string>
+
+  <!-- Per-file statuses (status chip). %1$d / %2$d for indexing progress. -->
+  <string name="project_file_status_pending">Ожидает</string>
+  <string name="project_file_status_indexing">Индексация %1$d / %2$d</string>
+  <string name="project_file_status_ready">Готов</string>
+  <string name="project_file_status_failed">Ошибка</string>
+
+  <!-- ProjectSettingsScreen + RAG settings (Decision 11). -->
+  <string name="project_settings_title">Настройки проекта</string>
+  <string name="project_settings_rag_section">Настройки RAG</string>
+  <string name="project_settings_chunk_size_label">Размер чанка</string>
+  <string name="project_settings_chunk_overlap_label">Перекрытие чанков</string>
+  <string name="project_settings_top_k_label">Top-K</string>
+  <string name="project_settings_apply_btn">Применить</string>
+  <string name="project_settings_reset_defaults_btn">Сбросить к умолчаниям</string>
+  <string name="project_settings_reindex_warning_title">Требуется переиндексация</string>
+  <string name="project_settings_reindex_warning_body">Изменение этого параметра потребует переиндексации всех документов в проекте (%1$d файлов). Это займёт примерно %2$d минут. Продолжить?</string>
+  <string name="project_settings_reindex_warning_confirm">Переиндексировать</string>
+  <string name="project_settings_reindex_warning_cancel">Отмена</string>
+  <string name="project_settings_reindex_started_snackbar">Переиндексация запущена</string>
+
+  <!-- RAG knob shared strings. -->
+  <string name="rag_value_int_format">%1$d</string>
 </resources>

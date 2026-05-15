@@ -236,6 +236,7 @@ private class FakeEmbeddingDao : ProjectEmbeddingDao {
 
   override suspend fun insertAll(rows: List<ProjectEmbeddingEntity>): List<Long> = emptyList()
   override suspend fun deleteByFileId(fileId: Long) {}
+  override suspend fun deleteByProjectId(projectId: Long) {}
   override suspend fun getById(id: Long): ProjectEmbeddingEntity? = null
   override suspend fun countByFileId(fileId: Long): Int = 0
   override suspend fun allByProjectAndReadyFiles(projectId: Long): List<EmbeddingRow> {

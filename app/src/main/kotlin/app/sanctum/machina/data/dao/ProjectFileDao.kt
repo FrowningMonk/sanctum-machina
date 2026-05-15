@@ -26,6 +26,15 @@ interface ProjectFileDao {
     fun observeByProject(projectId: Long): Flow<List<ProjectFileEntity>>
 
     /**
+     * Task 9 / Decision 11 reindex-required apply: snapshot read of every file in the project,
+     * used by `DefaultProjectRepository.applyReindexRequired` to flip statuses + re-enqueue
+     * ingest in one pass. Suspending (not Flow) because the reindex caller needs a single
+     * stable snapshot to drive the WorkManager enqueue loop.
+     */
+    @Query("SELECT * FROM project_files WHERE project_id = :projectId ORDER BY created_at ASC")
+    suspend fun findAllByProject(projectId: Long): List<ProjectFileEntity>
+
+    /**
      * Dedup lookup for IngestWorker: returns the row matching the SHA-256 content_hash
      * within the given project, or null if the file has not been ingested there yet.
      * The unique index on `(project_id, content_hash)` makes this an indexed point read.

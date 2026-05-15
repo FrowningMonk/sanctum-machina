@@ -208,4 +208,62 @@
   <string name="ingest_status_failed_cancelled">Cancelled</string>
   <string name="ingest_status_failed_generic">Indexing failed</string>
   <string name="ingest_status_failed_path">Internal path error</string>
+
+  <!-- Phase 4 Task 9: Project screens (create / detail / settings) + RAG settings. -->
+  <!-- Drawer entry for creating a project (lives in the Projects section). -->
+  <string name="drawer_new_project">New project</string>
+
+  <!-- ProjectCreateScreen -->
+  <string name="project_create_title">New project</string>
+  <string name="project_create_name_label">Project name</string>
+  <string name="project_create_default_model_label">Default model (optional)</string>
+  <string name="project_create_default_model_unset">Use global default</string>
+  <string name="project_create_confirm_btn">Create</string>
+  <string name="project_create_cancel_btn">Cancel</string>
+
+  <!-- ProjectDetailScreen -->
+  <string name="project_detail_chats_section">Chats</string>
+  <string name="project_detail_documents_section">Documents</string>
+  <string name="project_detail_no_documents">No documents yet</string>
+  <string name="project_detail_no_chats">No chats yet</string>
+  <string name="project_detail_add_document_fab">Add documents</string>
+  <string name="project_detail_new_chat_fab">New chat</string>
+  <string name="project_detail_embedder_not_downloaded_snackbar">Download the embedding model first</string>
+  <string name="project_detail_embedder_not_downloaded_cta">Open Model Manager</string>
+  <string name="project_detail_duplicate_document_toast">Document already in project</string>
+  <string name="project_detail_import_failed_toast">Failed to import document</string>
+  <string name="project_detail_failed_docs_banner_title">Indexing was interrupted for these documents</string>
+  <string name="project_detail_failed_docs_reindex_action">Reindex</string>
+  <string name="project_detail_failed_docs_dismiss_action">Dismiss</string>
+  <string name="project_detail_overflow_settings">Project settings</string>
+  <string name="project_detail_overflow_delete">Delete project</string>
+  <string name="project_detail_delete_confirm_title">Delete project?</string>
+  <string name="project_detail_delete_confirm_body">All chats and documents in this project will be removed. This cannot be undone.</string>
+  <string name="project_detail_delete_confirm_yes">Delete</string>
+  <string name="project_detail_delete_confirm_no">Cancel</string>
+  <string name="project_detail_file_overflow_reindex">Reindex</string>
+  <string name="project_detail_file_overflow_delete">Delete</string>
+
+  <!-- Per-file statuses (status chip). %1$d / %2$d for indexing progress. -->
+  <string name="project_file_status_pending">Pending</string>
+  <string name="project_file_status_indexing">Indexing %1$d / %2$d</string>
+  <string name="project_file_status_ready">Ready</string>
+  <string name="project_file_status_failed">Failed</string>
+
+  <!-- ProjectSettingsScreen + RAG settings (Decision 11). -->
+  <string name="project_settings_title">Project settings</string>
+  <string name="project_settings_rag_section">RAG settings</string>
+  <string name="project_settings_chunk_size_label">Chunk size</string>
+  <string name="project_settings_chunk_overlap_label">Chunk overlap</string>
+  <string name="project_settings_top_k_label">Top-K</string>
+  <string name="project_settings_apply_btn">Apply</string>
+  <string name="project_settings_reset_defaults_btn">Reset to defaults</string>
+  <string name="project_settings_reindex_warning_title">Reindex required</string>
+  <string name="project_settings_reindex_warning_body">Changing this setting will reindex every document in this project (%1$d files). This may take about %2$d minutes. Continue?</string>
+  <string name="project_settings_reindex_warning_confirm">Reindex</string>
+  <string name="project_settings_reindex_warning_cancel">Cancel</string>
+  <string name="project_settings_reindex_started_snackbar">Reindexing started</string>
+
+  <!-- RAG knob shared strings. -->
+  <string name="rag_value_int_format">%1$d</string>
 </resources>

@@ -59,7 +59,6 @@ class DefaultProjectRepository
 internal constructor(
   private val projectDao: ProjectDao,
   private val projectFileDao: ProjectFileDao,
-  @Suppress("UnusedPrivateProperty")
   private val projectEmbeddingDao: ProjectEmbeddingDao,
   private val messageDao: MessageDao,
   private val errorLog: ErrorLog,
@@ -270,6 +269,55 @@ internal constructor(
     // the suspend signature exists so future call-sites can move WorkManager wiring behind a
     // suspending API without API churn.
     ingestEnqueuer.enqueue(projectId, fileId, filePath)
+  }
+
+  override suspend fun reindexFile(fileId: Long) {
+    withContext(ioDispatcher) {
+      val file = projectFileDao.getById(fileId) ?: return@withContext
+      // FK CASCADE wipes `project_embeddings` rows that were persisted before this reindex;
+      // we then re-insert via the worker pipeline so the row id stays stable but its state
+      // walks the pending → indexing → ready arc fresh.
+      projectEmbeddingDao.deleteByFileId(fileId)
+      projectFileDao.update(
+        file.copy(status = "pending", statusMessage = null, chunkCount = null),
+      )
+      ingestEnqueuer.enqueue(file.projectId, fileId, file.relativePath)
+    }
+  }
+
+  override suspend fun applyReindexRequired(
+    projectId: Long,
+    chunkSize: Int,
+    chunkOverlap: Int,
+  ) {
+    withContext(ioDispatcher) {
+      // Capture the existing effective config so the partial slider apply preserves topK +
+      // embeddingDim — only the two reindex knobs are mutated by this entry point.
+      val current = getEffectiveRagSettings(projectId)
+      val merged = current.copy(chunkSize = chunkSize, chunkOverlap = chunkOverlap)
+
+      // Snapshot files BEFORE the transaction so we can re-enqueue after commit. Reading
+      // inside the transaction would block IngestEnqueuer's WorkManager call, which is
+      // synchronous and runs on the same dispatcher.
+      val filesSnapshot = projectFileDao.findAllByProject(projectId)
+
+      transactionRunner {
+        val project = projectDao.getById(projectId) ?: return@transactionRunner
+        projectDao.update(project.copy(ragOverridesJson = gson.toJson(merged)))
+        projectEmbeddingDao.deleteByProjectId(projectId)
+        for (file in filesSnapshot) {
+          projectFileDao.update(
+            file.copy(status = "pending", statusMessage = null, chunkCount = null),
+          )
+        }
+      }
+
+      // Post-commit enqueue. Sharing one unique work name + APPEND_OR_REPLACE serialises
+      // execution per Decision 5; spam-clicks on Confirm are absorbed by the queue.
+      for (file in filesSnapshot) {
+        ingestEnqueuer.enqueue(projectId, file.id, file.relativePath)
+      }
+    }
   }
 
   /**

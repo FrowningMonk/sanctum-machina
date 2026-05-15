@@ -47,6 +47,13 @@ interface ProjectEmbeddingDao {
     @Query("DELETE FROM project_embeddings WHERE file_id = :fileId")
     suspend fun deleteByFileId(fileId: Long)
 
+    /**
+     * Task 9 reindex-required tier: wipe every embedding row across a project so a settings
+     * change can re-ingest all files with the new chunkSize / chunkOverlap from a clean slate.
+     */
+    @Query("DELETE FROM project_embeddings WHERE project_id = :projectId")
+    suspend fun deleteByProjectId(projectId: Long)
+
     @Query("SELECT * FROM project_embeddings WHERE id = :id")
     suspend fun getById(id: Long): ProjectEmbeddingEntity?
 

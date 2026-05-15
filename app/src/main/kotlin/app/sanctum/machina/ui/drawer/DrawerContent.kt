@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Home
@@ -89,6 +90,7 @@ fun DrawerContent(
     onNewChat: () -> Unit,
     onNavigateToHome: () -> Unit,
     onProjectClick: (projectId: Long) -> Unit,
+    onNewProject: () -> Unit,
     onNavigateToModelManager: (modelId: String) -> Unit,
     onOpenModelManager: () -> Unit,
     onNavigateToDiagnostics: () -> Unit,
@@ -172,6 +174,9 @@ fun DrawerContent(
                                 }
                             }
                         }
+                    }
+                    item(key = "projects-new") {
+                        NewProjectRow(onClick = onNewProject)
                     }
                     item(key = "projects-divider") {
                         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
@@ -379,6 +384,32 @@ private fun ProjectsEmptyPlaceholder() {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
     )
+}
+
+@Composable
+private fun NewProjectRow(onClick: () -> Unit) {
+    // Phase 4 Task 9 entry-point to ProjectCreateScreen. Lives in the Projects section so
+    // the create button is discoverable both in the empty-state and after the user has any
+    // existing projects (US-AC1 «FAB + Новый проект»).
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.Add,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(end = 12.dp),
+        )
+        Text(
+            text = stringResource(R.string.drawer_new_project),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
 }
 
 @Composable
