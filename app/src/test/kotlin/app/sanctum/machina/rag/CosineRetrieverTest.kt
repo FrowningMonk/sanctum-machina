@@ -43,6 +43,11 @@ class CosineRetrieverTest {
     assertEquals(1L, result[0].row.fileId)
     assertEquals(2L, result[1].row.fileId)
     assertEquals(3L, result[2].row.fileId)
+    // Pin actual cosine values too — id-only ordering would still pass an
+    // accidental abs() or sign-strip in the scorer.
+    assertEquals(1f, result[0].score, 1e-6f)
+    assertEquals(0f, result[1].score, 1e-6f)
+    assertEquals(-1f, result[2].score, 1e-6f)
   }
 
   @Test
@@ -87,6 +92,29 @@ class CosineRetrieverTest {
     assertEquals(1, result.size)
     assertFalse(result[0].score.isNaN())
     assertEquals(0f, result[0].score, 0f)
+  }
+
+  @Test
+  fun nanOrInfInRowEmbedding_coercedToZero_doesNotPoisonRanking() {
+    val q = floatArrayOf(1f, 0f, 0f)
+    val good1 = row(id = 1L, embedding = floatArrayOf(1f, 0f, 0f))      // cos = 1
+    val good2 = row(id = 2L, embedding = floatArrayOf(0.5f, 0.5f, 0f))  // cos > 0
+    val poisonedNaN = row(id = 99L, embedding = floatArrayOf(Float.NaN, 0f, 0f))
+    val poisonedInf = row(id = 100L, embedding = floatArrayOf(Float.POSITIVE_INFINITY, 0f, 0f))
+    val result = CosineRetriever.topK(q, listOf(poisonedNaN, poisonedInf, good2, good1), k = 4)
+    assertEquals(4, result.size)
+    // Legitimate rows must rank ahead of poisoned ones; poisoned ones land
+    // at the bottom with score 0f (not NaN, which would sort to the top).
+    assertEquals(1L, result[0].row.fileId)
+    assertEquals(2L, result[1].row.fileId)
+    for (s in result) {
+      assertFalse("score is NaN for row ${s.row.fileId}", s.score.isNaN())
+      assertFalse("score is infinite for row ${s.row.fileId}", s.score.isInfinite())
+    }
+    // The two poisoned rows both got coerced to 0f.
+    val poisonedScores = result.filter { it.row.fileId == 99L || it.row.fileId == 100L }
+    assertEquals(2, poisonedScores.size)
+    for (s in poisonedScores) assertEquals(0f, s.score, 0f)
   }
 
   @Test

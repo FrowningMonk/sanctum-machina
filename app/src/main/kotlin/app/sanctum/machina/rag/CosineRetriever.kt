@@ -66,11 +66,17 @@ object CosineRetriever {
         "dimension mismatch: query=${query.size} row=${row.embedding.size}"
       }
       val rNorm = norm(row.embedding)
-      val score = if (qNorm == 0f || rNorm == 0f) {
+      val raw = if (qNorm == 0f || rNorm == 0f) {
         0f
       } else {
         dot(query, row.embedding) / (qNorm * rNorm)
       }
+      // Coerce NaN / ±Infinity → 0f. `EmbeddingBlob.decode` faithfully restores
+      // whatever bits the encoder wrote, including NaN/Inf if a row got
+      // corrupted in transit — without this guard, one poisoned row sorts to
+      // the top of the heap (NaN > anything under `Float.compare`) and shadows
+      // every legitimate hit. Defence-in-depth alongside the dim check above.
+      val score = if (raw.isFinite()) raw else 0f
       val candidate = Scored(row, score)
       if (heap.size < k) {
         heap.offer(candidate)
