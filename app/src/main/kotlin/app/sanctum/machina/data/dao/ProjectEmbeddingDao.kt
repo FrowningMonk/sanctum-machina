@@ -50,6 +50,15 @@ interface ProjectEmbeddingDao {
     @Query("SELECT * FROM project_embeddings WHERE id = :id")
     suspend fun getById(id: Long): ProjectEmbeddingEntity?
 
+    /**
+     * Phase 4 Task 7 review round 2: raw count, unfiltered by `project_files.status`. Used by
+     * `IngestWorkerTest` to assert that `cleanupPartialIngest` actually executes the partial
+     * embeddings DELETE — `allByProjectAndReadyFiles` filters on `status='ready'` and would
+     * mask a regression that drops the DELETE while the file is already flipped to `'failed'`.
+     */
+    @Query("SELECT COUNT(*) FROM project_embeddings WHERE file_id = :fileId")
+    suspend fun countByFileId(fileId: Long): Int
+
     @Query(
         "SELECT pe.file_id AS file_id, pf.file_name AS file_name, pe.page AS page, " +
             "pe.chunk_text AS chunk_text, pe.embedding_blob AS embedding_blob " +

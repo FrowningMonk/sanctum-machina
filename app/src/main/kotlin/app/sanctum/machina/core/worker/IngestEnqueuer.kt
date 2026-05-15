@@ -59,7 +59,7 @@ class WorkManagerIngestEnqueuer @Inject constructor(
   }
 
   companion object {
-    /** Public for [IngestWorker.IngestCancelReceiver] which receives the same name in the cancel intent. */
+    /** Public for [IngestCancelReceiver] which receives the same name in the cancel intent. */
     fun uniqueWorkNameFor(projectId: Long): String = "ingest-project-$projectId"
   }
 }

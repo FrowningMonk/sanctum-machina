@@ -140,7 +140,9 @@ class IngestWorker(context: Context, params: WorkerParameters) :
     }
 
     // Mark the row as `indexing` so the UI can render the progress chip even before the first
-    // notification update lands. `relativePath` etc. are left untouched.
+    // notification update lands. `relativePath` etc. are left untouched. Capture the row
+    // snapshot once and thread it through to `ingestPages` so the final READY update flows
+    // from the same value (round-2 review: duplicate getById removed).
     val fileRow = deps.projectFileDao().getById(fileId)
     if (fileRow == null) {
       deps.errorLog().e(LOG_INDEX, "project_files row missing fileId=$fileId")
@@ -159,7 +161,7 @@ class IngestWorker(context: Context, params: WorkerParameters) :
     }
 
     return try {
-      ingestPages(deps, projectId, fileId, pdfFile, settings)
+      ingestPages(deps, projectId, fileId, pdfFile, fileRow, settings)
     } catch (ce: CancellationException) {
       // `CoroutineWorker.onStopped` is final in WorkManager 2.10, so the cancel-cleanup path
       // lives here: under NonCancellable so the DELETE + UPDATE survive the inflight CE that
@@ -185,6 +187,7 @@ class IngestWorker(context: Context, params: WorkerParameters) :
     projectId: Long,
     fileId: Long,
     pdfFile: File,
+    rowSnapshot: app.sanctum.machina.data.model.ProjectFileEntity,
     settings: RagConfig,
   ): Result {
     val extractor = PdfTextExtractor(
@@ -197,7 +200,6 @@ class IngestWorker(context: Context, params: WorkerParameters) :
       },
     )
 
-    val rowSnapshot = deps.projectFileDao().getById(fileId) ?: return Result.failure()
     val displayName = rowSnapshot.fileName
     var totalPages = 0
     var totalChunks = 0
@@ -207,6 +209,11 @@ class IngestWorker(context: Context, params: WorkerParameters) :
 
     suspend fun flushBuffer() {
       if (chunkBuffer.isEmpty()) return
+      // Re-check isStopped right before paying for an encode call — pdfbox extraction loop
+      // already checks between pages, but a long page can fill the buffer to multiple
+      // batches and we want to surrender as early as possible on a Cancel-tap (round-2
+      // review: avoid wasted encode work).
+      if (isStopped) throw CancellationException("ingest stopped (pre-flush)")
       val texts = chunkBuffer.map { it.second }
       val embeddings = deps.embedder().encode(texts, TASK_TYPE_DOCUMENT)
       check(embeddings.size == chunkBuffer.size) {
@@ -348,9 +355,12 @@ class IngestWorker(context: Context, params: WorkerParameters) :
     }
     val cancelPi = PendingIntent.getBroadcast(
       applicationContext,
-      // Distinct request code per fileId so cancel intents do not collide when multiple
-      // ingests are queued for the same project.
-      fileId.toInt(),
+      // Stable 32-bit fold of fileId — `fileId.toInt()` would truncate, and combined with
+      // `FLAG_UPDATE_CURRENT` two ingests whose ids share the low 32 bits would share the
+      // same PendingIntent, letting a Cancel-tap on one card cancel a different worker
+      // (security-auditor-1 major). The fold also avoids the `(-1L).toInt() == -1`
+      // collision against the "missing input" sentinel.
+      foldLongTo32(fileId),
       cancelIntent,
       PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
@@ -367,12 +377,18 @@ class IngestWorker(context: Context, params: WorkerParameters) :
       )
     if (total > 0) builder.setProgress(total, page, false) else builder.setProgress(0, 0, true)
     return ForegroundInfo(
-      // Notification id keyed on fileId so concurrent (queued) ingests show as separate cards.
-      fileId.toInt(),
+      // Notification id from the stable 32-bit fold (same rationale as the cancel request
+      // code above). Concurrent (queued) ingests with distinct fileIds end up on distinct
+      // notification cards as long as their Long ids don't collide under the fold — which
+      // for autoincrement primary keys is effectively never within a project's lifetime.
+      foldLongTo32(fileId),
       builder.build(),
       ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
     )
   }
+
+  /** XOR-fold of [value]'s high and low 32 bits — stable, collision-resistant for autoinc ids. */
+  private fun foldLongTo32(value: Long): Int = (value xor (value ushr 32)).toInt()
 
   private fun ensureChannel() {
     // NotificationManager.createNotificationChannel is idempotent — re-creating with the same

@@ -28,6 +28,7 @@ import app.sanctum.machina.data.model.ProjectEntity
 import app.sanctum.machina.data.model.ProjectFileEntity
 import com.google.gson.Gson
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import kotlinx.coroutines.CancellationException
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
@@ -122,8 +123,19 @@ class IngestWorkerTest {
     assertEquals("ready", row.status)
     assertNull(row.statusMessage)
     assertTrue("chunkCount must be > 0 after happy path", (row.chunkCount ?: 0) > 0)
-    val embeddings = embeddingDao.allByProjectAndReadyFiles(projectId)
-    assertTrue("embeddings must be persisted", embeddings.isNotEmpty())
+    // Two independent assertions on the embedding count: (1) the ready-filtered DAO query
+    // returns the same rows as the unfiltered count — guards against a future bug that flips
+    // file status to something other than `ready` on success; (2) chunk_count column matches
+    // the persisted row count (catches divergence between the column update and the actual
+    // DELETE/INSERT under transaction failure).
+    val readyEmbeddings = embeddingDao.allByProjectAndReadyFiles(projectId)
+    val rawCount = embeddingDao.countByFileId(fileId)
+    assertEquals(
+      "ready-filtered + raw counts must match on happy path",
+      rawCount,
+      readyEmbeddings.size,
+    )
+    assertEquals("chunk_count column must equal persisted row count", rawCount, row.chunkCount)
   }
 
   @Test
@@ -142,9 +154,10 @@ class IngestWorkerTest {
       context.getString(app.sanctum.machina.R.string.ingest_status_failed_path),
       row.statusMessage,
     )
-    assertTrue(
-      "no partial embeddings on path-traversal reject",
-      embeddingDao.allByProjectAndReadyFiles(projectId).isEmpty(),
+    assertEquals(
+      "no embeddings rows must exist for the rejected fileId",
+      0,
+      embeddingDao.countByFileId(fileId),
     )
   }
 
@@ -160,7 +173,14 @@ class IngestWorkerTest {
     val result = buildWorker(projectId, fileId, tricky).doWork()
 
     assertEquals(ListenableWorker.Result.failure(), result)
-    assertEquals("failed", fileDao.getById(fileId)!!.status)
+    val row = fileDao.getById(fileId)!!
+    assertEquals("failed", row.status)
+    assertEquals(
+      "path-traversal reject must use the localised path-error message",
+      context.getString(app.sanctum.machina.R.string.ingest_status_failed_path),
+      row.statusMessage,
+    )
+    assertEquals(0, embeddingDao.countByFileId(fileId))
   }
 
   @Test
@@ -174,16 +194,22 @@ class IngestWorkerTest {
     assertEquals(ListenableWorker.Result.failure(), result)
     val row = fileDao.getById(fileId)!!
     assertEquals("failed", row.status)
-    assertTrue(
-      "no embeddings on malformed PDF",
-      embeddingDao.allByProjectAndReadyFiles(projectId).isEmpty(),
-    )
+    assertEquals(0, embeddingDao.countByFileId(fileId))
   }
 
+  /**
+   * Round-2 strengthening: the previous shape used `throwOnEncode = true` from the start, so
+   * the cleanup DELETE never had any persisted rows to remove and the test passed even if the
+   * production cleanup branch dropped its `deleteByFileId` call. Now the fake succeeds for the
+   * first encode batch then throws — so the worker writes real `project_embeddings` rows
+   * before failing, and the cleanup assertion is load-bearing.
+   */
   @Test
-  fun embedderFailure_marksFailedAndCleansEmbeddings() = runBlocking {
-    val (projectId, fileId, pdfPath) = seedProjectAndFile(pages = 2)
-    fakeEmbedder.throwOnEncode = true
+  fun embedderFailure_midIngest_cleansPersistedEmbeddings() = runBlocking {
+    // Multi-page PDF so we definitely cross the ENCODE_BATCH_SIZE=8 boundary and flushBuffer
+    // commits one batch to disk before the second batch's encode throws.
+    val (projectId, fileId, pdfPath) = seedProjectAndFile(pages = 5)
+    fakeEmbedder.throwAfterSuccessfulBatches = 1
 
     val result = buildWorker(projectId, fileId, pdfPath).doWork()
 
@@ -194,9 +220,55 @@ class IngestWorkerTest {
       context.getString(app.sanctum.machina.R.string.ingest_status_failed_generic),
       row.statusMessage,
     )
+    // The first batch persisted (would be > 0 without cleanup); cleanup deletes them.
+    assertEquals(
+      "cleanupPartialIngest must delete the persisted first-batch embeddings",
+      0,
+      embeddingDao.countByFileId(fileId),
+    )
     assertTrue(
-      "no partial embeddings after embedder failure",
-      embeddingDao.allByProjectAndReadyFiles(projectId).isEmpty(),
+      "FakeEmbedder must have completed at least one batch before throwing",
+      fakeEmbedder.successfulBatches > 0,
+    )
+  }
+
+  /**
+   * Round-2 addition: the `CancellationException` catch path under `NonCancellable` in
+   * `IngestWorker.doWork` had zero coverage. We trigger it by having the embedder throw a
+   * structural `CancellationException` mid-ingest — this is the same shape WorkManager
+   * delivers when `cancelUniqueWork` fires, so the cleanup branch sees identical machinery.
+   *
+   * Assert two distinguishers vs. the generic failure path: (a) `statusMessage` is the
+   * cancel-specific string (Прервано / "Cancelled"), not the generic one; (b) embeddings are
+   * cleaned up via `NonCancellable`-wrapped DELETE even though the outer CE is inflight.
+   */
+  @Test
+  fun cancellation_midIngest_cleansEmbeddingsAndMarksCancelled() = runBlocking {
+    val (projectId, fileId, pdfPath) = seedProjectAndFile(pages = 5)
+    fakeEmbedder.cancelAfterSuccessfulBatches = 1
+
+    val caught: Throwable? = try {
+      buildWorker(projectId, fileId, pdfPath).doWork()
+      null
+    } catch (ce: CancellationException) {
+      ce
+    }
+    assertNotNull(
+      "CancellationException must propagate out of doWork so WorkManager reports STOPPED",
+      caught,
+    )
+
+    val row = fileDao.getById(fileId)!!
+    assertEquals("failed", row.status)
+    assertEquals(
+      "cancel branch must use the localised cancel message, NOT the generic failure",
+      context.getString(app.sanctum.machina.R.string.ingest_status_failed_cancelled),
+      row.statusMessage,
+    )
+    assertEquals(
+      "cleanup under NonCancellable must DELETE the persisted first-batch embeddings",
+      0,
+      embeddingDao.countByFileId(fileId),
     )
   }
 
@@ -216,9 +288,10 @@ class IngestWorkerTest {
     val result = buildWorker(projectId, orphanFileId, pdfPath).doWork()
 
     assertEquals(ListenableWorker.Result.failure(), result)
-    assertTrue(
-      "no embeddings created for orphan fileId",
-      embeddingDao.allByProjectAndReadyFiles(projectId).isEmpty(),
+    assertEquals(
+      "no embeddings rows created for orphan fileId",
+      0,
+      embeddingDao.countByFileId(orphanFileId),
     )
   }
 
@@ -287,14 +360,35 @@ class IngestWorkerTest {
     override fun errorLog(): ErrorLog = errorLog
   }
 
-  /** Deterministic embedder: returns one fixed-dim vector per input text. */
+  /**
+   * Deterministic embedder: returns one fixed-dim vector per input text. Tests choose between
+   * three failure modes:
+   *   - [throwOnEncode] = true → fail immediately, never produces a successful batch.
+   *   - [throwAfterSuccessfulBatches] = N → succeed for N batches, then throw IllegalStateException
+   *     (exercises the generic `Throwable` catch in `doWork`).
+   *   - [cancelAfterSuccessfulBatches] = N → succeed for N batches, then throw
+   *     CancellationException (exercises the `NonCancellable`-wrapped cancel-cleanup branch).
+   * [successfulBatches] is the read-side counter for assertions.
+   */
   private class FakeEmbedder(val dim: Int = 8) : Embedder {
     var throwOnEncode: Boolean = false
+    var throwAfterSuccessfulBatches: Int = -1
+    var cancelAfterSuccessfulBatches: Int = -1
+    var successfulBatches: Int = 0
+
     override suspend fun encode(texts: List<String>, taskType: String): List<FloatArray> {
       if (throwOnEncode) error("FakeEmbedder configured to throw")
-      return texts.map { text ->
+      if (cancelAfterSuccessfulBatches in 0..successfulBatches) {
+        throw CancellationException("FakeEmbedder configured to cancel after $cancelAfterSuccessfulBatches batches")
+      }
+      if (throwAfterSuccessfulBatches in 0..successfulBatches) {
+        error("FakeEmbedder configured to throw after $throwAfterSuccessfulBatches batches")
+      }
+      val out = texts.map { text ->
         FloatArray(dim) { i -> ((text.hashCode() xor i) % 7).toFloat() }
       }
+      successfulBatches++
+      return out
     }
     override suspend fun encodeQuery(text: String): FloatArray = encode(listOf(text), "query").first()
   }

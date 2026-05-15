@@ -25,16 +25,23 @@ import androidx.work.WorkManager
  *
  * The intent payload [EXTRA_WORK_NAME] is computed by [WorkManagerIngestEnqueuer.uniqueWorkNameFor]
  * — single source of truth so a future rename of the unique-work scheme cannot leave the cancel
- * path silently broken.
+ * path silently broken. Defence-in-depth: the value is also pattern-matched against
+ * [WORK_NAME_PATTERN] before being forwarded to `WorkManager`, so a future in-app caller bug
+ * cannot leverage this receiver into cancelling unrelated unique-work names (e.g. the
+ * DownloadWorker chain) — security-auditor-1 medium.
  */
 class IngestCancelReceiver : BroadcastReceiver() {
 
   override fun onReceive(context: Context, intent: Intent) {
     val workName = intent.getStringExtra(EXTRA_WORK_NAME) ?: return
+    if (!WORK_NAME_PATTERN.matches(workName)) return
     WorkManager.getInstance(context).cancelUniqueWork(workName)
   }
 
   companion object {
     const val EXTRA_WORK_NAME: String = "workName"
+
+    /** Accepts only the `ingest-project-{positiveLong}` shape that [WorkManagerIngestEnqueuer] emits. */
+    val WORK_NAME_PATTERN: Regex = Regex("^ingest-project-\\d+$")
   }
 }

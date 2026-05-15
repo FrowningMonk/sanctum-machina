@@ -565,6 +565,7 @@ private class ProjectRepoFakeProjectEmbeddingDao : ProjectEmbeddingDao {
     rows.mapIndexed { i, _ -> (i + 1).toLong() }
   override suspend fun deleteByFileId(fileId: Long) {}
   override suspend fun getById(id: Long): ProjectEmbeddingEntity? = null
+  override suspend fun countByFileId(fileId: Long): Int = 0
   override suspend fun allByProjectAndReadyFiles(projectId: Long): List<EmbeddingRow> = emptyList()
 }
 
