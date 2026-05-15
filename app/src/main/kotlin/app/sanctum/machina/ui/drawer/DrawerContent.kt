@@ -2,6 +2,7 @@ package app.sanctum.machina.ui.drawer
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -121,57 +122,66 @@ fun DrawerContent(
             // between) — a plain Column would push the footer down when the
             // list is short and scroll it off-screen when long.
             Box(modifier = Modifier.weight(1f)) {
-                // Empty-state only applies to date sections — the Projects
-                // section is ALWAYS rendered (with its own empty placeholder),
-                // per AC «секция не исчезает».
-                if (state.sections.isEmpty() && state.projects.isEmpty() && !state.isLoading) {
-                    DrawerEmptyState(onNewChat = onNewChat)
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(vertical = 8.dp),
-                    ) {
-                        // Projects section first (User-Spec Deviation § AC-1):
-                        // higher-level container sits ABOVE the date groups.
-                        item(key = "projects-header") {
-                            ProjectsSectionHeader()
-                        }
-                        if (state.projects.isEmpty()) {
+                // The Projects section is ALWAYS rendered (AC: «секция не
+                // исчезает»). When the date-group list is also empty we still
+                // surface the «No saved chats» CTA — but as a trailing item
+                // INSIDE the LazyColumn, so the Projects header above it stays
+                // visible.
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(vertical = 8.dp),
+                ) {
+                    // Projects section first (User-Spec Deviation § AC-1):
+                    // higher-level container sits ABOVE the date groups.
+                    item(key = "projects-header") {
+                        ProjectsSectionHeader()
+                    }
+                    if (state.projects.isEmpty()) {
+                        // Gate on `!isLoading` to avoid a one-frame flash of
+                        // «No projects yet» before `combine()` resolves on
+                        // first subscription.
+                        if (!state.isLoading) {
                             item(key = "projects-empty") {
                                 ProjectsEmptyPlaceholder()
                             }
-                        } else {
-                            state.projects.forEach { group ->
-                                item(key = "project-${group.id}") {
-                                    ProjectGroupRow(
-                                        group = group,
-                                        onToggle = { viewModel.toggleProject(group.id) },
-                                        onProjectClick = { onProjectClick(group.id) },
+                        }
+                    } else {
+                        state.projects.forEach { group ->
+                            item(key = "project-${group.id}") {
+                                ProjectGroupRow(
+                                    group = group,
+                                    onToggle = { viewModel.toggleProject(group.id) },
+                                    onProjectClick = { onProjectClick(group.id) },
+                                )
+                            }
+                            if (group.isExpanded) {
+                                items(group.chats, key = { "project-${group.id}-chat-${it.id}" }) { row ->
+                                    SwipeableChatRow(
+                                        row = row,
+                                        isActive = row.id == currentChatId,
+                                        onTap = {
+                                            if (row.isModelAvailable) {
+                                                onChatClick(row.id)
+                                            } else {
+                                                pendingUnavailable = row
+                                            }
+                                        },
+                                        onLongPress = { pendingRename = row },
+                                        onSwipeDelete = { pendingDelete = row },
                                     )
-                                }
-                                if (group.isExpanded) {
-                                    items(group.chats, key = { "project-${group.id}-chat-${it.id}" }) { row ->
-                                        SwipeableChatRow(
-                                            row = row,
-                                            isActive = row.id == currentChatId,
-                                            onTap = {
-                                                if (row.isModelAvailable) {
-                                                    onChatClick(row.id)
-                                                } else {
-                                                    pendingUnavailable = row
-                                                }
-                                            },
-                                            onLongPress = { pendingRename = row },
-                                            onSwipeDelete = { pendingDelete = row },
-                                        )
-                                    }
                                 }
                             }
                         }
-                        item(key = "projects-divider") {
-                            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    }
+                    item(key = "projects-divider") {
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    }
+                    // Existing date-grouped persistent chats (Phase 3).
+                    if (state.sections.isEmpty() && !state.isLoading) {
+                        item(key = "drawer-empty-chats") {
+                            DrawerEmptyState(onNewChat = onNewChat)
                         }
-                        // Existing date-grouped persistent chats (Phase 3).
+                    } else {
                         state.sections.forEach { section ->
                             item(key = "header-${section.kind.name}") {
                                 SectionHeader(kind = section.kind)
@@ -326,9 +336,12 @@ private fun DrawerHeader(onNewChat: () -> Unit) {
 
 @Composable
 private fun DrawerEmptyState(onNewChat: () -> Unit) {
+    // Phase 4 Task 8: rendered as a trailing item INSIDE the LazyColumn so the
+    // Projects section above stays visible (`fillMaxWidth` instead of
+    // `fillMaxSize` — a LazyColumn item has no parent height to fill).
     Box(
         modifier = Modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .padding(24.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -368,7 +381,6 @@ private fun ProjectsEmptyPlaceholder() {
     )
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ProjectGroupRow(
     group: ProjectGroupUiModel,
@@ -378,8 +390,7 @@ private fun ProjectGroupRow(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .combinedClickable(onClick = onProjectClick),
-        color = MaterialTheme.colorScheme.surface,
+            .clickable(onClick = onProjectClick),
     ) {
         Row(
             modifier = Modifier
@@ -406,7 +417,7 @@ private fun ProjectGroupRow(
             // it first.
             Box(
                 modifier = Modifier
-                    .combinedClickable(onClick = onToggle)
+                    .clickable(onClick = onToggle)
                     .padding(8.dp),
             ) {
                 Icon(

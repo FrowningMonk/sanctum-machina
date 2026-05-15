@@ -492,6 +492,9 @@ class DrawerViewModelTest {
 
   @Test
   fun projectGroupChats_sortedByLastMessageAtDesc() = runTest {
+    // Mirrors `chatsWithinSectionSortedByLastMessageDesc` deliberately — pins
+    // that the project-group sort matches the date-group sort, both hitting
+    // their respective code paths (`buildProjectGroups` vs `buildSections`).
     val base = atStartOfDayEpoch(today)
     projectRepo.emit(listOf(ProjectEntity(id = 1L, name = "Proj A", createdAt = base)))
     listOf(
@@ -522,10 +525,39 @@ class DrawerViewModelTest {
     val viewModel = subscribedViewModel()
     advanceUntilIdle()
 
-    assertEquals(
-      listOf(3L, 2L, 1L),
-      viewModel.drawerUiState.value.projects.map { it.id },
+    val state = viewModel.drawerUiState.value
+    assertEquals(listOf(3L, 2L, 1L), state.projects.map { it.id })
+    // Edge case: project without chats still appears with an empty `chats`
+    // list (Task 9 will introduce the UI that creates such empty projects).
+    state.projects.forEach {
+      assertTrue("project ${it.id} must have empty chats", it.chats.isEmpty())
+    }
+  }
+
+  @Test
+  fun newlyArrivingProject_defaultsToExpanded_afterUnrelatedToggle() = runTest {
+    // Pins the «track collapsed ids, not expanded ids» design — a project
+    // emitted AFTER an unrelated toggle still defaults to expanded.
+    val ms = atStartOfDayEpoch(today)
+    projectRepo.emit(listOf(ProjectEntity(id = 1L, name = "A", createdAt = ms)))
+    val viewModel = subscribedViewModel()
+    advanceUntilIdle()
+
+    viewModel.toggleProject(1L)
+    advanceUntilIdle()
+    assertFalse(viewModel.drawerUiState.value.projects.single().isExpanded)
+
+    projectRepo.emit(
+      listOf(
+        ProjectEntity(id = 2L, name = "B", createdAt = ms + 100),
+        ProjectEntity(id = 1L, name = "A", createdAt = ms),
+      )
     )
+    advanceUntilIdle()
+
+    val byId = viewModel.drawerUiState.value.projects.associateBy { it.id }
+    assertFalse("project 1 stays collapsed", byId.getValue(1L).isExpanded)
+    assertTrue("newly-arriving project 2 defaults to expanded", byId.getValue(2L).isExpanded)
   }
 
   @Test
