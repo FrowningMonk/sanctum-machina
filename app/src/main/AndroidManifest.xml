@@ -58,5 +58,12 @@
             android:foregroundServiceType="dataSync"
             android:exported="false"
             tools:node="merge" />
+
+        <!-- Phase 4 Task 7: Cancel-button target for IngestWorker's foreground notification.
+             exported="false" — the cancel intent is only ever issued by the app's own
+             PendingIntent on the persistent notification. -->
+        <receiver
+            android:name=".core.worker.IngestCancelReceiver"
+            android:exported="false" />
     </application>
 </manifest>

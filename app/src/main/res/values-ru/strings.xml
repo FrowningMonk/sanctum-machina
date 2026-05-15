@@ -190,4 +190,14 @@
   <string name="drawer_nav_models">Модели</string>
   <string name="drawer_nav_diagnostics">Диагностика</string>
   <string name="drawer_nav_about">О приложении</string>
+
+  <!-- Phase 4 Task 7: IngestWorker persistent notification + failure messages. -->
+  <string name="ingest_notification_channel_name">Индексация документов</string>
+  <string name="ingest_notification_title">Индексация документов</string>
+  <string name="ingest_notification_body">%1$s — страница %2$d из %3$d</string>
+  <string name="ingest_notification_filename_placeholder">документ</string>
+  <string name="ingest_notification_cancel">Отмена</string>
+  <string name="ingest_status_failed_cancelled">Прервано</string>
+  <string name="ingest_status_failed_generic">Ошибка индексации</string>
+  <string name="ingest_status_failed_path">Внутренняя ошибка пути</string>
 </resources>

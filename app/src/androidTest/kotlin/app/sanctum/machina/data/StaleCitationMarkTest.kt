@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.sanctum.machina.core.log.ErrorLog
+import app.sanctum.machina.core.worker.IngestEnqueuer
 import app.sanctum.machina.data.model.ChatEntity
 import app.sanctum.machina.data.model.MessageEntity
 import app.sanctum.machina.data.model.ProjectEntity
@@ -52,6 +53,8 @@ class StaleCitationMarkTest {
             messageDao = db.messageDao(),
             errorLog = ErrorLog(context),
             gson = gson,
+            // Task 7 — worker enqueue path is irrelevant to the stale-mark test; no-op stub.
+            ingestEnqueuer = IngestEnqueuer { _, _, _ -> },
         )
     }
 

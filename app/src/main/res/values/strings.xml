@@ -190,4 +190,14 @@
   <string name="drawer_nav_models">Models</string>
   <string name="drawer_nav_diagnostics">Diagnostics</string>
   <string name="drawer_nav_about">About</string>
+
+  <!-- Phase 4 Task 7: IngestWorker persistent notification + failure messages. -->
+  <string name="ingest_notification_channel_name">Document indexing</string>
+  <string name="ingest_notification_title">Indexing documents</string>
+  <string name="ingest_notification_body">%1$s — page %2$d of %3$d</string>
+  <string name="ingest_notification_filename_placeholder">document</string>
+  <string name="ingest_notification_cancel">Cancel</string>
+  <string name="ingest_status_failed_cancelled">Cancelled</string>
+  <string name="ingest_status_failed_generic">Indexing failed</string>
+  <string name="ingest_status_failed_path">Internal path error</string>
 </resources>

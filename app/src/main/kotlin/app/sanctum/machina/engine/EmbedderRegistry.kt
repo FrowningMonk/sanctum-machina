@@ -14,6 +14,7 @@ import android.content.Context
 import androidx.annotation.VisibleForTesting
 import app.sanctum.machina.core.data.Model
 import app.sanctum.machina.core.data.ModelDownloadStatusType
+import app.sanctum.machina.core.embedder.Embedder
 import app.sanctum.machina.core.embedder.EmbedderEngine
 import app.sanctum.machina.core.log.ErrorLog
 import app.sanctum.machina.core.registry.ModelRegistry
@@ -84,7 +85,7 @@ open class EmbedderRegistry @VisibleForTesting(otherwise = VisibleForTesting.PRI
    * conflicts with `runTest`'s terminal drain).
    */
   private val idleCheckIntervalMillis: Long,
-) {
+) : Embedder {
 
   @Inject
   constructor(
@@ -195,7 +196,7 @@ open class EmbedderRegistry @VisibleForTesting(otherwise = VisibleForTesting.PRI
    *
    * @throws EmbedderNotReadyException when state is not [EmbedderState.Ready] at call time.
    */
-  open suspend fun encode(texts: List<String>, taskType: String): List<FloatArray> {
+  override suspend fun encode(texts: List<String>, taskType: String): List<FloatArray> {
     val current = _state.value
     if (current !is EmbedderState.Ready) {
       throw EmbedderNotReadyException(current)
@@ -213,8 +214,8 @@ open class EmbedderRegistry @VisibleForTesting(otherwise = VisibleForTesting.PRI
     }
   }
 
-  /** Convenience wrapper used by RagInjector (Task 6). */
-  open suspend fun encodeQuery(text: String): FloatArray =
+  /** Convenience wrapper used by RagInjector (Task 6) and IngestWorker (Task 7). */
+  override suspend fun encodeQuery(text: String): FloatArray =
     encode(listOf(text), TASK_TYPE_QUERY).first()
 
   /**

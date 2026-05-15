@@ -15,10 +15,14 @@ import kotlinx.coroutines.flow.Flow
  *   `observeAllProjects`, `getById`, `create`, `delete`, `observeFiles`, `addFile`,
  *   `deleteFile`, `updateRagOverrides`.
  *
- * The remaining downstream methods (`enqueueIngest`, `reindexFile`, `applyReindexRequired`,
- * `projectsUsingEmbedder`, `getEffectiveRagSettings`, `observeChatsByProject`) are deferred
- * to the tasks that introduce their supporting infrastructure — Task 7 (`IngestWorker` +
- * `WorkManager` wiring), Task 8/9 (UI surfaces + ChatDao project projection), Task 10
+ * Task 7 additions: `enqueueIngest` (`IngestWorker` + `WorkManager` wiring),
+ * `getEffectiveRagSettings` (merge of per-project overrides on top of allowlist defaults — the
+ * baseline read of `Model.defaultRagConfig` is deferred to Task 9 when `ProjectSettingsViewModel`
+ * also needs it; today the fallback uses Decision 12's documented constants).
+ *
+ * The remaining downstream methods (`reindexFile`, `applyReindexRequired`,
+ * `projectsUsingEmbedder`, `observeChatsByProject`) are deferred to the tasks that introduce
+ * their supporting infrastructure — Task 8/9 (UI surfaces + ChatDao project projection), Task 10
  * (embedder delete-guard column). The interface is grown additively in those tasks rather
  * than declared here with stubs — keeps the surface honest about what is actually wired.
  *
@@ -93,4 +97,29 @@ interface ProjectRepository {
    * allowlist defaults lives at the call site (Task 7 / 9 — not here).
    */
   suspend fun updateRagOverrides(projectId: Long, overrides: RagConfig?)
+
+  /**
+   * Resolve the effective [RagConfig] for [projectId]: per-project overrides from
+   * `projects.rag_overrides_json` if present, else Decision 12 baseline (chunkSize=800,
+   * chunkOverlap=100, topK=4, embeddingDim=768 — matches the EmbeddingGemma allowlist row).
+   *
+   * Missing project / malformed overlay JSON / unknown projectId → baseline (logged via
+   * `rag-retrieve` for diagnostic — corrupted overrides must not block ingest).
+   *
+   * Task 9 will refine the fallback path to read [app.sanctum.machina.core.data.RagDefaults]
+   * from the embedder allowlist row when the UI surface that exposes the defaults is wired —
+   * keeping the constants here today keeps `IngestWorker` honest about which knobs it needs.
+   */
+  suspend fun getEffectiveRagSettings(projectId: Long): RagConfig
+
+  /**
+   * Enqueue a `OneTimeWorkRequest<IngestWorker>` for the file `(projectId, fileId, filePath)`.
+   * Unique-work name is `"ingest-project-{projectId}"`, policy is
+   * `ExistingWorkPolicy.APPEND_OR_REPLACE` (Decision 5).
+   *
+   * [filePath] MUST be an absolute path under `context.filesDir/projects/{projectId}/docs/`;
+   * `IngestWorker` re-validates this on entry and fails the work with a `rag-index` log on any
+   * escape (defence-in-depth — the path leaves the safe scope through `inputData`).
+   */
+  suspend fun enqueueIngest(projectId: Long, fileId: Long, filePath: String)
 }

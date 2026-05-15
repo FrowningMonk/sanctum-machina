@@ -3,6 +3,7 @@ package app.sanctum.machina.data
 import androidx.annotation.VisibleForTesting
 import androidx.room.withTransaction
 import app.sanctum.machina.core.log.ErrorLog
+import app.sanctum.machina.core.worker.IngestEnqueuer
 import app.sanctum.machina.data.dao.MessageDao
 import app.sanctum.machina.data.dao.ProjectDao
 import app.sanctum.machina.data.dao.ProjectEmbeddingDao
@@ -25,6 +26,18 @@ private const val PROJECTS_DIR = "projects"
 private const val LOG_RETRIEVE = "rag-retrieve"
 private const val LOG_INDEX = "rag-index"
 private const val STALE_MARK_BATCH_SIZE = 50
+
+/**
+ * Decision 12 baseline — mirrors the EmbeddingGemma allowlist row's `defaultRagConfig` block.
+ * Used by [DefaultProjectRepository.getEffectiveRagSettings] when the project has no override
+ * and the allowlist read has not been wired through yet (Task 9 follow-up).
+ */
+private val DEFAULT_RAG_CONFIG = RagConfig(
+  chunkSize = 800,
+  chunkOverlap = 100,
+  topK = 4,
+  embeddingDim = 768,
+)
 
 /**
  * Production payload — list of citations for Gson reflection. Bound on a top-level field
@@ -54,6 +67,9 @@ internal constructor(
   private val ioDispatcher: CoroutineDispatcher,
   private val transactionRunner: suspend (suspend () -> Unit) -> Unit,
   private val clock: () -> Long,
+  // Task 7 seam — defaulted so existing tests that built the @VisibleForTesting constructor
+  // by name continue to compile. Production wiring goes through the @Inject constructor.
+  private val ingestEnqueuer: IngestEnqueuer = IngestEnqueuer { _, _, _ -> },
 ) : ProjectRepository {
 
   @Inject
@@ -65,6 +81,7 @@ internal constructor(
     messageDao: MessageDao,
     errorLog: ErrorLog,
     gson: Gson,
+    ingestEnqueuer: IngestEnqueuer,
   ) : this(
     projectDao = projectDao,
     projectFileDao = projectFileDao,
@@ -75,6 +92,7 @@ internal constructor(
     ioDispatcher = Dispatchers.IO,
     transactionRunner = { block -> database.withTransaction { block() } },
     clock = { System.currentTimeMillis() },
+    ingestEnqueuer = ingestEnqueuer,
   )
 
   override fun observeAllProjects(): Flow<List<ProjectEntity>> = projectDao.observeAll()
@@ -230,6 +248,28 @@ internal constructor(
       val json = overrides?.let { gson.toJson(it) }
       projectDao.update(current.copy(ragOverridesJson = json))
     }
+  }
+
+  override suspend fun getEffectiveRagSettings(projectId: Long): RagConfig =
+    withContext(ioDispatcher) {
+      val proj = projectDao.getById(projectId) ?: return@withContext DEFAULT_RAG_CONFIG
+      val overlayJson = proj.ragOverridesJson ?: return@withContext DEFAULT_RAG_CONFIG
+      try {
+        gson.fromJson(overlayJson, RagConfig::class.java) ?: DEFAULT_RAG_CONFIG
+      } catch (_: JsonSyntaxException) {
+        errorLog.e(LOG_RETRIEVE, "malformed rag_overrides_json projectId=$projectId, using defaults")
+        DEFAULT_RAG_CONFIG
+      } catch (_: JsonParseException) {
+        errorLog.e(LOG_RETRIEVE, "malformed rag_overrides_json projectId=$projectId, using defaults")
+        DEFAULT_RAG_CONFIG
+      }
+    }
+
+  override suspend fun enqueueIngest(projectId: Long, fileId: Long, filePath: String) {
+    // No coroutine context switch needed — WorkManager.enqueueUniqueWork is non-blocking;
+    // the suspend signature exists so future call-sites can move WorkManager wiring behind a
+    // suspending API without API churn.
+    ingestEnqueuer.enqueue(projectId, fileId, filePath)
   }
 
   /**

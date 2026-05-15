@@ -120,4 +120,6 @@ dependencies {
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.room.testing)
+    // Phase 4 Task 7: WorkManagerTestInitHelper + SynchronousExecutor for IngestWorkerTest.
+    androidTestImplementation(libs.androidx.work.testing)
 }
