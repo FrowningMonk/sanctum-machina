@@ -268,4 +268,16 @@
 
   <!-- RAG knob shared strings. -->
   <string name="rag_value_int_format">%1$d</string>
+
+  <!-- Model Manager row treatment for the EmbeddingGemma embedder (Task 10).
+       %1$s in `…_delete_body_with_projects` is a comma-separated list of project names. -->
+  <string name="model_manager_embedder_subtitle">Эмбеддер для RAG</string>
+  <string name="model_manager_embedder_in_use">Используется в проектах</string>
+  <string name="model_manager_embedder_delete_action">Удалить эмбеддер</string>
+  <string name="model_manager_embedder_delete_title">Удалить эмбеддер?</string>
+  <string name="model_manager_embedder_delete_body_empty">Файл модели будет удалён с устройства.</string>
+  <string name="model_manager_embedder_delete_body_with_projects">Используется в проектах: %1$s. После удаления эти проекты не смогут отвечать на запросы, пока эмбеддер не будет переустановлен.</string>
+  <string name="model_manager_embedder_delete_warning_no_undo">Действие необратимо.</string>
+  <string name="model_manager_embedder_delete_confirm">Удалить</string>
+  <string name="model_manager_embedder_delete_cancel">Отмена</string>
 </resources>

@@ -520,6 +520,8 @@ private class ProjectRepoFakeProjectDao : ProjectDao {
   override suspend fun getById(id: Long): ProjectEntity? = byId[id]
   override fun observeById(id: Long): Flow<ProjectEntity?> = byIdState.map { it[id] }
   override fun observeAll(): Flow<List<ProjectEntity>> = state
+  override suspend fun getAllOrderedByCreatedAtAsc(): List<ProjectEntity> =
+    byId.values.sortedBy { it.createdAt }
 }
 
 private class ProjectRepoFakeProjectFileDao : ProjectFileDao {

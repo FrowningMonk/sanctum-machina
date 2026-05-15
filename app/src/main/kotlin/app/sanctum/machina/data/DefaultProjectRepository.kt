@@ -4,6 +4,7 @@ import androidx.annotation.VisibleForTesting
 import androidx.room.withTransaction
 import app.sanctum.machina.core.log.ErrorLog
 import app.sanctum.machina.core.worker.IngestEnqueuer
+import app.sanctum.machina.engine.EmbedderRegistry
 import app.sanctum.machina.data.dao.MessageDao
 import app.sanctum.machina.data.dao.ProjectDao
 import app.sanctum.machina.data.dao.ProjectEmbeddingDao
@@ -328,6 +329,15 @@ internal constructor(
       }
     }
   }
+
+  override suspend fun projectsUsingEmbedder(embedderModelId: String): List<ProjectEntity> =
+    withContext(ioDispatcher) {
+      // Phase 4 MVP: a single allowlisted embedder backs every project. Defence-in-depth — a
+      // mismatched id must not surface a misleading warning list (callers like Model Manager
+      // already filter to the embedder row, but the test seam allows arbitrary input).
+      if (embedderModelId != EmbedderRegistry.MODEL_ID_EMBEDDER) return@withContext emptyList()
+      projectDao.getAllOrderedByCreatedAtAsc()
+    }
 
   /**
    * Decode [json], flip `stale = true` on entries whose `fileId == [targetFileId]`, re-encode

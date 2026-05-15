@@ -296,6 +296,8 @@ private class SettingsFakeProjectRepository : ProjectRepository {
     reindexApplies += chunkSize to chunkOverlap
     effective = effective.copy(chunkSize = chunkSize, chunkOverlap = chunkOverlap)
   }
+  override suspend fun projectsUsingEmbedder(embedderModelId: String) =
+    emptyList<app.sanctum.machina.data.model.ProjectEntity>()
 }
 
 private class SettingsFakeProjectFileDao : ProjectFileDao {

@@ -27,4 +27,13 @@ interface ProjectDao {
 
     @Query("SELECT * FROM projects ORDER BY created_at DESC")
     fun observeAll(): Flow<List<ProjectEntity>>
+
+    /**
+     * One-shot snapshot ordered by `created_at ASC` — the order in which projects
+     * were created. Used by Task 10's embedder-delete warning dialog so the user
+     * sees affected projects in the order they were added (matches the order
+     * shown elsewhere in the UI, e.g. the Drawer Projects section).
+     */
+    @Query("SELECT * FROM projects ORDER BY created_at ASC")
+    suspend fun getAllOrderedByCreatedAtAsc(): List<ProjectEntity>
 }

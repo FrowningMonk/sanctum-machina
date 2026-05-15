@@ -804,4 +804,6 @@ private class FakeProjectRepository : ProjectRepository {
     chunkSize: Int,
     chunkOverlap: Int,
   ) = Unit
+  override suspend fun projectsUsingEmbedder(embedderModelId: String) =
+    emptyList<app.sanctum.machina.data.model.ProjectEntity>()
 }

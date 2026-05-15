@@ -144,4 +144,21 @@ interface ProjectRepository {
    * failure does not leave WorkManager with stale work for rows that never flipped to pending.
    */
   suspend fun applyReindexRequired(projectId: Long, chunkSize: Int, chunkOverlap: Int)
+
+  /**
+   * Task 10 — projects that depend on the embedder identified by [embedderModelId]. Used by the
+   * Model Manager embedder-delete warning to list affected projects.
+   *
+   * Phase 4 MVP semantics: every project relies on the single allowlisted embedder
+   * (`EmbedderRegistry.MODEL_ID_EMBEDDER`); there is no per-project embedder selection column on
+   * `projects`. So:
+   *   - if [embedderModelId] matches the allowlisted embedder → returns every project (ordered
+   *     by `created_at ASC` — same order users see in the Drawer Projects section).
+   *   - otherwise → empty list (defence-in-depth — chat models never reach this entry point in
+   *     production, but a hostile caller must not be able to mis-identify a chat model as the
+   *     embedder and surface a misleading warning list).
+   *
+   * Returns project entities verbatim; the dialog reads `name` for display.
+   */
+  suspend fun projectsUsingEmbedder(embedderModelId: String): List<ProjectEntity>
 }

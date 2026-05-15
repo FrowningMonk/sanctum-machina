@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import app.sanctum.machina.core.data.Model
 import app.sanctum.machina.core.data.ModelDownloadStatus
 import app.sanctum.machina.core.data.ModelDownloadStatusType
+import app.sanctum.machina.core.data.RuntimeType
 import app.sanctum.machina.core.registry.ModelEntry
 import app.sanctum.machina.core.registry.ModelInitStatus
 import app.sanctum.machina.core.registry.ModelRegistry
@@ -12,9 +13,15 @@ import app.sanctum.machina.core.registry.ResetReason
 import app.sanctum.machina.core.settings.AppSettingsRepository
 import app.sanctum.machina.core.settings.proto.PerModelSettings
 import app.sanctum.machina.crash.CrashState
+import app.sanctum.machina.data.ProjectRepository
+import app.sanctum.machina.data.RagConfig
+import app.sanctum.machina.data.model.ProjectEntity
+import app.sanctum.machina.data.model.ProjectFileEntity
 import app.sanctum.machina.diagnostics.InitSnapshot
+import app.sanctum.machina.engine.EmbedderRegistry
 import app.sanctum.machina.logexport.DeviceInfoProvider
 import app.sanctum.machina.logexport.LogExportManager
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -31,6 +38,8 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -58,6 +67,7 @@ class ModelManagerViewModelTest {
     private lateinit var logExport: LogExportManager
     private lateinit var settings: FakeAppSettingsRepository
     private lateinit var deviceInfo: FakeDeviceInfoProvider
+    private lateinit var projectRepo: FakeProjectRepository
 
     @Before
     fun setUp() {
@@ -70,7 +80,12 @@ class ModelManagerViewModelTest {
         // tests don't accidentally exercise the gate path. Per-test overrides set their
         // own value before the VM is constructed.
         deviceInfo = FakeDeviceInfoProvider(totalMemoryBytes = 12_000_000_000L)
+        projectRepo = FakeProjectRepository()
     }
+
+    private fun buildVm() = ModelManagerViewModel(
+        registry, crashState, logExport, settings, deviceInfo, projectRepo,
+    )
 
     @After
     fun tearDown() {
@@ -79,7 +94,7 @@ class ModelManagerViewModelTest {
 
     @Test
     fun setDefaultModel_updatesSettingsAndEmitsSnackbar() = runTest {
-        val vm = ModelManagerViewModel(registry, crashState, logExport, settings, deviceInfo)
+        val vm = buildVm()
         val events = collectNavEvents(vm)
 
         vm.setDefaultModel("model-id", "Model Name")
@@ -97,7 +112,7 @@ class ModelManagerViewModelTest {
         // Regression guard: the UI relies on the ⭐ having moved by the time the snackbar
         // appears. Swapping `emit` and `setDefaultModelId` order would pass the previous test
         // but fail this one.
-        val vm = ModelManagerViewModel(registry, crashState, logExport, settings, deviceInfo)
+        val vm = buildVm()
         val actionLog = mutableListOf<String>()
         settings.onSetDefaultModelId = { actionLog += "setDefault:$it" }
         backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -116,7 +131,7 @@ class ModelManagerViewModelTest {
     fun defaultModelId_emitsEmptyStringWhenUnset() = runTest {
         // First-launch contract from tasks/11.md 'Edge cases': proto3 default_model_id is "",
         // so no row should get a ⭐. Locks the `stateIn(initialValue = "")` seed.
-        val vm = ModelManagerViewModel(registry, crashState, logExport, settings, deviceInfo)
+        val vm = buildVm()
         backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
             vm.defaultModelId.collect { /* keep subscription alive */ }
         }
@@ -130,7 +145,7 @@ class ModelManagerViewModelTest {
         // Seed the underlying setting BEFORE VM construction so the stateIn initial collection
         // sees it — this is the "user already has a default" cold-start scenario the UI relies on.
         settings.setDefault("first-default")
-        val vm = ModelManagerViewModel(registry, crashState, logExport, settings, deviceInfo)
+        val vm = buildVm()
         // WhileSubscribed(5_000L) needs an active subscriber to collect upstream. UNDISPATCHED
         // makes that subscription take effect before the test mutates the setting.
         backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -147,7 +162,7 @@ class ModelManagerViewModelTest {
 
     @Test
     fun onLoad_emitsOpenQuickChatEvent() = runTest {
-        val vm = ModelManagerViewModel(registry, crashState, logExport, settings, deviceInfo)
+        val vm = buildVm()
         val events = collectNavEvents(vm)
 
         vm.onLoad("some-model-id")
@@ -164,7 +179,7 @@ class ModelManagerViewModelTest {
         // Sub-threshold device (S20 FE-class, 5.3 GB) against E4B's minGb=6 — gate must block.
         deviceInfo = FakeDeviceInfoProvider(totalMemoryBytes = 5_300_000_000L)
         registry.setEntries(listOf(entryWithMinGb("e4b", minGb = 6)))
-        val vm = ModelManagerViewModel(registry, crashState, logExport, settings, deviceInfo)
+        val vm = buildVm()
         backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
             vm.rows.collect { /* keep subscription alive */ }
         }
@@ -185,7 +200,7 @@ class ModelManagerViewModelTest {
         // Honor 200-class (12 GB) against E4B's minGb=6 — gate must pass.
         deviceInfo = FakeDeviceInfoProvider(totalMemoryBytes = 12_000_000_000L)
         registry.setEntries(listOf(entryWithMinGb("e4b", minGb = 6)))
-        val vm = ModelManagerViewModel(registry, crashState, logExport, settings, deviceInfo)
+        val vm = buildVm()
         backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
             vm.rows.collect { /* keep subscription alive */ }
         }
@@ -206,7 +221,7 @@ class ModelManagerViewModelTest {
         deviceInfo = FakeDeviceInfoProvider(totalMemoryBytes = 5_300_000_000L)
         val entry = entryWithMinGb("e4b", minGb = 6)
         registry.setEntries(listOf(entry))
-        val vm = ModelManagerViewModel(registry, crashState, logExport, settings, deviceInfo)
+        val vm = buildVm()
         backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
             vm.rows.collect { }
         }
@@ -224,7 +239,7 @@ class ModelManagerViewModelTest {
         deviceInfo = FakeDeviceInfoProvider(totalMemoryBytes = 12_000_000_000L)
         val entry = entryWithMinGb("e4b", minGb = 6)
         registry.setEntries(listOf(entry))
-        val vm = ModelManagerViewModel(registry, crashState, logExport, settings, deviceInfo)
+        val vm = buildVm()
         backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
             vm.rows.collect { }
         }
@@ -235,6 +250,108 @@ class ModelManagerViewModelTest {
 
         assertEquals(1, registry.downloadInvocations)
     }
+
+    // ---------------- Phase 4 Task 10: embedder row treatment + delete flow ----------------
+
+    @Test
+    fun isEmbedderRow_detects_litert_interpreter_runtime() {
+        // Detector is the single source of truth for the entire row treatment branch
+        // (subtitle, chip, overflow visibility, delete action). Pin both directions.
+        val embedder = entryWithRuntime("embedder", RuntimeType.LITERT_INTERPRETER)
+        val chat = entryWithRuntime("e4b", RuntimeType.LITERT_LM)
+        assertTrue(embedder.isEmbedder())
+        assertFalse(chat.isEmbedder())
+    }
+
+    @Test
+    fun deleteEmbedder_with_zero_projects_emits_empty_confirm_state() = runTest {
+        projectRepo.projects = emptyList()
+        val vm = buildVm()
+
+        vm.onDeleteEmbedderClick(EmbedderRegistry.MODEL_ID_EMBEDDER, "EmbeddingGemma-300M")
+        advanceUntilIdle()
+
+        assertEquals(
+            EmbedderDeleteDialogState.Confirm(modelName = "EmbeddingGemma-300M"),
+            vm.embedderDeleteDialog.value,
+        )
+    }
+
+    @Test
+    fun deleteEmbedder_with_two_projects_emits_warning_with_names() = runTest {
+        // Order from ProjectDao.getAllOrderedByCreatedAtAsc (created_at ASC) — the dialog
+        // must surface project names in repository order. Pin both presence AND order.
+        projectRepo.projects = listOf(
+            projectEntity(id = 1, name = "1С-инструкции", createdAt = 100L),
+            projectEntity(id = 2, name = "Нормативка", createdAt = 200L),
+        )
+        val vm = buildVm()
+
+        vm.onDeleteEmbedderClick(EmbedderRegistry.MODEL_ID_EMBEDDER, "EmbeddingGemma-300M")
+        advanceUntilIdle()
+
+        assertEquals(
+            EmbedderDeleteDialogState.WarningWithProjects(
+                modelName = "EmbeddingGemma-300M",
+                projectNames = listOf("1С-инструкции", "Нормативка"),
+            ),
+            vm.embedderDeleteDialog.value,
+        )
+    }
+
+    @Test
+    fun deleteEmbedder_confirm_invokes_registry_delete_and_clears_dialog() = runTest {
+        projectRepo.projects = emptyList()
+        val vm = buildVm()
+
+        vm.onDeleteEmbedderClick(EmbedderRegistry.MODEL_ID_EMBEDDER, "EmbeddingGemma-300M")
+        advanceUntilIdle()
+        vm.onConfirmEmbedderDelete()
+        advanceUntilIdle()
+
+        assertEquals(listOf("EmbeddingGemma-300M"), registry.deleteCalls)
+        assertNull(vm.embedderDeleteDialog.value)
+    }
+
+    @Test
+    fun setDefaultModel_not_offered_for_embedder() = runTest {
+        // Defence-in-depth: the UI hides «Сделать по умолчанию» on embedder rows, but a
+        // programmatic call (test, deeplink, future a11y action) must also short-circuit.
+        // Writing the embedder modelId into `default_model_id` would corrupt the chat-model
+        // contract (the field tracks the model used by quick chat).
+        registry.setEntries(
+            listOf(entryWithRuntime("embedder", RuntimeType.LITERT_INTERPRETER)),
+        )
+        val vm = buildVm()
+        val events = collectNavEvents(vm)
+
+        vm.setDefaultModel("owner/embedder", "EmbeddingGemma-300M")
+        advanceUntilIdle()
+
+        assertTrue(
+            "setDefaultModelId must not be invoked for embedder row, got ${settings.setDefaultModelIdCalls}",
+            settings.setDefaultModelIdCalls.isEmpty(),
+        )
+        assertTrue("no snackbar event expected, got $events", events.isEmpty())
+    }
+
+    private fun entryWithRuntime(name: String, runtimeType: RuntimeType): ModelEntry =
+        ModelEntry(
+            model = Model(
+                name = name,
+                modelId = "owner/$name",
+                minDeviceMemoryInGb = 4,
+                downloadFileName = "$name.task",
+                url = "https://example/$name",
+                sizeInBytes = 300_000_000L,
+                runtimeType = runtimeType,
+            ),
+            downloadStatus = ModelDownloadStatus(status = ModelDownloadStatusType.SUCCEEDED),
+            initStatus = ModelInitStatus.Idle,
+        )
+
+    private fun projectEntity(id: Long, name: String, createdAt: Long): ProjectEntity =
+        ProjectEntity(id = id, name = name, createdAt = createdAt)
 
     private fun entryWithMinGb(name: String, minGb: Int?): ModelEntry =
         ModelEntry(
@@ -279,6 +396,9 @@ private class FakeModelRegistry : ModelRegistry {
 
     fun setEntries(entries: List<ModelEntry>) { _models.value = entries }
 
+    /** Records [delete] invocations — Task 10 embedder delete-flow assertions read this. */
+    val deleteCalls: MutableList<String> = mutableListOf()
+
     override suspend fun refreshAllowlist(): Result<Unit> = Result.success(Unit)
     override fun download(model: Model): Flow<ModelDownloadStatus> {
         downloadInvocations += 1
@@ -286,7 +406,9 @@ private class FakeModelRegistry : ModelRegistry {
             .asStateFlow()
     }
     override fun cancelDownload(modelName: String) = Unit
-    override suspend fun delete(modelName: String) = Unit
+    override suspend fun delete(modelName: String) {
+        deleteCalls += modelName
+    }
     override suspend fun initialize(modelName: String): Result<Unit> = Result.success(Unit)
     override suspend fun cleanup(modelName: String) = Unit
     override suspend fun resetConversation(
@@ -358,4 +480,37 @@ private class FakeAppSettingsRepository : AppSettingsRepository {
 
     override suspend fun isSettingsMigrated(): Boolean = false
     override suspend fun markSettingsMigrated() = Unit
+}
+
+/**
+ * Hand-rolled [ProjectRepository] (patterns.md "Hand-rolled fakes"). Task 10 only reads
+ * `projectsUsingEmbedder`; every other accessor errors loudly so accidental new dependencies
+ * fail loudly instead of silently picking up a stale stub.
+ */
+private class FakeProjectRepository : ProjectRepository {
+    /** Repository-ordered snapshot returned by [projectsUsingEmbedder] when the id matches. */
+    var projects: List<ProjectEntity> = emptyList()
+
+    override suspend fun projectsUsingEmbedder(embedderModelId: String): List<ProjectEntity> =
+        if (embedderModelId == EmbedderRegistry.MODEL_ID_EMBEDDER) projects else emptyList()
+
+    override fun observeAllProjects(): Flow<List<ProjectEntity>> = error("not used")
+    override fun observeProjectById(projectId: Long): Flow<ProjectEntity?> = error("not used")
+    override suspend fun getById(projectId: Long): ProjectEntity? = error("not used")
+    override suspend fun create(name: String, defaultModelId: String?): Long = error("not used")
+    override suspend fun delete(projectId: Long, filesDir: File) = error("not used")
+    override fun observeFiles(projectId: Long): Flow<List<ProjectFileEntity>> = error("not used")
+    override suspend fun addFile(
+        projectId: Long, fileName: String, contentHash: String, localPath: String,
+    ): Long = error("not used")
+    override suspend fun deleteFile(fileId: Long, filesDir: File) = error("not used")
+    override suspend fun updateRagOverrides(projectId: Long, overrides: RagConfig?) =
+        error("not used")
+    override suspend fun getEffectiveRagSettings(projectId: Long): RagConfig = error("not used")
+    override suspend fun enqueueIngest(projectId: Long, fileId: Long, filePath: String) =
+        error("not used")
+    override suspend fun reindexFile(fileId: Long) = error("not used")
+    override suspend fun applyReindexRequired(
+        projectId: Long, chunkSize: Int, chunkOverlap: Int,
+    ) = error("not used")
 }

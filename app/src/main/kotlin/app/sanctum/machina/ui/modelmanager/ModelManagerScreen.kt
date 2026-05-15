@@ -16,6 +16,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -30,6 +32,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -70,6 +73,7 @@ fun ModelManagerScreen(
     val rows by viewModel.rows.collectAsStateWithLifecycle()
     val hasUnresolvedCrash by viewModel.hasUnresolvedCrash.collectAsStateWithLifecycle()
     val defaultModelId by viewModel.defaultModelId.collectAsStateWithLifecycle()
+    val embedderDeleteDialog by viewModel.embedderDeleteDialog.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -147,9 +151,59 @@ fun ModelManagerScreen(
                 onCancel = viewModel::onCancel,
                 onLoad = viewModel::onLoad,
                 onSetDefault = viewModel::setDefaultModel,
+                onDeleteEmbedder = viewModel::onDeleteEmbedderClick,
+            )
+        }
+
+        embedderDeleteDialog?.let { dialog ->
+            EmbedderDeleteDialog(
+                state = dialog,
+                onConfirm = viewModel::onConfirmEmbedderDelete,
+                onDismiss = viewModel::onDismissEmbedderDelete,
             )
         }
     }
+}
+
+@Composable
+private fun EmbedderDeleteDialog(
+    state: EmbedderDeleteDialogState,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val noUndoLine = stringResource(R.string.model_manager_embedder_delete_warning_no_undo)
+    val body: String = when (state) {
+        is EmbedderDeleteDialogState.Confirm ->
+            stringResource(R.string.model_manager_embedder_delete_body_empty)
+        is EmbedderDeleteDialogState.WarningWithProjects ->
+            stringResource(
+                R.string.model_manager_embedder_delete_body_with_projects,
+                // Comma + space matches Decision-12 dialog spec; for >10 projects the
+                // dialog body scrolls (AlertDialog text slot is vertically scrollable
+                // by default in Material 3).
+                state.projectNames.joinToString(separator = ", "),
+            )
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.model_manager_embedder_delete_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(body)
+                Text(noUndoLine)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(stringResource(R.string.model_manager_embedder_delete_confirm))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.model_manager_embedder_delete_cancel))
+            }
+        },
+    )
 }
 
 @Composable
@@ -161,6 +215,7 @@ private fun ModelList(
     onCancel: (String) -> Unit,
     onLoad: (String) -> Unit,
     onSetDefault: (String, String) -> Unit,
+    onDeleteEmbedder: (String, String) -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -180,6 +235,7 @@ private fun ModelList(
                 onCancel = { onCancel(entry.model.name) },
                 onLoad = { onLoad(entry.model.modelId) },
                 onSetDefault = { onSetDefault(entry.model.modelId, entry.model.name) },
+                onDeleteEmbedder = { onDeleteEmbedder(entry.model.modelId, entry.model.name) },
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
         }
@@ -195,11 +251,13 @@ private fun ModelCard(
     onCancel: () -> Unit,
     onLoad: () -> Unit,
     onSetDefault: () -> Unit,
+    onDeleteEmbedder: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // Each card owns its overflow menu state — a single top-level variable would reopen every
     // row when the user taps any row's overflow button.
     var overflowExpanded by remember { mutableStateOf(false) }
+    val isEmbedder = entry.isEmbedder()
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -224,7 +282,15 @@ private fun ModelCard(
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.weight(1f),
                 )
-                if (entry.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED && !isDefault) {
+                // Overflow menu: hidden for embedder rows (no «Сделать по умолчанию» — would
+                // corrupt the chat-model contract). The «Удалить эмбеддер» action lives in
+                // ModelStatusSection instead so it sits next to the row-state CTA, where users
+                // expect destructive actions for an installed file.
+                if (
+                    !isEmbedder &&
+                    entry.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED &&
+                    !isDefault
+                ) {
                     Box {
                         IconButton(onClick = { overflowExpanded = true }) {
                             Icon(
@@ -247,6 +313,13 @@ private fun ModelCard(
                     }
                 }
             }
+            if (isEmbedder) {
+                Text(
+                    text = stringResource(R.string.model_manager_embedder_subtitle),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Text(
                 text = stringResource(
                     R.string.model_size_gb_format,
@@ -258,9 +331,11 @@ private fun ModelCard(
             ModelStatusSection(
                 downloadStatus = entry.downloadStatus,
                 gate = gate,
+                isEmbedder = isEmbedder,
                 onDownload = onDownload,
                 onCancel = onCancel,
                 onLoad = onLoad,
+                onDeleteEmbedder = onDeleteEmbedder,
             )
         }
     }
@@ -270,9 +345,11 @@ private fun ModelCard(
 private fun ModelStatusSection(
     downloadStatus: ModelDownloadStatus,
     gate: GateDecision,
+    isEmbedder: Boolean,
     onDownload: () -> Unit,
     onCancel: () -> Unit,
     onLoad: () -> Unit,
+    onDeleteEmbedder: () -> Unit,
 ) {
     when (downloadStatus.status) {
         ModelDownloadStatusType.NOT_DOWNLOADED,
@@ -324,8 +401,21 @@ private fun ModelStatusSection(
         }
         ModelDownloadStatusType.SUCCEEDED -> {
             StatusBadge(text = stringResource(R.string.model_status_downloaded))
-            Button(onClick = onLoad) {
-                Text(stringResource(R.string.btn_load))
+            if (isEmbedder) {
+                // Embedder is consumed by ProjectDetail / project chat — there is no
+                // «Load into chat» flow. Disabled chip is decorative; tap is a no-op.
+                AssistChip(
+                    onClick = {},
+                    enabled = false,
+                    label = { Text(stringResource(R.string.model_manager_embedder_in_use)) },
+                )
+                Button(onClick = onDeleteEmbedder) {
+                    Text(stringResource(R.string.model_manager_embedder_delete_action))
+                }
+            } else {
+                Button(onClick = onLoad) {
+                    Text(stringResource(R.string.btn_load))
+                }
             }
         }
         ModelDownloadStatusType.FAILED -> {
