@@ -31,8 +31,10 @@ import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -57,11 +59,36 @@ internal const val PROJECT_FILE_STATUS_FAILED: String = "failed"
  * mid-batch (notification action, OS kill mid-flight). The failed-docs banner on
  * [ProjectDetailScreen] picks up rows with exactly this marker — other failure modes (encrypted PDF,
  * malformed header) surface as a per-row chip on the document list, not the banner.
+ *
+ * **Cross-task contract** — this literal MUST stay in lock-step with the localised string the
+ * `IngestWorker` writes (`R.string.ingest_status_failed_cancelled`, see Task 7). If a future
+ * change localises the worker side, this constant must move to a shared `:core-runtime` symbol
+ * AND the worker must reference it; relying on glyph-equality across translations is fragile
+ * (code-reviewer round-1 minor, accepted-as-documented for T9 — the fix is a refactor that
+ * also touches the worker and is out of T9's scope).
  */
 internal const val STATUS_MESSAGE_INTERRUPTED: String = "Прервано"
 
 /** First 100 KB of the file — same window the IngestWorker hashes per Decision 5. */
 private const val HASH_BYTES: Int = 100 * 1024
+
+/**
+ * Per-file size cap on SAF stream copy — defence against a hostile DocumentsProvider that
+ * streams arbitrary bytes (`application/pdf` MIME on the SAF launcher is a hint, not a
+ * guarantee). 256 MB is a generous ceiling for legitimate on-device RAG corpora (security-
+ * auditor round-1 medium, A04 / CWE-400). Exceeding the cap surfaces as
+ * [ProjectDetailEvent.DocumentTooLarge].
+ */
+private const val MAX_PDF_BYTES: Long = 256L * 1024L * 1024L
+
+/**
+ * Defence-in-depth cap on the SAF-supplied `OpenableColumns.DISPLAY_NAME`. Hostile / buggy
+ * providers can legally return a multi-megabyte or control-char-laden string that would
+ * propagate into the foreground notification title and trip `TransactionTooLargeException`
+ * on `setForeground` (security-auditor round-1 medium, A03 / CWE-20).
+ */
+private const val MAX_DISPLAY_NAME_LEN: Int = 256
+private val DISPLAY_NAME_SANITIZE_PATTERN = Regex("[\\p{Cntrl}\\u202A-\\u202E\\u2066-\\u2069]")
 
 /**
  * Phase 4 Task 9 — drives [ProjectDetailScreen]. Owns:
@@ -207,8 +234,10 @@ internal constructor(
     val displayName = resolveDisplayName(uri)
     val hash = readContentHash(uri)
     if (hash == null) {
-      errorLog.e("rag-index", "addDocuments: failed to read hash for $displayName")
+      // Emit the UI event first so a subscriber observes the failure even if the audit-log
+      // write is still in flight on Dispatchers.IO.
       _events.emit(ProjectDetailEvent.DocumentImportFailed)
+      errorLog.e("rag-index", "addDocuments: failed to read hash for $displayName")
       return
     }
 
@@ -221,6 +250,10 @@ internal constructor(
       return
     }
 
+    // Track the target file across all branches so cancellation / SecurityException-during-copy
+    // can sweep the partial file inside a NonCancellable finally (security-auditor round-1
+    // minor: CWE-459 incomplete cleanup).
+    var targetFile: File? = null
     try {
       // Persisted dedup: same hash already in this project's file table.
       if (projectFileDao.getByProjectAndHash(projectId, hash) != null) {
@@ -234,40 +267,84 @@ internal constructor(
         _events.emit(ProjectDetailEvent.DocumentImportFailed)
         return
       }
-      val targetFile = File(projectsDir, "${UUID.randomUUID()}.pdf")
-      val copied = copyUriToFile(uri, targetFile)
-      if (!copied) {
-        // copy failed mid-way — best-effort remove partial bytes and surface the error.
-        if (targetFile.exists() && !targetFile.delete()) {
-          errorLog.e(
-            "rag-index",
-            "addDocuments: failed to remove partial copy ${targetFile.absolutePath}",
-          )
+      val pdfFile = File(projectsDir, "${UUID.randomUUID()}.pdf")
+      targetFile = pdfFile
+      val copyResult = copyUriToFile(uri, pdfFile)
+      when (copyResult) {
+        CopyResult.Ok -> Unit
+        CopyResult.TooLarge -> {
+          _events.emit(ProjectDetailEvent.DocumentTooLarge)
+          return
         }
-        _events.emit(ProjectDetailEvent.DocumentImportFailed)
-        return
+        CopyResult.Failed -> {
+          _events.emit(ProjectDetailEvent.DocumentImportFailed)
+          return
+        }
       }
 
       // Store the path relative to `filesDir` — matches the convention DefaultProjectRepository
       // expects in `deleteFile` (joins relativePath against filesDir for the disk cleanup).
-      val relativePath = "projects/$projectId/docs/${targetFile.name}"
-      val fileId = projectRepository.addFile(
-        projectId = projectId,
-        fileName = displayName,
-        contentHash = hash,
-        localPath = relativePath,
-      )
-      projectRepository.enqueueIngest(projectId, fileId, targetFile.absolutePath)
+      val relativePath = "projects/$projectId/docs/${pdfFile.name}"
+      val fileId = try {
+        projectRepository.addFile(
+          projectId = projectId,
+          fileName = displayName,
+          contentHash = hash,
+          localPath = relativePath,
+        )
+      } catch (ce: CancellationException) {
+        throw ce
+      } catch (t: Throwable) {
+        // Room unique-index conflict (race the in-flight set missed) or any DB failure must
+        // not leave the just-copied PDF as a disk-orphan. Log + surface ImportFailed; the
+        // NonCancellable finally below sweeps the partial file.
+        errorLog.e(
+          "rag-index",
+          "addDocuments: addFile failed for $displayName :: ${t.message}",
+        )
+        _events.emit(ProjectDetailEvent.DocumentImportFailed)
+        return
+      }
+      try {
+        projectRepository.enqueueIngest(projectId, fileId, pdfFile.absolutePath)
+      } catch (ce: CancellationException) {
+        throw ce
+      } catch (t: Throwable) {
+        // Row already inserted at status='pending'; enqueue failure leaves it stranded
+        // without a worker. Surface diagnostically — the per-row «Переиндексировать» action
+        // on the UI is the manual recovery path.
+        errorLog.e(
+          "rag-index",
+          "addDocuments: enqueueIngest failed for fileId=$fileId :: ${t.message}",
+        )
+      }
+      // Successful path — clear the targetFile reference so the NonCancellable sweep skips it.
+      targetFile = null
     } finally {
-      inFlightHashes.remove(hash)
+      val partial = targetFile
+      // Shield the cleanup from the in-flight cancellation: a viewModelScope cancel mid-copy
+      // must still complete the partial-file delete before propagating, otherwise an orphan
+      // PDF survives the screen exit (security-auditor round-1 minor).
+      withContext(NonCancellable) {
+        if (partial != null && partial.exists() && !partial.delete()) {
+          errorLog.e(
+            "rag-index",
+            "addDocuments: failed to remove partial copy ${partial.absolutePath}",
+          )
+        }
+        inFlightHashes.remove(hash)
+      }
     }
   }
 
   private fun resolveDisplayName(uri: Uri): String {
     // SAF Uris carry the original file name in OpenableColumns.DISPLAY_NAME; fall back to the
-    // last path segment when the cursor is empty (e.g. file:// uris in tests).
+    // last path segment when the cursor is empty (e.g. file:// uris in tests). The result is
+    // sanitized — drop control chars + BiDi overrides — and capped at MAX_DISPLAY_NAME_LEN to
+    // defang a hostile DocumentsProvider that returns multi-megabyte / RTL-spoofed strings
+    // (security-auditor round-1 medium, A03 / CWE-20).
     val resolver = context.contentResolver
-    return try {
+    val raw = try {
       resolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
         ?.use { cursor ->
           if (cursor.moveToFirst()) {
@@ -278,6 +355,10 @@ internal constructor(
     } catch (_: Throwable) {
       uri.lastPathSegment ?: "document.pdf"
     }
+    return raw
+      .replace(DISPLAY_NAME_SANITIZE_PATTERN, "")
+      .take(MAX_DISPLAY_NAME_LEN)
+      .ifBlank { "document.pdf" }
   }
 
   private fun readContentHash(uri: Uri): String? {
@@ -302,17 +383,53 @@ internal constructor(
     }
   }
 
-  private suspend fun copyUriToFile(uri: Uri, target: File): Boolean = try {
-    context.contentResolver.openInputStream(uri)?.use { input ->
-      target.outputStream().use { output ->
-        input.copyTo(output)
+  /**
+   * Stream copy with a size cap. Returns:
+   *  - [CopyResult.Ok] when the source streamed to EOF below [MAX_PDF_BYTES].
+   *  - [CopyResult.TooLarge] when the cumulative bytes-written crossed the cap (target file is
+   *    left for the caller's `finally` to sweep).
+   *  - [CopyResult.Failed] for any I/O error or `openInputStream` returning null.
+   */
+  private suspend fun copyUriToFile(uri: Uri, target: File): CopyResult = try {
+    val stream = context.contentResolver.openInputStream(uri)
+    if (stream == null) {
+      CopyResult.Failed
+    } else {
+      stream.use { input ->
+        target.outputStream().use { output ->
+          val buf = ByteArray(8 * 1024)
+          var total: Long = 0L
+          var aborted = false
+          while (true) {
+            val n = input.read(buf)
+            if (n <= 0) break
+            total += n
+            if (total > MAX_PDF_BYTES) {
+              errorLog.e(
+                "rag-index",
+                "copyUriToFile aborted at $total bytes — exceeds $MAX_PDF_BYTES cap",
+              )
+              aborted = true
+              break
+            }
+            output.write(buf, 0, n)
+          }
+          if (aborted) CopyResult.TooLarge else CopyResult.Ok
+        }
       }
-      true
-    } ?: false
+    }
   } catch (e: IOException) {
     errorLog.e("rag-index", "stream copy failed for ${target.absolutePath} :: ${e.message}")
-    false
+    CopyResult.Failed
+  } catch (e: SecurityException) {
+    // SAF Uri permission revoked mid-copy — treat as a generic import failure; the partial
+    // file is swept by the caller's `finally` (security-auditor round-1 minor F-4).
+    errorLog.e("rag-index", "stream copy denied for ${target.absolutePath} :: ${e.message}")
+    CopyResult.Failed
   }
+
+  /** Result of [copyUriToFile] — separates "too large" from generic I/O failure for the UI event. */
+  private enum class CopyResult { Ok, TooLarge, Failed }
 
   fun reindex(fileId: Long) {
     viewModelScope.launch {
@@ -361,6 +478,7 @@ sealed class ProjectDetailEvent {
   data object NavigateToModelManager : ProjectDetailEvent()
   data object ProjectDeleted : ProjectDetailEvent()
   data object DocumentImportFailed : ProjectDetailEvent()
+  data object DocumentTooLarge : ProjectDetailEvent()
 }
 
 private fun ByteArray.toHex(): String {

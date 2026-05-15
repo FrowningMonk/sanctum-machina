@@ -22,6 +22,7 @@ import app.sanctum.machina.data.model.ProjectFileEntity
 import app.sanctum.machina.engine.EmbedderGate
 import app.sanctum.machina.engine.EmbedderState
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -151,9 +152,13 @@ class ProjectDetailViewModelTest {
   }
 
   @Test
-  fun addDocuments_concurrentSubmitOfSameHash_singleEnqueue() = runTest {
-    // Drive parallel processing through two separate VM calls — within a single launch,
-    // forEach is serial. The race-guard surface is the in-flight hash set.
+  fun addDocuments_secondSubmitAfterFirstCompletes_dedupsViaDb() = runTest {
+    // Sequential submits of the same content — first inserts a row, second hits DB-level
+    // dedup. (Renamed from `addDocuments_concurrentSubmitOfSameHash_singleEnqueue` after
+    // test-reviewer round-1 major: the StandardTestDispatcher harness serialises both
+    // launches, so this test exercises the persisted-dedup path, NOT the in-flight set.
+    // The genuine in-flight-set test below uses a CompletableDeferred to park the first
+    // processUri inside the race window.)
     val uri1 = writeFileUri(tempFolder.newFile("c.pdf"), "race-content-BBB".toByteArray())
     val uri2 = writeFileUri(tempFolder.newFile("d.pdf"), "race-content-BBB".toByteArray())
     val vm = newViewModel()
@@ -164,6 +169,111 @@ class ProjectDetailViewModelTest {
 
     assertEquals(1, repo.addFileCalls.size)
     assertEquals(1, repo.enqueueCalls.size)
+  }
+
+  @Test
+  fun addDocuments_inFlightHashGuard_blocksSecondBeforeDbInsert() = runTest {
+    // Gate `getByProjectAndHash` so the first processUri parks INSIDE its `try` block with
+    // the hash already reserved in `inFlightHashes`. While parked, submit a second URI with
+    // the same content — the in-flight guard must short-circuit it before the persisted dedup
+    // path is ever reached. Litmus: deleting `inFlightHashes.add(hash)` in the VM would make
+    // this test hang or call addFile twice.
+    fileDao.gateGetByProjectAndHash = CompletableDeferred()
+    val uri1 = writeFileUri(tempFolder.newFile("e.pdf"), "race-content-CCC".toByteArray())
+    val uri2 = writeFileUri(tempFolder.newFile("f.pdf"), "race-content-CCC".toByteArray())
+    val vm = newViewModel()
+    val received = mutableListOf<ProjectDetailEvent>()
+    val job = launch(start = CoroutineStart.UNDISPATCHED) {
+      vm.events.collect { received += it }
+    }
+
+    vm.addDocuments(listOf(uri1))
+    advanceUntilIdle() // First processUri parks awaiting the gate; hash is in-flight.
+
+    vm.addDocuments(listOf(uri2))
+    advanceUntilIdle() // Second short-circuits on inFlightHashes.add() returning false.
+
+    assertTrue(
+      "second submit must emit DuplicateDocument before dao.getByProjectAndHash returns",
+      received.any { it is ProjectDetailEvent.DuplicateDocument },
+    )
+    assertEquals(
+      "dao.getByProjectAndHash must be called exactly once (first processUri)",
+      1,
+      fileDao.getByProjectAndHashCalls,
+    )
+
+    // Release the gate; first processUri completes the addFile path.
+    fileDao.gateGetByProjectAndHash!!.complete(Unit)
+    advanceUntilIdle()
+
+    assertEquals(1, repo.addFileCalls.size)
+    job.cancel()
+  }
+
+  @Test
+  fun addDocuments_emptyList_isNoOp() = runTest {
+    val vm = newViewModel()
+    val received = mutableListOf<ProjectDetailEvent>()
+    val job = launch(start = CoroutineStart.UNDISPATCHED) {
+      vm.events.collect { received += it }
+    }
+
+    vm.addDocuments(emptyList())
+    advanceUntilIdle()
+
+    assertTrue(repo.addFileCalls.isEmpty())
+    assertTrue(repo.enqueueCalls.isEmpty())
+    assertTrue(received.isEmpty())
+    job.cancel()
+  }
+
+  @Test
+  fun addDocuments_streamNull_emitsImportFailedAndSkipsInsert() = runTest {
+    // Point at a path that never existed so contentResolver.openInputStream throws
+    // FileNotFoundException — `readContentHash` catches IOException and returns null,
+    // triggering the import-failed branch and skipping addFile.
+    val missing = File(tempFolder.root, "never-existed-${System.nanoTime()}.pdf")
+    val uri = Uri.fromFile(missing)
+
+    val vm = newViewModel()
+    val received = mutableListOf<ProjectDetailEvent>()
+    val job = launch(start = CoroutineStart.UNDISPATCHED) {
+      vm.events.collect { received += it }
+    }
+
+    vm.addDocuments(listOf(uri))
+    advanceUntilIdle()
+
+    assertTrue("addFile must not be called", repo.addFileCalls.isEmpty())
+    assertTrue(
+      "expected DocumentImportFailed in $received",
+      received.any { it is ProjectDetailEvent.DocumentImportFailed },
+    )
+    job.cancel()
+  }
+
+  @Test
+  fun requestModelManagerNav_emitsNavigationEvent() = runTest {
+    val vm = newViewModel()
+    val received = mutableListOf<ProjectDetailEvent>()
+    val job = launch(start = CoroutineStart.UNDISPATCHED) {
+      vm.events.collect { received += it }
+    }
+
+    vm.requestModelManagerNav()
+    advanceUntilIdle()
+
+    assertTrue(received.contains(ProjectDetailEvent.NavigateToModelManager))
+    job.cancel()
+  }
+
+  @Test
+  fun deleteFile_callsRepositoryWithFilesDir() = runTest {
+    val vm = newViewModel()
+    vm.deleteFile(42L)
+    advanceUntilIdle()
+    assertEquals(listOf(42L), repo.deleteFileCalls)
   }
 
   @Test
@@ -400,6 +510,8 @@ private data class EnqueueCall(
 private class DetailFakeProjectFileDao : ProjectFileDao {
   private val byHash = mutableMapOf<Pair<Long, String>, ProjectFileEntity>()
   private var nextId: Long = 1L
+  var gateGetByProjectAndHash: CompletableDeferred<Unit>? = null
+  var getByProjectAndHashCalls: Int = 0; private set
 
   override suspend fun insert(file: ProjectFileEntity): Long {
     val id = nextId++
@@ -420,7 +532,11 @@ private class DetailFakeProjectFileDao : ProjectFileDao {
   override suspend fun getByProjectAndHash(
     projectId: Long,
     contentHash: String,
-  ): ProjectFileEntity? = byHash[projectId to contentHash]
+  ): ProjectFileEntity? {
+    getByProjectAndHashCalls++
+    gateGetByProjectAndHash?.await()
+    return byHash[projectId to contentHash]
+  }
 
   override fun observeReadyCount(projectId: Long): Flow<Int> =
     MutableStateFlow(0).asStateFlow()
@@ -434,10 +550,6 @@ private class DetailFakeProjectFileDao : ProjectFileDao {
 
   override suspend fun findAllByProject(projectId: Long): List<ProjectFileEntity> =
     byHash.values.filter { it.projectId == projectId }
-
-  fun seed(file: ProjectFileEntity) {
-    byHash[file.projectId to file.contentHash] = file
-  }
 }
 
 private class DetailFakeEmbedderGate : EmbedderGate {

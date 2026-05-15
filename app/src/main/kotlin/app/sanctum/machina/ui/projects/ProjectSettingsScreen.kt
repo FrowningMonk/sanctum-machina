@@ -64,7 +64,7 @@ fun ProjectSettingsScreen(
   val chunkOverlap by viewModel.chunkOverlap.collectAsState()
   val topK by viewModel.topK.collectAsState()
   val confirmState by viewModel.confirmDialogState.collectAsState()
-  val effective by viewModel.effective.collectAsState()
+  val isDirty by viewModel.isDirty.collectAsState()
 
   val snackbarHostState = remember { SnackbarHostState() }
   val reindexStartedMsg = stringResource(R.string.project_settings_reindex_started_snackbar)
@@ -138,8 +138,7 @@ fun ProjectSettingsScreen(
         }
         Spacer(modifier = Modifier.width(8.dp))
         Button(
-          enabled = effective != null &&
-            (chunkSize != effective!!.chunkSize || chunkOverlap != effective!!.chunkOverlap),
+          enabled = isDirty,
           onClick = { viewModel.applyHeavyChanges() },
         ) {
           Text(stringResource(R.string.project_settings_apply_btn))

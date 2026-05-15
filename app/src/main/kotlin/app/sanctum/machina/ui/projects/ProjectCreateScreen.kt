@@ -44,6 +44,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.sanctum.machina.R
+import app.sanctum.machina.core.data.Model
 
 /**
  * Phase 4 Task 9 — minimal screen that creates a new project row and emits a one-shot
@@ -124,7 +125,7 @@ fun ProjectCreateScreen(
 
 @Composable
 private fun DefaultModelDropdown(
-  models: List<app.sanctum.machina.core.data.Model>,
+  models: List<Model>,
   selectedModelId: String?,
   onModelSelect: (String?) -> Unit,
 ) {

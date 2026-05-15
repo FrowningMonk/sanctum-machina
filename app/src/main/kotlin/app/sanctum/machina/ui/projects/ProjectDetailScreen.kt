@@ -13,17 +13,14 @@ package app.sanctum.machina.ui.projects
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -58,14 +55,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.sanctum.machina.R
 import app.sanctum.machina.data.model.ProjectFileEntity
-import app.sanctum.machina.engine.EmbedderState
 
 /**
  * Phase 4 Task 9 — central project surface. Renders:
@@ -91,7 +86,6 @@ fun ProjectDetailScreen(
 ) {
   val project by viewModel.project.collectAsState()
   val files by viewModel.files.collectAsState()
-  val embedderState by viewModel.embedderState.collectAsState()
   val fabEnabled by viewModel.fabEnabled.collectAsState()
   val failedBanner by viewModel.failedDocsBanner.collectAsState()
 
@@ -103,6 +97,7 @@ fun ProjectDetailScreen(
   val embedderRequiredCta = stringResource(R.string.project_detail_embedder_not_downloaded_cta)
   val duplicateMsg = stringResource(R.string.project_detail_duplicate_document_toast)
   val importFailedMsg = stringResource(R.string.project_detail_import_failed_toast)
+  val tooLargeMsg = stringResource(R.string.project_detail_too_large_toast)
 
   // Wire VM one-shot events to snackbar / navigation actions.
   LaunchedEffect(viewModel) {
@@ -123,6 +118,8 @@ fun ProjectDetailScreen(
         ProjectDetailEvent.ProjectDeleted -> onBack()
         ProjectDetailEvent.DocumentImportFailed ->
           snackbarHostState.showSnackbar(importFailedMsg)
+        ProjectDetailEvent.DocumentTooLarge ->
+          snackbarHostState.showSnackbar(tooLargeMsg)
       }
     }
   }
@@ -176,7 +173,13 @@ fun ProjectDetailScreen(
       verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
       if (failedBanner.isNotEmpty()) {
-        item { FailedDocsBanner(rows = failedBanner, vm = viewModel) }
+        item {
+          FailedDocsBanner(
+            rows = failedBanner,
+            onDismiss = { viewModel.dismissFailedDocsBanner() },
+            onReindexAll = { failedBanner.forEach { viewModel.reindex(it.id) } },
+          )
+        }
       }
 
       item { SectionHeader(text = stringResource(R.string.project_detail_chats_section)) }
@@ -254,11 +257,6 @@ fun ProjectDetailScreen(
     )
   }
 
-  // Suppress noisy compile-time warning about embedderState being collected-but-unused; the
-  // VM derives fabEnabled from it and the screen reads fabEnabled, but a future enhancement
-  // (per-state messaging) will want the raw value here.
-  @Suppress("UNUSED_VARIABLE")
-  val embedderStateRead: EmbedderState = embedderState
 }
 
 @Composable
@@ -274,7 +272,8 @@ private fun SectionHeader(text: String) {
 @Composable
 private fun FailedDocsBanner(
   rows: List<ProjectFileEntity>,
-  vm: ProjectDetailViewModel,
+  onDismiss: () -> Unit,
+  onReindexAll: () -> Unit,
 ) {
   Card(modifier = Modifier.fillMaxWidth()) {
     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -289,10 +288,10 @@ private fun FailedDocsBanner(
         )
       }
       Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-        TextButton(onClick = { vm.dismissFailedDocsBanner() }) {
+        TextButton(onClick = onDismiss) {
           Text(stringResource(R.string.project_detail_failed_docs_dismiss_action))
         }
-        TextButton(onClick = { rows.forEach { vm.reindex(it.id) } }) {
+        TextButton(onClick = onReindexAll) {
           Text(stringResource(R.string.project_detail_failed_docs_reindex_action))
         }
       }
@@ -369,17 +368,16 @@ private fun DocumentRow(
 
 @Composable
 private fun StatusChip(file: ProjectFileEntity) {
+  // While IngestWorker updates `chunk_count` mid-run, there is no companion `total_chunks`
+  // column yet — so the chip shows the running count alone (not N/M). Code-reviewer round-1
+  // major: the previous formatter rendered «N / N» which read as «complete» before completion.
+  // TODO(post-T9): add `total_chunks` column + matching migration; restore the two-int format.
   val (label, color) = when (file.status) {
     PROJECT_FILE_STATUS_READY ->
       stringResource(R.string.project_file_status_ready) to MaterialTheme.colorScheme.primary
-    PROJECT_FILE_STATUS_INDEXING -> {
-      val current = file.chunkCount ?: 0
-      val total = file.chunkCount ?: 0
-      // chunk_count is updated mid-run by IngestWorker — surface the latest count as both
-      // sides of the «N / M» format until a separate `total_chunks` column lands.
-      stringResource(R.string.project_file_status_indexing, current, total) to
+    PROJECT_FILE_STATUS_INDEXING ->
+      stringResource(R.string.project_file_status_indexing_simple, file.chunkCount ?: 0) to
         MaterialTheme.colorScheme.tertiary
-    }
     PROJECT_FILE_STATUS_FAILED ->
       stringResource(R.string.project_file_status_failed) to MaterialTheme.colorScheme.error
     else ->

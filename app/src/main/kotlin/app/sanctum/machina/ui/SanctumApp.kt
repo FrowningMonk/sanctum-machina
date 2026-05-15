@@ -72,9 +72,12 @@ fun SanctumApp() {
                         navController.navigate("project/$projectId")
                     },
                     onNewProject = {
-                        // Task 9 entry-point. Sentinel projectId=0L — the Create screen
-                        // reads the route arg only for the popUpTo target at navigation
-                        // time; the new project's real id arrives via `onCreated`.
+                        // Task 9 entry-point. Concrete `projectId=0L` is a sentinel that
+                        // matches the parameterised route template `project/{projectId}/create`;
+                        // the Create composable's `popUpTo` uses the template form, so the
+                        // concrete value never needs to equal a real project id. The new
+                        // project's real id arrives via the `onCreated` callback inside the
+                        // create composable.
                         coroutineScope.launch { drawerState.close() }
                         navController.navigate("project/0/create")
                     },

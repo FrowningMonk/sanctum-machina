@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -50,8 +51,9 @@ import kotlinx.coroutines.withContext
  * clamps to `chunkSize - 1`); the slider bounds also constrain the upper edge per
  * [RagSliderBounds.chunkOverlapRange].
  *
- * Slider ranges are imported from [RagSliderBounds] companion constants — Task 1 spike will
- * refine them in-place; this VM does not invent ranges (per task spec, R-Decision 11).
+ * Slider ranges are imported from [RagSliderBounds] — calibrated post-Task-1 spike (see
+ * `RagSliderBounds` KDoc for per-knob justification). This VM does not duplicate the constants
+ * and does not invent ranges.
  */
 @HiltViewModel
 open class ProjectSettingsViewModel
@@ -94,6 +96,20 @@ internal constructor(
   private val _confirmDialogState: MutableStateFlow<ReindexConfirmState> =
     MutableStateFlow(ReindexConfirmState.Hidden)
   val confirmDialogState: StateFlow<ReindexConfirmState> = _confirmDialogState.asStateFlow()
+
+  /**
+   * Apply-button gate: true iff the heavy-tier sliders diverge from the last applied effective
+   * config. Light tier (`topK`) is applied immediately, so dirty-ness is tracked only for the
+   * reindex-required pair (code-reviewer round-1 major: drop `!!` from Compose lambda).
+   */
+  val isDirty: StateFlow<Boolean> =
+    combine(_effective, _chunkSize, _chunkOverlap) { effective, size, overlap ->
+      effective != null && (size != effective.chunkSize || overlap != effective.chunkOverlap)
+    }.stateIn(
+      scope = viewModelScope,
+      started = SharingStarted.WhileSubscribed(5_000L),
+      initialValue = false,
+    )
 
   /** Number of files currently in the project — drives the warning dialog body «{N} файлов». */
   val fileCount: StateFlow<Int> = projectRepository.observeFiles(projectId)

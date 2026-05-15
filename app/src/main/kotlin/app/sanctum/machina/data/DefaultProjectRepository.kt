@@ -314,8 +314,17 @@ internal constructor(
 
       // Post-commit enqueue. Sharing one unique work name + APPEND_OR_REPLACE serialises
       // execution per Decision 5; spam-clicks on Confirm are absorbed by the queue.
+      // Per-file try/catch so a partial WorkManager failure surfaces diagnostically without
+      // dropping the rest of the batch (code-reviewer round-1 minor — robustness).
       for (file in filesSnapshot) {
-        ingestEnqueuer.enqueue(projectId, file.id, file.relativePath)
+        try {
+          ingestEnqueuer.enqueue(projectId, file.id, file.relativePath)
+        } catch (t: Throwable) {
+          errorLog.e(
+            LOG_INDEX,
+            "applyReindexRequired: enqueue failed projectId=$projectId fileId=${file.id} :: ${t.message}",
+          )
+        }
       }
     }
   }

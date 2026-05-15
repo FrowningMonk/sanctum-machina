@@ -232,6 +232,7 @@
   <string name="project_detail_embedder_not_downloaded_cta">Открыть Model Manager</string>
   <string name="project_detail_duplicate_document_toast">Документ уже в проекте</string>
   <string name="project_detail_import_failed_toast">Не удалось загрузить документ</string>
+  <string name="project_detail_too_large_toast">Документ превышает лимит размера и не был загружен</string>
   <string name="project_detail_failed_docs_banner_title">Индексация была прервана для этих документов</string>
   <string name="project_detail_failed_docs_reindex_action">Переиндексировать</string>
   <string name="project_detail_failed_docs_dismiss_action">Скрыть</string>
@@ -247,6 +248,7 @@
   <!-- Per-file statuses (status chip). %1$d / %2$d for indexing progress. -->
   <string name="project_file_status_pending">Ожидает</string>
   <string name="project_file_status_indexing">Индексация %1$d / %2$d</string>
+  <string name="project_file_status_indexing_simple">Индексация (%1$d чанков)</string>
   <string name="project_file_status_ready">Готов</string>
   <string name="project_file_status_failed">Ошибка</string>
 

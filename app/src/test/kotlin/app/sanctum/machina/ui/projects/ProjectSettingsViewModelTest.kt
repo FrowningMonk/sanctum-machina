@@ -16,6 +16,7 @@ import app.sanctum.machina.data.dao.ProjectFileDao
 import app.sanctum.machina.data.model.ProjectEntity
 import app.sanctum.machina.data.model.ProjectFileEntity
 import java.io.File
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -78,8 +79,12 @@ class ProjectSettingsViewModelTest {
 
     assertEquals(1, repo.updateCalls.size)
     val applied = repo.updateCalls.single()
-    assertNotNull(applied)
-    assertEquals(7, applied!!.topK)
+      ?: error("light apply must pass a non-null RagConfig (test-reviewer round-1 nit)")
+    assertEquals(7, applied.topK)
+    // Spec — light apply preserves the other knobs from effective; verify no stale-baseline
+    // drift bled into the persisted overrides.
+    assertEquals(800, applied.chunkSize)
+    assertEquals(100, applied.chunkOverlap)
     assertEquals(ReindexConfirmState.Hidden, vm.confirmDialogState.value)
   }
 
@@ -102,6 +107,10 @@ class ProjectSettingsViewModelTest {
     )
     val vm = newViewModel()
     backgroundScope.launch { vm.fileCount.collect {} }
+    val received = mutableListOf<ProjectSettingsEvent>()
+    val eventJob = launch(start = CoroutineStart.UNDISPATCHED) {
+      vm.events.collect { received += it }
+    }
     advanceUntilIdle()
 
     vm.onChunkSizeChange(1200)
@@ -121,6 +130,11 @@ class ProjectSettingsViewModelTest {
     assertEquals(1200, chunkSize)
     assertEquals(100, chunkOverlap)
     assertEquals(ReindexConfirmState.Hidden, vm.confirmDialogState.value)
+    assertTrue(
+      "confirmReindex must emit ReindexStarted",
+      received.contains(ProjectSettingsEvent.ReindexStarted),
+    )
+    eventJob.cancel()
   }
 
   @Test
@@ -159,32 +173,35 @@ class ProjectSettingsViewModelTest {
     val vm = newViewModel()
     advanceUntilIdle()
 
-    // Slider tries to drag overlap above chunkSize — clamped to chunkSize - 1, then to
-    // the slider's own range upper. Both interplay; the user-visible result is "overlap
-    // is at most chunkSize - 1 OR at most slider's upper".
-    vm.onChunkOverlapChange(2000) // far above range
+    // Slider tries to drag overlap above chunkSize — clamped to min(slider upper, chunkSize-1).
+    // With chunkSize=800 and RagSliderBounds.chunkOverlapRange.last < 799, the slider upper
+    // dominates. Pin the exact expected value rather than the loose `< chunkSize` invariant.
+    vm.onChunkOverlapChange(2000)
     advanceUntilIdle()
 
-    assertTrue(
-      "overlap must stay strictly below chunkSize",
-      vm.chunkOverlap.value < vm.chunkSize.value,
+    val expected = minOf(
+      app.sanctum.machina.core.data.RagSliderBounds.chunkOverlapRange.last,
+      vm.chunkSize.value - 1,
     )
+    assertEquals(expected, vm.chunkOverlap.value)
+    assertTrue(vm.chunkOverlap.value < vm.chunkSize.value)
   }
 
   @Test
   fun chunkSizeDragsDownRecomputesOverlapCeiling() = runTest {
-    // overlap=150 then drag chunkSize down to 200 — slider gate must shrink overlap to <200.
-    repo.effective = RagConfig(chunkSize = 800, chunkOverlap = 150, topK = 4, embeddingDim = 768)
+    // Effective overlap=300 (init bypasses the slider clamp), then drag chunkSize down to
+    // 200 — the cross-knob branch fires because 300 >= 200, clamping overlap to chunkSize-1 = 199.
+    // (test-reviewer round-1: pin exact value, not the loose `< 200` invariant.)
+    repo.effective = RagConfig(chunkSize = 800, chunkOverlap = 300, topK = 4, embeddingDim = 768)
     val vm = newViewModel()
     advanceUntilIdle()
+    assertEquals("init bypasses the slider clamp", 300, vm.chunkOverlap.value)
 
     vm.onChunkSizeChange(200)
     advanceUntilIdle()
 
-    assertTrue(
-      "overlap (was 150) must be clamped below new chunkSize 200",
-      vm.chunkOverlap.value < 200,
-    )
+    assertEquals(200, vm.chunkSize.value)
+    assertEquals(199, vm.chunkOverlap.value)
   }
 
   @Test

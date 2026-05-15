@@ -232,6 +232,7 @@
   <string name="project_detail_embedder_not_downloaded_cta">Open Model Manager</string>
   <string name="project_detail_duplicate_document_toast">Document already in project</string>
   <string name="project_detail_import_failed_toast">Failed to import document</string>
+  <string name="project_detail_too_large_toast">Document exceeds the size limit and was not imported</string>
   <string name="project_detail_failed_docs_banner_title">Indexing was interrupted for these documents</string>
   <string name="project_detail_failed_docs_reindex_action">Reindex</string>
   <string name="project_detail_failed_docs_dismiss_action">Dismiss</string>
@@ -247,6 +248,7 @@
   <!-- Per-file statuses (status chip). %1$d / %2$d for indexing progress. -->
   <string name="project_file_status_pending">Pending</string>
   <string name="project_file_status_indexing">Indexing %1$d / %2$d</string>
+  <string name="project_file_status_indexing_simple">Indexing (%1$d chunks)</string>
   <string name="project_file_status_ready">Ready</string>
   <string name="project_file_status_failed">Failed</string>
 
