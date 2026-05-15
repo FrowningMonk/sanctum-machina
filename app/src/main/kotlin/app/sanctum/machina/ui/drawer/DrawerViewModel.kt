@@ -8,9 +8,11 @@ import app.sanctum.machina.core.data.ModelDownloadStatusType
 import app.sanctum.machina.core.registry.ModelRegistry
 import app.sanctum.machina.data.AutoTitleGenerator
 import app.sanctum.machina.data.ChatRepository
+import app.sanctum.machina.data.ProjectRepository
 import app.sanctum.machina.data.dao.ChatDao
 import app.sanctum.machina.data.dao.MessageDao
 import app.sanctum.machina.data.model.ChatEntity
+import app.sanctum.machina.data.model.ProjectEntity
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
@@ -23,12 +25,14 @@ import java.util.Date
 import java.util.Locale
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 private const val ROLE_USER = "user"
@@ -62,12 +66,29 @@ data class ChatRowUiModel(
   val isModelAvailable: Boolean,
 )
 
+/**
+ * One Phase-4 project rendered in the drawer's «Проекты» section. Chats inside
+ * the group are already sorted by `last_message_at DESC` to match the date-group
+ * convention; [isExpanded] is purely UI state driven by [DrawerViewModel.toggleProject].
+ */
+data class ProjectGroupUiModel(
+  val id: Long,
+  val name: String,
+  val chats: List<ChatRowUiModel>,
+  val isExpanded: Boolean,
+)
+
 data class DrawerUiState(
+  val projects: List<ProjectGroupUiModel>,
   val sections: List<DateSection>,
   val isLoading: Boolean,
 ) {
   companion object {
-    val Initial = DrawerUiState(sections = emptyList(), isLoading = true)
+    val Initial = DrawerUiState(
+      projects = emptyList(),
+      sections = emptyList(),
+      isLoading = true,
+    )
   }
 }
 
@@ -100,6 +121,7 @@ internal constructor(
   private val registry: ModelRegistry,
   private val messageDao: MessageDao,
   private val chatDao: ChatDao,
+  private val projectRepository: ProjectRepository,
   private val filesDir: File,
   private val clock: () -> LocalDate = { LocalDate.now() },
 ) : ViewModel() {
@@ -110,20 +132,38 @@ internal constructor(
     registry: ModelRegistry,
     messageDao: MessageDao,
     chatDao: ChatDao,
+    projectRepository: ProjectRepository,
     @ApplicationContext context: Context,
   ) : this(
     chatRepository = chatRepository,
     registry = registry,
     messageDao = messageDao,
     chatDao = chatDao,
+    projectRepository = projectRepository,
     filesDir = context.filesDir,
     clock = { LocalDate.now() },
   )
 
+  /**
+   * Projects that are visually collapsed in the drawer. Tracking the *collapsed*
+   * subset instead of the *expanded* one means newly-arriving projects default
+   * to expanded without an extra registration step (Task 8 MVP: «все раскрыты»).
+   * State is in-VM only — survives configuration changes via `viewModelScope`
+   * but resets on process death (acceptable per task spec — no persist for MVP).
+   */
+  private val _collapsedProjectIds = MutableStateFlow<Set<Long>>(emptySet())
+
   val drawerUiState: StateFlow<DrawerUiState> =
-    combine(chatRepository.observeChats(), registry.models) { chats, entries ->
+    combine(
+      chatRepository.observeChats(),
+      registry.models,
+      projectRepository.observeAllProjects(),
+      _collapsedProjectIds,
+    ) { chats, entries, projects, collapsed ->
+      val (withProject, withoutProject) = chats.partition { it.projectId != null }
       DrawerUiState(
-        sections = buildSections(chats, entries),
+        projects = buildProjectGroups(projects, withProject, entries, collapsed),
+        sections = buildSections(withoutProject, entries),
         isLoading = false,
       )
     }.stateIn(
@@ -131,6 +171,13 @@ internal constructor(
       started = SharingStarted.WhileSubscribed(5_000L),
       initialValue = DrawerUiState.Initial,
     )
+
+  /** Toggle drawer expansion state for [projectId]. UI-only — never touches Room. */
+  fun toggleProject(projectId: Long) {
+    _collapsedProjectIds.update { current ->
+      if (projectId in current) current - projectId else current + projectId
+    }
+  }
 
   private val _events = MutableSharedFlow<DrawerEvent>(
     replay = 0,
@@ -199,6 +246,37 @@ internal constructor(
     val chat = chatDao.getById(chatId) ?: return false
     val entry = registry.models.value.firstOrNull { it.model.modelId == chat.modelId }
     return entry?.downloadStatus?.status == ModelDownloadStatusType.SUCCEEDED
+  }
+
+  /**
+   * Group `chats` (already filtered to `project_id != null`) under their owning
+   * [ProjectEntity]. Project order is preserved from the repo stream (Decision —
+   * `created_at DESC` per `ProjectRepository` contract). Chats whose `project_id`
+   * does not resolve to any current project are dropped silently: per task
+   * edge-cases, the CASCADE-DELETE race window is narrow and surfacing the
+   * orphan in a date group would mislead the user about ownership.
+   */
+  private fun buildProjectGroups(
+    projects: List<ProjectEntity>,
+    chats: List<ChatEntity>,
+    entries: List<app.sanctum.machina.core.registry.ModelEntry>,
+    collapsed: Set<Long>,
+  ): List<ProjectGroupUiModel> {
+    if (projects.isEmpty()) return emptyList()
+    val zone = ZoneId.systemDefault()
+    val byProjectId = chats.groupBy { it.projectId }
+    return projects.map { project ->
+      val rows = byProjectId[project.id]
+        ?.sortedByDescending { it.lastMessageAt }
+        ?.map { toRow(it, entries, zone) }
+        ?: emptyList()
+      ProjectGroupUiModel(
+        id = project.id,
+        name = project.name,
+        chats = rows,
+        isExpanded = project.id !in collapsed,
+      )
+    }
   }
 
   private fun buildSections(

@@ -52,6 +52,23 @@ fun SanctumApp() {
                         coroutineScope.launch { drawerState.close() }
                         navController.navigate("chat/draft")
                     },
+                    onNavigateToHome = {
+                        // Decision 14: popUpTo("home") with inclusive = false +
+                        // launchSingleTop reuses the existing Home entry instead
+                        // of stacking new copies on repeated taps.
+                        coroutineScope.launch { drawerState.close() }
+                        navController.navigate("home") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
+                    onProjectClick = { projectId ->
+                        // Route `project/{projectId}` is registered in Task 9;
+                        // until then the drawer Projects section is empty in MVP
+                        // so this lambda never fires at runtime.
+                        coroutineScope.launch { drawerState.close() }
+                        navController.navigate("project/$projectId")
+                    },
                     onNavigateToModelManager = {
                         coroutineScope.launch { drawerState.close() }
                         navController.navigate("model_manager")
