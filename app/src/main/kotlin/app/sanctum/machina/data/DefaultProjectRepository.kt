@@ -3,6 +3,7 @@ package app.sanctum.machina.data
 import androidx.annotation.VisibleForTesting
 import androidx.room.withTransaction
 import app.sanctum.machina.core.log.ErrorLog
+import kotlinx.coroutines.NonCancellable
 import app.sanctum.machina.data.dao.MessageDao
 import app.sanctum.machina.data.dao.ProjectDao
 import app.sanctum.machina.data.dao.ProjectEmbeddingDao
@@ -101,12 +102,23 @@ internal constructor(
       // CASCADE drops project_files / project_embeddings / chats / messages.
       projectDao.deleteById(projectId)
       val dir = File(filesDir, "$PROJECTS_DIR/$projectId")
+      if (!isInsideProjectsRoot(dir, filesDir)) {
+        // Should never happen — projectId is a typed Long and we joined our own
+        // constant — but mirror the deleteFile guard so the two paths stay symmetric.
+        errorLog.e(
+          LOG_INDEX,
+          "delete: refusing to remove projectId=$projectId — path escapes projects root",
+        )
+        return@withContext
+      }
       if (dir.exists() && !dir.deleteRecursively()) {
         // Row is gone; on-disk PDFs survived. Flag as observable disk-orphan
         // (per Decision 8 / patterns.md — disk failures never block row deletion).
+        // Log relative path, not absolute, to avoid leaking the app's storage
+        // root into bug reports (security-auditor-1 minor).
         errorLog.e(
           LOG_INDEX,
-          "delete: failed to remove project dir projectId=$projectId path=${dir.absolutePath}",
+          "delete: failed to remove project dir projectId=$projectId path=$PROJECTS_DIR/$projectId",
         )
       }
     }
@@ -179,19 +191,34 @@ internal constructor(
 
       // Post-commit diagnostics: log malformed rows so a corrupted snapshot is observable
       // in field bug reports without aborting the deletion the user explicitly asked for.
-      for (id in malformedRowIds) {
-        errorLog.e(LOG_RETRIEVE, "malformed citations row id=$id, skipping during deleteFile fileId=$fileId")
+      // NonCancellable shields the audit trail when the caller's scope cancels between the
+      // Room commit and the log loop (precedent: EmbedderRegistry.warmupLocked T6 review).
+      withContext(NonCancellable) {
+        for (id in malformedRowIds) {
+          errorLog.e(
+            LOG_RETRIEVE,
+            "malformed citations row id=$id, skipping during deleteFile fileId=$fileId",
+          )
+        }
       }
 
-      // Best-effort disk cleanup. relative_path is the value the caller stored in
-      // ProjectRepository.addFile (tech-spec convention: relative to filesDir). A
-      // delete failure leaves a disk-orphan but the row is already gone — diagnostic
-      // only, do not throw.
+      // Best-effort disk cleanup. relative_path is the value the caller stored via
+      // ProjectRepository.addFile (tech-spec convention: relative to filesDir). The
+      // containment check below is defence-in-depth — `relativePath` comes from a Room
+      // row that internal code wrote, but a poisoned DB restore (or a future caller bug)
+      // must not be able to convert this site into an arbitrary-file-delete. A delete
+      // failure leaves a disk-orphan but the row is already gone — diagnostic only, do
+      // not throw (Decision 8 disk-orphan policy).
       val pdf = File(filesDir, relativePath)
-      if (pdf.exists() && !pdf.delete()) {
+      if (!isInsideProjectsRoot(pdf, filesDir)) {
         errorLog.e(
           LOG_INDEX,
-          "deleteFile: failed to remove PDF fileId=$fileId path=${pdf.absolutePath}",
+          "deleteFile: refusing to remove fileId=$fileId — relative_path escapes projects root: $relativePath",
+        )
+      } else if (pdf.exists() && !pdf.delete()) {
+        errorLog.e(
+          LOG_INDEX,
+          "deleteFile: failed to remove PDF fileId=$fileId path=$relativePath",
         )
       }
     }
@@ -212,15 +239,31 @@ internal constructor(
    *  - [StaleMarkResult.Changed] with the new JSON when at least one entry was flipped.
    *  - [StaleMarkResult.Unchanged] when the row had no matching citation (write skipped to
    *    save SQLite work and to keep the on-disk JSON bit-identical for unrelated rows).
-   *  - [StaleMarkResult.Malformed] when Gson rejects the input — caller logs + skips.
+   *  - [StaleMarkResult.Malformed] when Gson rejects the input OR when the decoded payload
+   *    violates the non-null contract of [Citation] (security-auditor-1 major: Gson
+   *    reflection happily fills `null` into non-null Kotlin fields, so a poisoned row like
+   *    `[{"fileId":42}]` would otherwise re-serialise with explicit nulls and defer a NPE
+   *    to Task 11's UI). Caller logs + skips on Malformed.
    */
   private fun markStaleIfMatches(json: String, targetFileId: Long): StaleMarkResult {
+    // Gson maps `null`/`""` payloads to null; treat as empty rather than malformed (a
+    // legitimate caller may persist null when the assistant produced no citations).
     val decoded: List<Citation> = try {
       gson.fromJson<List<Citation>?>(json, CITATION_LIST_TYPE) ?: return StaleMarkResult.Unchanged
     } catch (_: JsonSyntaxException) {
       return StaleMarkResult.Malformed
     } catch (_: JsonParseException) {
       return StaleMarkResult.Malformed
+    }
+    // Defence against Kotlin-null-contract bypass via Gson reflection — any decoded
+    // citation whose non-null fields ended up null means the snapshot is structurally
+    // broken; we cannot safely round-trip it without writing back explicit nulls that
+    // would crash downstream consumers.
+    for (citation in decoded) {
+      @Suppress("SENSELESS_COMPARISON")
+      if (citation.fileName == null || citation.chunkText == null) {
+        return StaleMarkResult.Malformed
+      }
     }
     var changed = false
     val updated = decoded.map { citation ->
@@ -232,6 +275,27 @@ internal constructor(
       }
     }
     return if (changed) StaleMarkResult.Changed(gson.toJson(updated)) else StaleMarkResult.Unchanged
+  }
+
+  /**
+   * Defence-in-depth path containment (parity with [DefaultChatRepository.requireInsideAttachmentsRoot]).
+   * Both `delete` and `deleteFile` operate on disk paths derived from caller-supplied data
+   * (`relative_path` on `project_files` rows) — without this check, a poisoned DB row could
+   * convert these sites into arbitrary-file-delete primitives within the app-private sandbox.
+   *
+   * Returns `true` when [candidate]'s canonical path is strictly inside `filesDir/projects/`.
+   * Returns `false` (rather than throwing) so the caller can log + skip — matches Decision 8's
+   * disk-orphan policy (the row is already gone; a disk-side failure must never propagate).
+   */
+  private fun isInsideProjectsRoot(candidate: File, filesDir: File): Boolean {
+    val projectsRoot = File(filesDir, PROJECTS_DIR).canonicalPath
+    val candidateCanonical = try {
+      candidate.canonicalPath
+    } catch (_: java.io.IOException) {
+      return false
+    }
+    return candidateCanonical == projectsRoot ||
+      candidateCanonical.startsWith(projectsRoot + File.separator)
   }
 
   private sealed class StaleMarkResult {

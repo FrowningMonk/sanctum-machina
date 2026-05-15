@@ -37,6 +37,9 @@ import org.robolectric.annotation.Config
 
 private val CITATION_LIST_TYPE = object : TypeToken<List<Citation>>() {}.type
 
+/** Mirror of `DefaultProjectRepository.STALE_MARK_BATCH_SIZE` for the pagination assertion. */
+private const val STALE_MARK_BATCH_SIZE_TEST = 50
+
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
@@ -229,6 +232,18 @@ class ProjectRepositoryTest {
         gson.fromJson<List<Citation>>(it.citations, CITATION_LIST_TYPE).all { c -> c.stale }
       }
       assertEquals("all $count messages flipped to stale", count, staleCount)
+
+      // Pagination math — assert offsets walked through every full batch (catches a
+      // regression where the loop reads only the first batch; test-reviewer-1 minor).
+      // For count=50  → reads at offsets [0, 50]   (second read returns empty → break)
+      // For count=51  → reads at offsets [0, 50]   (second read returns 1, < 50 → break)
+      // For count=100 → reads at offsets [0, 50, 100]
+      val expectedOffsets = (0..count step STALE_MARK_BATCH_SIZE_TEST).toList()
+      assertEquals(
+        "offsets walked for count=$count",
+        expectedOffsets,
+        messageDao.observedOffsets,
+      )
     }
   }
 
@@ -247,6 +262,73 @@ class ProjectRepositoryTest {
     repo.deleteFile(fileId, filesDir)
 
     assertNull(fileDao.getByIdSync(fileId))
+  }
+
+  @Test
+  fun deleteFile_typeConfusedCitationsTreatedAsMalformed() = runTest {
+    // security-auditor-1 major: Gson reflection over `[{"fileId":42}]` produces a Citation
+    // with fileName=null / chunkText=null (Kotlin non-null contract bypassed). Without
+    // the post-decode null check, this row would get its stale flag flipped and
+    // re-serialised back with explicit nulls, deferring a NPE to UI render.
+    val fileId = 77L
+    val projectId = projectDao.insertSync(ProjectEntity(name = "p", createdAt = 1L))
+    val chatId = messageDao.insertChat(projectId)
+    fileDao.insertSync(
+      ProjectFileEntity(
+        id = fileId, projectId = projectId, fileName = "x.pdf",
+        relativePath = "projects/$projectId/docs/x.pdf",
+        contentHash = "h", status = "ready", createdAt = 1L,
+      ),
+    )
+    val partialJson = """[{"fileId":$fileId}]"""
+    val msgId = messageDao.insertSync(
+      MessageEntity(
+        chatId = chatId, role = "assistant", text = "p", createdAt = 2L,
+        citations = partialJson,
+      ),
+    )
+
+    val repo = newRepository()
+    repo.deleteFile(fileId, filesDir)
+
+    val msg = messageDao.allMessages().single { it.id == msgId }
+    assertEquals("type-confused citation left untouched", partialJson, msg.citations)
+    val log = errorLogFile.readLines()
+    assertTrue(
+      "type-confused row logged as malformed under rag-retrieve, lines: $log",
+      log.any { it.contains("[rag-retrieve]") && it.contains("id=$msgId") },
+    )
+  }
+
+  @Test
+  fun deleteFile_refusesEscapingRelativePath() = runTest {
+    // security-auditor-1 / code-reviewer-1 major: a poisoned `project_files.relative_path`
+    // pointing outside `filesDir/projects/` must not delete that path. Verify by writing a
+    // sentinel file under `filesDir/sensitive.txt` and registering a project_file whose
+    // relative_path traverses up to it.
+    val fileId = 88L
+    val projectId = projectDao.insertSync(ProjectEntity(name = "p", createdAt = 1L))
+    messageDao.insertChat(projectId)
+    val sensitive = File(filesDir, "sensitive.txt").apply { writeText("must survive") }
+    fileDao.insertSync(
+      ProjectFileEntity(
+        id = fileId, projectId = projectId, fileName = "evil.pdf",
+        relativePath = "../sensitive.txt",
+        contentHash = "h", status = "ready", createdAt = 1L,
+      ),
+    )
+
+    val repo = newRepository()
+    repo.deleteFile(fileId, filesDir)
+
+    assertTrue("sentinel file outside projects root must survive", sensitive.exists())
+    assertEquals("sentinel content untouched", "must survive", sensitive.readText())
+    val log = errorLogFile.readLines()
+    assertTrue(
+      "escape attempt logged under rag-index, lines: $log",
+      log.any { it.contains("[rag-index]") && it.contains("escapes projects root") },
+    )
+    assertNull("file row still removed despite disk-side refusal", fileDao.getByIdSync(fileId))
   }
 
   @Test
@@ -466,6 +548,13 @@ private class ProjectRepoFakeMessageDao : MessageDao {
   private var nextChatId: Long = 1L
   private var nextMsgId: Long = 1L
 
+  /**
+   * Offsets passed to [observeCitedMessagesPageByProject] in arrival order. Lets the batch-
+   * boundary test (count=50/51/100) assert the production code walked through the full
+   * pagination sequence rather than reading only the first batch (test-reviewer-1 minor).
+   */
+  val observedOffsets: MutableList<Int> = mutableListOf()
+
   fun insertChat(projectId: Long?): Long {
     val id = nextChatId++
     chats += ProjectRepoFakeChatRow(id, projectId)
@@ -501,6 +590,7 @@ private class ProjectRepoFakeMessageDao : MessageDao {
   override suspend fun observeCitedMessagesPageByProject(
     projectId: Long, offset: Int, limit: Int,
   ): List<MessageEntity> {
+    observedOffsets += offset
     val chatIdsInProject = chats.filter { it.projectId == projectId }.map { it.id }.toSet()
     return messages
       .filter { it.chatId in chatIdsInProject && it.citations != null }

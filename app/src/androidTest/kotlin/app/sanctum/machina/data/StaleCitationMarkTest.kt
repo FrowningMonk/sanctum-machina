@@ -124,8 +124,10 @@ class StaleCitationMarkTest {
             repo.deleteFile(deletedFileId, filesDir)
         }
 
-        // Spec target on Honor 200 is <500 ms; loose CI bound is <10 s.
-        assertTrue("deleteFile elapsed=${elapsed}ms exceeded 10s ceiling", elapsed < 10_000)
+        // Spec target on Honor 200 is <500 ms; loose CI bound is <3 s so the assertion
+        // still detects a realistic regression (test-reviewer-1 minor — 10 s was 20× looser
+        // than the task brief negotiated).
+        assertTrue("deleteFile elapsed=${elapsed}ms exceeded 3s ceiling", elapsed < 3_000)
 
         // Walk the corpus and verify per-row outcome. Use chat-id-scoped getter to avoid
         // pulling all messages once we have hundreds of them.
