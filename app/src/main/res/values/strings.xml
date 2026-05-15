@@ -191,6 +191,14 @@
   <string name="drawer_nav_diagnostics">Diagnostics</string>
   <string name="drawer_nav_about">About</string>
 
+  <!-- Drawer Projects section + Home footer entry (Phase 4 Task 8).
+       Namespace `drawer_*` only — `project_*` / `rag_*` keys land in Task 9. -->
+  <string name="drawer_section_projects">Projects</string>
+  <string name="drawer_projects_empty">No projects yet</string>
+  <string name="drawer_footer_home">Home</string>
+  <string name="drawer_project_collapsed_cd">Expand project</string>
+  <string name="drawer_project_expanded_cd">Collapse project</string>
+
   <!-- Phase 4 Task 7: IngestWorker persistent notification + failure messages. -->
   <string name="ingest_notification_channel_name">Document indexing</string>
   <string name="ingest_notification_title">Indexing documents</string>

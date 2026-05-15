@@ -191,6 +191,14 @@
   <string name="drawer_nav_diagnostics">Диагностика</string>
   <string name="drawer_nav_about">О приложении</string>
 
+  <!-- Drawer Projects section + Home footer entry (Phase 4 Task 8).
+       Namespace `drawer_*` only — `project_*` / `rag_*` keys land in Task 9. -->
+  <string name="drawer_section_projects">Проекты</string>
+  <string name="drawer_projects_empty">Пока нет проектов</string>
+  <string name="drawer_footer_home">Главная</string>
+  <string name="drawer_project_collapsed_cd">Развернуть проект</string>
+  <string name="drawer_project_expanded_cd">Свернуть проект</string>
+
   <!-- Phase 4 Task 7: IngestWorker persistent notification + failure messages. -->
   <string name="ingest_notification_channel_name">Индексация документов</string>
   <string name="ingest_notification_title">Индексация документов</string>
