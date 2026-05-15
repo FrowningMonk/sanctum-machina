@@ -27,6 +27,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
@@ -160,7 +161,13 @@ open class EmbedderRegistry @VisibleForTesting(otherwise = VisibleForTesting.PRI
       // arriving in the meantime sees NotDownloaded and throws EmbedderNotReadyException with
       // a self-explanatory state instead of "still initializing".
       _state.value = EmbedderState.NotDownloaded
-      runCatching { errorLog.i(LOG_INIT, "warmup cancelled") }
+      // NonCancellable shields the log write from the inflight cancellation — without it the
+      // suspending `errorLog.i` (Mutex.withLock + withContext(Dispatchers.IO)) re-throws CE
+      // before reaching the file, leaving the audit trail empty for the very case it exists
+      // to record.
+      withContext(NonCancellable) {
+        runCatching { errorLog.i(LOG_INIT, "warmup cancelled") }
+      }
       throw ce
     } catch (t: Throwable) {
       Result.failure(t)

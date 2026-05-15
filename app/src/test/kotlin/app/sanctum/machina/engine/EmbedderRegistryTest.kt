@@ -408,18 +408,87 @@ class EmbedderRegistryTest {
     assertEquals(1, engine.closeCalls)
   }
 
-  // NOTE on idle-teardown LOOP wiring coverage:
-  //   The production `startIdleTeardownLoop()` (`scope.launch { while(isActive) { delay(N);
-  //   maybeReleaseIdle() } }`) cannot be exercised under `runTest` + `StandardTestDispatcher`
-  //   without re-introducing the perpetual-reschedule hang that motivated the
-  //   `idleCheckIntervalMillis = Long.MAX_VALUE` opt-out in the test harness. The single
-  //   integration test we attempted (commit reverted; see commit log) caused `runTest`'s
-  //   terminal drain to fight the loop's `delay()` rescheduling even after explicit
-  //   `registryScope.cancel()`. The teardown CONDITION is verified by
-  //   `idleTeardown_after_5min_no_encode_releases_engine` (calls `maybeReleaseIdle()`
-  //   directly); the loop WIRING (init-launch, while-isActive, delay) is verified by code
-  //   review only. Acknowledged trade-off — revisit when kotlinx-coroutines-test exposes
-  //   a non-blocking drain mode for cancelled scopes.
+  /**
+   * Covers `startIdleTeardownLoop()` end-to-end: `init { scope.launch { while (isActive) {
+   * delay(N); maybeReleaseIdle() } } }`. The registry's scope is `TestScope.backgroundScope`
+   * — auto-cancelled BEFORE `runTest`'s terminal drain, so the loop's perpetually-rescheduling
+   * `delay()` cannot win the race against the drain (the conflict that motivated the original
+   * test revert; round-1 reviewer recommendation).
+   */
+  @Test
+  fun idleTeardownLoop_firesTeardown_afterIdleWindow() = runTest {
+    seedDownloadStatus(ModelDownloadStatusType.SUCCEEDED)
+    val dispatcher = StandardTestDispatcher(testScheduler)
+    val registry = EmbedderRegistry(
+      context = context,
+      modelRegistry = modelRegistry,
+      engine = engine,
+      errorLog = errorLog,
+      scope = backgroundScope,
+      engineDispatcher = dispatcher,
+      clock = { testScheduler.currentTime },
+      idleTimeoutMillis = 1_000L,
+      idleCheckIntervalMillis = 100L,
+    )
+    registry.warmup()
+    advanceUntilIdle()
+    assertEquals(EmbedderState.Ready, registry.state.value)
+
+    // Within the idle window — loop fires ~5 times but never releases.
+    advanceTimeBy(500L)
+    assertEquals(EmbedderState.Ready, registry.state.value)
+    assertEquals(0, engine.closeCalls)
+
+    // Past the idle window — the next loop wake fires teardown.
+    advanceTimeBy(700L)
+    assertEquals(EmbedderState.Idle, registry.state.value)
+    assertEquals(1, engine.closeCalls)
+  }
+
+  /**
+   * Regression net for the round-2 change that resets state to NotDownloaded on warmup
+   * cancellation (was added to avoid a stuck Initializing when a ViewModelScope is cancelled
+   * mid-warmup — the realistic production trigger from Task 9 / Task 11 hooks).
+   */
+  @Test
+  fun warmup_cancelMidInitialize_resetsStateToNotDownloaded() = runRegistryTest {
+    seedDownloadStatus(ModelDownloadStatusType.SUCCEEDED)
+    engine.initializeHandler = { awaitCancellation() }
+    val registry = newRegistry()
+
+    val job = launch { registry.warmup() }
+    advanceUntilIdle()
+    assertEquals(EmbedderState.Initializing, registry.state.value)
+
+    job.cancel()
+    advanceUntilIdle()
+
+    assertEquals(
+      "cancel-mid-warmup must drop state back to NotDownloaded so the next encode() throws " +
+        "with a self-explanatory state instead of 'still initializing'",
+      EmbedderState.NotDownloaded,
+      registry.state.value,
+    )
+    // The cancellation INFO log is written via `withContext(NonCancellable)` →
+    // `errorLog.i` → real `Dispatchers.IO`. The test scheduler cannot drain that hop,
+    // so we poll for the file like `WarmupCoordinatorTest.awaitLogFile()` does.
+    awaitErrorLog("INFO [embed-init] warmup cancelled")
+  }
+
+  private fun awaitErrorLog(expectedPrefix: String) {
+    val deadlineMs = System.currentTimeMillis() + 2_000
+    while (System.currentTimeMillis() < deadlineMs) {
+      if (errorLogFile.exists() &&
+        errorLogFile.length() > 0 &&
+        errorLogFile.readLines().any { it.startsWith(expectedPrefix) }
+      ) {
+        return
+      }
+      Thread.sleep(20)
+    }
+    val current = if (errorLogFile.exists()) errorLogFile.readLines() else emptyList()
+    fail("expected log line starting with '$expectedPrefix' within 2s; got: $current")
+  }
 
   @Test
   fun releaseEngine_isNoOp_whenNotReady() = runRegistryTest {
