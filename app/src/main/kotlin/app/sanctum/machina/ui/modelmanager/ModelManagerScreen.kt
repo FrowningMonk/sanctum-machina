@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.MoreVert
@@ -178,17 +180,26 @@ private fun EmbedderDeleteDialog(
         is EmbedderDeleteDialogState.WarningWithProjects ->
             stringResource(
                 R.string.model_manager_embedder_delete_body_with_projects,
-                // Comma + space matches Decision-12 dialog spec; for >10 projects the
-                // dialog body scrolls (AlertDialog text slot is vertically scrollable
-                // by default in Material 3).
-                state.projectNames.joinToString(separator = ", "),
+                // Names are sanitised + bounded per [sanitizeProjectNameForDialog] so a
+                // hostile project name (BiDi override, control chars, extreme length) can't
+                // bury / flip the «Действие необратимо» line that follows.
+                state.projectNames.joinToString(separator = ", ") {
+                    sanitizeProjectNameForDialog(it)
+                },
             )
     }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.model_manager_embedder_delete_title)) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Explicit verticalScroll on the body Column (tasks/10.md line 144). M3
+            // AlertDialog's text slot does NOT scroll its slot content by default; without
+            // this, a list of 10+ projects buries the «Действие необратимо» line behind the
+            // action buttons on short viewports.
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 Text(body)
                 Text(noUndoLine)
             }
@@ -204,6 +215,36 @@ private fun EmbedderDeleteDialog(
             }
         },
     )
+}
+
+/**
+ * Task 10 / security-auditor-1 M1: defence-in-depth sanitisation of user-controlled project
+ * names when rendered inside the embedder delete-confirm dialog (a destructive-action
+ * surface where misleading the user is the threat model). Strips:
+ *
+ *  - **BiDi/Unicode formatting controls** (`‎…‏`, `‪…‮`, `⁦…⁩`)
+ *    — these can flip surrounding text or reorder the «Действие необратимо» warning.
+ *  - **Control / line-break characters** (` …`, ``) — newlines disrupt
+ *    the Column layout and let an attacker hide content past the visible region.
+ *  - **Length cap** (160 chars, 1-based truncation marker `…`) — bounds the dialog body
+ *    even when sister code (e.g. `ProjectCreateViewModel`) hasn't yet capped at input.
+ *
+ * Intentionally *not* attempting normalisation / homoglyph filtering — that's a far broader
+ * surface and belongs at the input boundary in `ProjectCreateViewModel`. This is a local
+ * hardening of the destructive-action render path.
+ */
+private const val PROJECT_NAME_DISPLAY_CAP = 160
+private val DIALOG_UNSAFE_CHARS = Regex(
+    // Order: BiDi formatting controls, then C0/C1 control chars (excludes printable ASCII).
+    "[\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069\\u0000-\\u001F\\u007F]"
+)
+private fun sanitizeProjectNameForDialog(name: String): String {
+    val stripped = DIALOG_UNSAFE_CHARS.replace(name, "")
+    return if (stripped.length > PROJECT_NAME_DISPLAY_CAP) {
+        stripped.take(PROJECT_NAME_DISPLAY_CAP) + "…"
+    } else {
+        stripped
+    }
 }
 
 @Composable

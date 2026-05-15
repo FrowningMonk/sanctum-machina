@@ -314,6 +314,88 @@ class ModelManagerViewModelTest {
     }
 
     @Test
+    fun dismissEmbedderDelete_clearsDialog_doesNotInvokeRegistryDelete() = runTest {
+        // Cancel-button path: WarningWithProjects state must clear without touching the
+        // registry. Litmus — removing `_embedderDeleteDialog.value = null` from the dismiss
+        // handler makes this test fail on the first assertion.
+        projectRepo.projects = listOf(
+            projectEntity(id = 1, name = "p1", createdAt = 100L),
+        )
+        val vm = buildVm()
+
+        vm.onDeleteEmbedderClick(EmbedderRegistry.MODEL_ID_EMBEDDER, "EmbeddingGemma-300M")
+        advanceUntilIdle()
+        vm.onDismissEmbedderDelete()
+        advanceUntilIdle()
+
+        assertNull(vm.embedderDeleteDialog.value)
+        assertTrue(
+            "registry.delete must not be invoked on dismiss, got ${registry.deleteCalls}",
+            registry.deleteCalls.isEmpty(),
+        )
+    }
+
+    @Test
+    fun confirmEmbedderDelete_withoutDialogState_isNoOp() = runTest {
+        // Idempotency guard: a stray Confirm tap with no live dialog must NOT touch the
+        // registry. Pins the `_embedderDeleteDialog.value ?: return` short-circuit so a
+        // rapid double-Confirm or a programmatic poke can't double-delete or surface a
+        // confused snackbar after the dialog is already gone.
+        val vm = buildVm()
+
+        vm.onConfirmEmbedderDelete()
+        advanceUntilIdle()
+
+        assertTrue(
+            "registry.delete must not run without a live dialog state, got ${registry.deleteCalls}",
+            registry.deleteCalls.isEmpty(),
+        )
+        assertNull(vm.embedderDeleteDialog.value)
+    }
+
+    @Test
+    fun deleteEmbedder_withMismatchedModelId_emitsEmptyConfirm() = runTest {
+        // Defence-in-depth on the data-layer contract: `projectsUsingEmbedder` returns
+        // emptyList() for non-embedder ids regardless of how many projects exist. The
+        // dialog must then show the no-list Confirm shape — a hostile/buggy caller cannot
+        // surface a project list under a misleading "this chat model is the embedder" frame.
+        projectRepo.projects = listOf(
+            projectEntity(id = 1, name = "p1", createdAt = 100L),
+            projectEntity(id = 2, name = "p2", createdAt = 200L),
+        )
+        val vm = buildVm()
+
+        vm.onDeleteEmbedderClick("owner/some-chat-model", "Gemma 4 E4B")
+        advanceUntilIdle()
+
+        assertEquals(
+            EmbedderDeleteDialogState.Confirm(modelName = "Gemma 4 E4B"),
+            vm.embedderDeleteDialog.value,
+        )
+    }
+
+    @Test
+    fun setDefaultModel_chatRow_persistsAndEmits() = runTest {
+        // Litmus baseline against [setDefaultModel_not_offered_for_embedder]: if an
+        // unconditional early-return regression slipped into setDefaultModel, *this* test
+        // would fail. Chat rows must still write through.
+        registry.setEntries(
+            listOf(entryWithRuntime("e4b", RuntimeType.LITERT_LM)),
+        )
+        val vm = buildVm()
+        val events = collectNavEvents(vm)
+
+        vm.setDefaultModel("owner/e4b", "Gemma 4 E4B")
+        advanceUntilIdle()
+
+        assertEquals(listOf("owner/e4b"), settings.setDefaultModelIdCalls)
+        assertEquals(
+            listOf<NavEvent>(NavEvent.ShowSnackbar("Default model: Gemma 4 E4B")),
+            events,
+        )
+    }
+
+    @Test
     fun setDefaultModel_not_offered_for_embedder() = runTest {
         // Defence-in-depth: the UI hides «Сделать по умолчанию» on embedder rows, but a
         // programmatic call (test, deeplink, future a11y action) must also short-circuit.

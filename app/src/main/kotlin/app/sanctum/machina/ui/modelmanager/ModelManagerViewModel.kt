@@ -173,10 +173,14 @@ constructor(
      * also short-circuit — set-default for an embedder would corrupt the chat-model contract.
      */
     fun setDefaultModel(modelId: String, modelName: String) {
-        val isEmbedder = registry.models.value.firstOrNull {
-            it.model.modelId == modelId
-        }?.isEmbedder() == true
-        if (isEmbedder) return
+        // Fail-closed defence-in-depth: if ANY matching row is an embedder, short-circuit.
+        // `firstOrNull` would let a chat row mask an embedder collision on the same modelId
+        // (allowlist parser drift / hostile JSON); `any` keeps the guard strict — better to
+        // refuse a legitimate set-default than to corrupt `default_model_id` with an embedder.
+        // Empty match list passes through — production callers always pass a registry-resident
+        // modelId (the overflow menu of a SUCCEEDED row), and the legacy tests seed `""` /
+        // arbitrary ids to exercise the persistence path.
+        if (registry.models.value.any { it.model.modelId == modelId && it.isEmbedder() }) return
         viewModelScope.launch {
             appSettings.setDefaultModelId(modelId)
             _navEvents.emit(NavEvent.ShowSnackbar("Default model: $modelName"))

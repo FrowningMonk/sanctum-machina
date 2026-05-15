@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import app.sanctum.machina.core.data.Model
 import app.sanctum.machina.core.data.ModelDownloadStatus
 import app.sanctum.machina.core.data.ModelDownloadStatusType
+import app.sanctum.machina.core.data.RuntimeType
 import app.sanctum.machina.core.log.ErrorLog
 import app.sanctum.machina.core.registry.ModelEntry
 import app.sanctum.machina.core.registry.ModelInitStatus
@@ -336,6 +337,71 @@ class WarmupCoordinatorTest {
     advanceUntilIdle()
 
     assertEquals(listOf("org/first"), appSettings.setDefaultModelIdCalls)
+  }
+
+  @Test
+  fun ac_f3Observer_skipsEmbedder_picksFirstChatRow() = runTest {
+    // Phase 4 Task 10 regression: the observer must NOT auto-write the embedder's modelId
+    // into `default_model_id`. The embedder runs on LITERT_INTERPRETER, has no quick-chat
+    // contract, and writing its id corrupts the chat-model gate. Scenario: embedder
+    // SUCCEEDED first (typical user flow — they want RAG, grab the embedder), then a chat
+    // model finishes. The observer must skip embedder, pick the chat row.
+    appSettings.defaultModelId = ""
+    val embedder = Model(
+      name = "embedder",
+      modelId = EmbedderRegistry.MODEL_ID_EMBEDDER,
+      runtimeType = RuntimeType.LITERT_INTERPRETER,
+    )
+    val chat = Model(name = "e4b", modelId = "org/e4b", runtimeType = RuntimeType.LITERT_LM)
+    registry._models.value = listOf(
+      ModelEntry(
+        embedder,
+        ModelDownloadStatus(ModelDownloadStatusType.SUCCEEDED),
+        ModelInitStatus.Idle,
+      ),
+      ModelEntry(
+        chat,
+        ModelDownloadStatus(ModelDownloadStatusType.SUCCEEDED),
+        ModelInitStatus.Idle,
+      ),
+    )
+
+    newCoordinator()
+    advanceUntilIdle()
+
+    assertEquals(listOf("org/e4b"), appSettings.setDefaultModelIdCalls)
+  }
+
+  @Test
+  fun ac_f3Observer_doesNotSetDefault_whenOnlyEmbedderDownloaded() = runTest {
+    // Companion to ac_f3Observer_skipsEmbedder: if the ONLY SUCCEEDED row is the embedder
+    // (no chat model yet), the observer waits — `default_model_id` stays empty and no
+    // warmup fires. A chat-model download landing later is what unblocks the gate.
+    appSettings.defaultModelId = ""
+    val embedder = Model(
+      name = "embedder",
+      modelId = EmbedderRegistry.MODEL_ID_EMBEDDER,
+      runtimeType = RuntimeType.LITERT_INTERPRETER,
+    )
+    registry._models.value = listOf(
+      ModelEntry(
+        embedder,
+        ModelDownloadStatus(ModelDownloadStatusType.SUCCEEDED),
+        ModelInitStatus.Idle,
+      ),
+    )
+
+    newCoordinator()
+    advanceUntilIdle()
+
+    assertTrue(
+      "default_model_id must NOT be written for an embedder-only state, got ${appSettings.setDefaultModelIdCalls}",
+      appSettings.setDefaultModelIdCalls.isEmpty(),
+    )
+    assertTrue(
+      "warmup must NOT fire on an embedder-only state, got ${registry.initializeCalls}",
+      registry.initializeCalls.isEmpty(),
+    )
   }
 
   @Test
