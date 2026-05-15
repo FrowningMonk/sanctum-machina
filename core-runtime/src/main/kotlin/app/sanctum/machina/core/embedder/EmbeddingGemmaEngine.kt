@@ -41,7 +41,7 @@ import kotlinx.coroutines.withContext
  * [EmbedderRegistry] (Task 4) which holds an `encodeMutex` per Decision 2. [initialize] and
  * [releaseEngine] are guarded internally so init/teardown can't race the registry's encode.
  */
-class EmbeddingGemmaEngine {
+class EmbeddingGemmaEngine @javax.inject.Inject constructor() : EmbedderEngine {
 
   private val lifecycleMutex = Mutex()
   @Volatile private var compiledModel: CompiledModel? = null
@@ -65,7 +65,7 @@ class EmbeddingGemmaEngine {
    * @param modelFile downloaded .tflite file (resolved by the registry from [Model.getPath]).
    * @param tokenizerFile `sentencepiece.model` companion file (extraDataFiles entry).
    */
-  suspend fun initialize(
+  override suspend fun initialize(
     context: Context,
     modelFile: File,
     tokenizerFile: File,
@@ -104,7 +104,7 @@ class EmbeddingGemmaEngine {
    *   Other values from the model card (`classification`, `similarity`, etc.) are valid but
    *   unused by Sanctum's RAG pipeline.
    */
-  fun encode(text: String, taskType: String): FloatArray {
+  override fun encode(text: String, taskType: String): FloatArray {
     val model = compiledModel
       ?: error("EmbeddingGemmaEngine not initialized — call initialize() first")
     val tok = tokenizer
@@ -127,7 +127,7 @@ class EmbeddingGemmaEngine {
    *    so a registry that calls both APIs from multiple coroutines must serialize them
    *    externally. Within a single coroutine the ordering is well-defined.
    */
-  fun releaseEngine() {
+  override fun releaseEngine() {
     // We snapshot under `synchronized(this)` so a racing initialize() can't observe a
     // half-cleared state.
     val (modelToClose, tokenizerToClose) = synchronized(this) {

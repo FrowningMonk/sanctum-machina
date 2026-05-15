@@ -50,6 +50,11 @@ internal val ALLOWED_COMPONENTS: Set<String> = setOf(
   "attachment-read",
   // Phase 3.6
   "inference-reset",
+  // Phase 4 Task 4 forward-port — the full Task-6 batch (`embed`, `pdf-parse`,
+  // `rag-index`, `rag-retrieve`) lands with `RagInjector`/`IngestWorker` wiring.
+  // `EmbedderRegistry` needs `embed-init` immediately to log warmup failures
+  // without tripping the whitelist guard.
+  "embed-init",
 )
 
 /**

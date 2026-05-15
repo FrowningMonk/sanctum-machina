@@ -59,8 +59,10 @@ class ErrorLogTest {
       "attachment-read",
       // Phase 3.6
       "inference-reset",
+      // Phase 4 Task 4 (forward-ported from Task 6)
+      "embed-init",
     )
-    assertEquals("expected 15 allowed components", 15, allowed.size)
+    assertEquals("expected 16 allowed components", 16, allowed.size)
     for (component in allowed) {
       errorLog.e(component, "ok")
     }
@@ -69,9 +71,10 @@ class ErrorLogTest {
   }
 
   @Test
-  fun whitelistCount_is15() {
-    assertEquals(15, ALLOWED_COMPONENTS.size)
+  fun whitelistCount_is16() {
+    assertEquals(16, ALLOWED_COMPONENTS.size)
     assertTrue("inference-reset must be whitelisted", "inference-reset" in ALLOWED_COMPONENTS)
+    assertTrue("embed-init must be whitelisted", "embed-init" in ALLOWED_COMPONENTS)
   }
 
   @Test
