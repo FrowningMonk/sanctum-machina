@@ -22,6 +22,9 @@ interface ProjectDao {
     @Query("SELECT * FROM projects WHERE id = :id")
     suspend fun getById(id: Long): ProjectEntity?
 
+    @Query("SELECT * FROM projects WHERE id = :id")
+    fun observeById(id: Long): Flow<ProjectEntity?>
+
     @Query("SELECT * FROM projects ORDER BY created_at DESC")
     fun observeAll(): Flow<List<ProjectEntity>>
 }

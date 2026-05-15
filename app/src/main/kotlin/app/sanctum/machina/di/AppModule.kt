@@ -5,7 +5,9 @@ import androidx.room.Room
 import app.sanctum.machina.core.log.ErrorLog
 import app.sanctum.machina.data.ChatRepository
 import app.sanctum.machina.data.DefaultChatRepository
+import app.sanctum.machina.data.DefaultProjectRepository
 import app.sanctum.machina.data.MIGRATION_1_2
+import app.sanctum.machina.data.ProjectRepository
 import app.sanctum.machina.data.SanctumDatabase
 import app.sanctum.machina.data.dao.ChatDao
 import app.sanctum.machina.data.dao.MessageDao
@@ -13,6 +15,7 @@ import app.sanctum.machina.data.dao.ProjectDao
 import app.sanctum.machina.data.dao.ProjectEmbeddingDao
 import app.sanctum.machina.data.dao.ProjectFileDao
 import app.sanctum.machina.engine.AppCorruptionState
+import com.google.gson.Gson
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -51,6 +54,10 @@ abstract class AppModule {
   @Binds
   @Singleton
   abstract fun bindChatRepository(impl: DefaultChatRepository): ChatRepository
+
+  @Binds
+  @Singleton
+  abstract fun bindProjectRepository(impl: DefaultProjectRepository): ProjectRepository
 
   companion object {
 
@@ -124,6 +131,17 @@ abstract class AppModule {
     @Singleton
     fun provideProjectEmbeddingDao(database: SanctumDatabase): ProjectEmbeddingDao =
       database.projectEmbeddingDao()
+
+    /**
+     * Default Gson instance — reflection-based, no custom adapters. Used by
+     * [DefaultProjectRepository] for `messages.citations` JSON round-trip and by
+     * `projects.rag_overrides_json` updates (Decision 7). Singleton so reflection metadata
+     * is cached once across the process.
+     */
+    @Provides
+    @Singleton
+    @JvmStatic
+    fun provideGson(): Gson = Gson()
 
     // `MIGRATION_1_2` is registered on BOTH the first-attempt builder and the
     // post-corruption rebuild path (Decision 13). The corruption catch branch

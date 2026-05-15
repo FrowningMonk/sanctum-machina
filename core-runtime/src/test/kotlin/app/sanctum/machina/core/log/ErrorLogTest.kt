@@ -59,10 +59,14 @@ class ErrorLogTest {
       "attachment-read",
       // Phase 3.6
       "inference-reset",
-      // Phase 4 Task 4 (forward-ported from Task 6)
+      // Phase 4 (RAG pipeline)
       "embed-init",
+      "embed",
+      "pdf-parse",
+      "rag-index",
+      "rag-retrieve",
     )
-    assertEquals("expected 16 allowed components", 16, allowed.size)
+    assertEquals("expected 20 allowed components", 20, allowed.size)
     for (component in allowed) {
       errorLog.e(component, "ok")
     }
@@ -71,10 +75,63 @@ class ErrorLogTest {
   }
 
   @Test
-  fun whitelistCount_is16() {
-    assertEquals(16, ALLOWED_COMPONENTS.size)
+  fun whitelistCount_is20() {
+    assertEquals(20, ALLOWED_COMPONENTS.size)
     assertTrue("inference-reset must be whitelisted", "inference-reset" in ALLOWED_COMPONENTS)
     assertTrue("embed-init must be whitelisted", "embed-init" in ALLOWED_COMPONENTS)
+    assertTrue("embed must be whitelisted", "embed" in ALLOWED_COMPONENTS)
+    assertTrue("pdf-parse must be whitelisted", "pdf-parse" in ALLOWED_COMPONENTS)
+    assertTrue("rag-index must be whitelisted", "rag-index" in ALLOWED_COMPONENTS)
+    assertTrue("rag-retrieve must be whitelisted", "rag-retrieve" in ALLOWED_COMPONENTS)
+  }
+
+  // Phase 4 per-component positive cases (Task 6 TDD anchors).
+
+  @Test
+  fun e_acceptsEmbedInit() = runTest {
+    errorLog.e("embed-init", "warmup ok")
+    val content = logFile.readText().trimEnd('\n')
+    assertTrue("must contain [embed-init], got: $content", content.contains("[embed-init]"))
+  }
+
+  @Test
+  fun e_acceptsEmbed() = runTest {
+    errorLog.e("embed", "batch ok")
+    val content = logFile.readText().trimEnd('\n')
+    assertTrue("must contain [embed], got: $content", content.contains("[embed]"))
+  }
+
+  @Test
+  fun e_acceptsPdfParse() = runTest {
+    errorLog.e("pdf-parse", "page extracted")
+    val content = logFile.readText().trimEnd('\n')
+    assertTrue("must contain [pdf-parse], got: $content", content.contains("[pdf-parse]"))
+  }
+
+  @Test
+  fun e_acceptsRagIndex() = runTest {
+    errorLog.e("rag-index", "chunk persisted")
+    val content = logFile.readText().trimEnd('\n')
+    assertTrue("must contain [rag-index], got: $content", content.contains("[rag-index]"))
+  }
+
+  @Test
+  fun e_acceptsRagRetrieve() = runTest {
+    errorLog.e("rag-retrieve", "topK done")
+    val content = logFile.readText().trimEnd('\n')
+    assertTrue("must contain [rag-retrieve], got: $content", content.contains("[rag-retrieve]"))
+  }
+
+  @Test
+  fun e_rejectsUnknownPhase4Component(): Unit = runTest {
+    var threw = false
+    try {
+      errorLog.e("rag-bogus", "x")
+    } catch (_: IllegalArgumentException) {
+      threw = true
+    }
+    assertTrue("e() must reject unknown Phase 4-shaped component", threw)
+    assertFalse("whitelist rejection must not create log file", logFile.exists())
   }
 
   @Test

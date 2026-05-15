@@ -24,8 +24,12 @@ private val CONTROL_WS = Regex("[\\n\\r\\t]")
  * Closed whitelist of components allowed as the first argument to
  * [ErrorLog.e] / [ErrorLog.i] / [ErrorLog.w]. Phase 3.6 adds
  * `"inference-reset"` for `DefaultModelRegistry.resetConversation`
- * diagnostics (Decision 5). Any value not in this set raises
- * [IllegalArgumentException] at call time, before any I/O.
+ * diagnostics (Decision 5). Phase 4 adds the RAG pipeline channels —
+ * `embed-init` (EmbedderRegistry lifecycle), `embed` (per-batch encode
+ * failures), `pdf-parse` (PDF extraction), `rag-index` (IngestWorker disk +
+ * orchestration), `rag-retrieve` (RagInjector + stale-mark JSON decode).
+ * Any value not in this set raises [IllegalArgumentException] at call time,
+ * before any I/O.
  *
  * `internal` — consumers should pass the string literal; the set exists for
  * runtime enforcement, not for cross-module pre-validation.
@@ -50,11 +54,14 @@ internal val ALLOWED_COMPONENTS: Set<String> = setOf(
   "attachment-read",
   // Phase 3.6
   "inference-reset",
-  // Phase 4 Task 4 forward-port — the full Task-6 batch (`embed`, `pdf-parse`,
-  // `rag-index`, `rag-retrieve`) lands with `RagInjector`/`IngestWorker` wiring.
-  // `EmbedderRegistry` needs `embed-init` immediately to log warmup failures
-  // without tripping the whitelist guard.
+  // Phase 4 — RAG pipeline channels. `embed-init` was forward-ported with
+  // Task 4 (EmbedderRegistry warmup); the rest land here with RagInjector /
+  // IngestWorker / stale-mark wiring (Task 6).
   "embed-init",
+  "embed",
+  "pdf-parse",
+  "rag-index",
+  "rag-retrieve",
 )
 
 /**
