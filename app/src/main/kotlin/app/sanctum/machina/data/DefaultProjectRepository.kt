@@ -3,7 +3,6 @@ package app.sanctum.machina.data
 import androidx.annotation.VisibleForTesting
 import androidx.room.withTransaction
 import app.sanctum.machina.core.log.ErrorLog
-import kotlinx.coroutines.NonCancellable
 import app.sanctum.machina.data.dao.MessageDao
 import app.sanctum.machina.data.dao.ProjectDao
 import app.sanctum.machina.data.dao.ProjectEmbeddingDao
@@ -18,6 +17,7 @@ import java.io.File
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 
@@ -258,10 +258,14 @@ internal constructor(
     // Defence against Kotlin-null-contract bypass via Gson reflection — any decoded
     // citation whose non-null fields ended up null means the snapshot is structurally
     // broken; we cannot safely round-trip it without writing back explicit nulls that
-    // would crash downstream consumers.
+    // would crash downstream consumers. `fileId <= 0` catches the parallel primitive
+    // case where Gson silently defaults a missing JSON key to `0L` (Citation has no
+    // `fileId` default in source) — SQLite autoincrement starts at 1, so `0L` cannot
+    // legitimately reference a real row; treat it as poison rather than risk re-
+    // persisting a corrupt id alongside a valid sibling (security-auditor-2 minor).
     for (citation in decoded) {
       @Suppress("SENSELESS_COMPARISON")
-      if (citation.fileName == null || citation.chunkText == null) {
+      if (citation.fileName == null || citation.chunkText == null || citation.fileId <= 0L) {
         return StaleMarkResult.Malformed
       }
     }
@@ -294,8 +298,11 @@ internal constructor(
     } catch (_: java.io.IOException) {
       return false
     }
-    return candidateCanonical == projectsRoot ||
-      candidateCanonical.startsWith(projectsRoot + File.separator)
+    // Reject equality with the root itself — every legitimate caller passes a *child*
+    // path (`projects/{projectId}` or `projects/{projectId}/docs/{uuid}.pdf`). Allowing
+    // equality would mean a future caller could erase the entire projects root through
+    // a poisoned row; tightened for parity with sister repo (code-reviewer-2 minor).
+    return candidateCanonical.startsWith(projectsRoot + File.separator)
   }
 
   private sealed class StaleMarkResult {

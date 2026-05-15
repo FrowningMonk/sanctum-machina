@@ -301,15 +301,53 @@ class ProjectRepositoryTest {
   }
 
   @Test
+  fun deleteFile_zeroFileIdCitationsTreatedAsMalformed() = runTest {
+    // security-auditor-2 minor: Gson silently defaults a missing `fileId` JSON key to
+    // 0L. SQLite autoincrement starts at 1, so 0L cannot legitimately reference a real
+    // row — treat as poison rather than risk re-persisting a corrupt id alongside a
+    // valid sibling.
+    val targetFileId = 99L
+    val projectId = projectDao.insertSync(ProjectEntity(name = "p", createdAt = 1L))
+    val chatId = messageDao.insertChat(projectId)
+    fileDao.insertSync(
+      ProjectFileEntity(
+        id = targetFileId, projectId = projectId, fileName = "x.pdf",
+        relativePath = "projects/$projectId/docs/x.pdf",
+        contentHash = "h", status = "ready", createdAt = 1L,
+      ),
+    )
+    val zeroIdJson = """[{"fileName":"x.pdf","page":1,"chunkText":"hi"}]"""
+    val msgId = messageDao.insertSync(
+      MessageEntity(
+        chatId = chatId, role = "assistant", text = "z", createdAt = 2L,
+        citations = zeroIdJson,
+      ),
+    )
+
+    val repo = newRepository()
+    repo.deleteFile(targetFileId, filesDir)
+
+    val msg = messageDao.allMessages().single { it.id == msgId }
+    assertEquals("zero-id citation row left byte-identical", zeroIdJson, msg.citations)
+    val log = errorLogFile.readLines()
+    assertTrue(
+      "zero-id row logged as malformed under rag-retrieve, lines: $log",
+      log.any { it.contains("[rag-retrieve]") && it.contains("id=$msgId") },
+    )
+  }
+
+  @Test
   fun deleteFile_refusesEscapingRelativePath() = runTest {
     // security-auditor-1 / code-reviewer-1 major: a poisoned `project_files.relative_path`
-    // pointing outside `filesDir/projects/` must not delete that path. Verify by writing a
-    // sentinel file under `filesDir/sensitive.txt` and registering a project_file whose
-    // relative_path traverses up to it.
+    // pointing outside `filesDir/projects/` must not delete that path. The production code
+    // joins `relativePath` to `filesDir` (NOT `filesDir/projects/`), so `../sensitive.txt`
+    // resolves to `filesDir.parent/sensitive.txt`. Write the sentinel at that resolved
+    // path so the "survive" assertion is load-bearing rather than vacuously true on a
+    // non-existent file (test-reviewer-2 minor).
     val fileId = 88L
     val projectId = projectDao.insertSync(ProjectEntity(name = "p", createdAt = 1L))
     messageDao.insertChat(projectId)
-    val sensitive = File(filesDir, "sensitive.txt").apply { writeText("must survive") }
+    val sensitive = File(filesDir.parentFile, "sensitive.txt").apply { writeText("must survive") }
     fileDao.insertSync(
       ProjectFileEntity(
         id = fileId, projectId = projectId, fileName = "evil.pdf",
