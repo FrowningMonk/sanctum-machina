@@ -13,8 +13,20 @@ sealed class ChatIdentity {
   /** `chat/quick` — incognito in-memory chat, purged on process death. */
   object Quick : ChatIdentity()
 
-  /** `chat/draft` — staging area before the first message commits a persistent row. */
-  object Draft : ChatIdentity()
+  /**
+   * `chat/draft` — staging area before the first message commits a persistent row.
+   *
+   * Phase 4 Task 19: when the draft was opened from inside a project surface
+   * (`ProjectDetailScreen` "Новый чат" FAB) the route carries `?projectId={id}`
+   * and [projectId] is non-null. The VM uses it to (a) bootstrap the embedder /
+   * project-name flow exactly like a project-Persistent chat, and (b) pass the
+   * id to [app.sanctum.machina.data.ChatRepository.commitDraftChat] so the new
+   * `chats` row lands with `project_id = {id}` instead of `NULL`. Drawer
+   * «+ Новый чат» continues to construct `Draft(projectId = null)` so the
+   * non-project send path is unchanged (US-AC3 invariant: project chat ⇔
+   * `chat.project_id != null`).
+   */
+  data class Draft(val projectId: Long? = null) : ChatIdentity()
 
   /** `chat/{chatId}` — persistent chat identified by its Room row id. */
   data class Persistent(val id: Long) : ChatIdentity()

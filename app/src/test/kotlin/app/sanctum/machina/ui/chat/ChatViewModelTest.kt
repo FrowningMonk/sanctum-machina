@@ -529,6 +529,78 @@ class ChatViewModelTest {
         assertNotNull("staging dir non-null when image staged", commit.stagingDir)
     }
 
+    // ---- Phase 4 Task 19: project-draft → Persistent commit ----------------
+
+    @Test
+    fun draftWithProjectId_commitsAssignsProjectIdToNewChat() = runTest(dispatcher) {
+        // Project-draft entry: route `chat/draft?projectId=42` lands here. The
+        // first send must reach commitDraftChat with `projectId = 42L` so the
+        // new `chats` row carries `project_id = 42` (US-AC3 invariant: project
+        // chat ⇔ `chat.project_id != null`). Embedder is Ready and the corpus
+        // has docs, so the structural blocks (1 = no embedder, 2 = empty
+        // corpus) do not fire — the test pins the commit-side projectId
+        // routing, not the engine-side RAG injection (covered separately for
+        // Persistent project chats).
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        fakeEmbedderGate.setState(EmbedderState.Ready)
+        fakeProjectFileDao.setReadyCount(42L, 3)
+        fakeProjectRepository.seed(
+            ProjectEntity(id = 42L, name = "Test-RAG", defaultModelId = "id-m", createdAt = 0L)
+        )
+
+        val vm = buildViewModel(ChatIdentityArg.DraftInProject(projectId = 42L))
+        advanceUntilIdle()
+
+        vm.send("test")
+        advanceUntilIdle()
+
+        val commit = fakeChatRepository.commitCalls.single()
+        assertEquals(
+            "project-draft commit must thread projectId into commitDraftChat",
+            42L,
+            commit.projectId,
+        )
+    }
+
+    @Test
+    fun draftWithoutProjectId_commitsAsRegularChat() = runTest(dispatcher) {
+        // Regression-guard for Drawer «+ Новый чат» — the non-project draft
+        // path must continue to commit with `project_id = null` so US-AC3 is
+        // not violated in the opposite direction (a plain chat must NOT pick
+        // up a stray project linkage from VM-internal state).
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+
+        val vm = buildViewModel(ChatIdentityArg.Draft)
+        advanceUntilIdle()
+
+        vm.send("test")
+        advanceUntilIdle()
+
+        val commit = fakeChatRepository.commitCalls.single()
+        assertNull(
+            "plain draft commit must pass projectId = null",
+            commit.projectId,
+        )
+    }
+
+    @Test
+    fun chatIdentityDraft_dataClassEqualityAndCopy() {
+        // ChatIdentity.Draft was promoted from `object` to `data class` in
+        // Task 19 so the optional `projectId` can be carried by the identity
+        // itself (resolved once in `resolveIdentity`, snapshot-stable for the
+        // VM lifetime). Pin the equality / copy contract so a future refactor
+        // back to object would surface here.
+        val a = ChatIdentity.Draft(projectId = 7L)
+        val b = ChatIdentity.Draft(projectId = 7L)
+        val c = ChatIdentity.Draft(projectId = null)
+        val d = ChatIdentity.Draft()
+        assertEquals("same projectId → equal", a, b)
+        assertNotEquals("different projectId → not equal", a, c)
+        assertEquals("default param produces null", d, c)
+        assertEquals("copy preserves projectId", a, a.copy(projectId = 7L))
+        assertEquals("copy(null) flips to null", c, a.copy(projectId = null))
+    }
+
     @Test
     fun draftMode_stagingWriteFails_removesAttachmentAndShowsSnackbar() = runTest(dispatcher) {
         fakeRegistry.setModel(Model(name = "m", modelId = "id-m", llmSupportImage = true))
@@ -2651,6 +2723,8 @@ class ChatViewModelTest {
     private sealed class ChatIdentityArg {
         object Quick : ChatIdentityArg()
         object Draft : ChatIdentityArg()
+        /** Phase 4 Task 19: project-scoped draft entry. */
+        data class DraftInProject(val projectId: Long) : ChatIdentityArg()
         data class Persistent(val id: Long) : ChatIdentityArg()
     }
 
@@ -2659,6 +2733,10 @@ class ChatViewModelTest {
             when (identity) {
                 ChatIdentityArg.Quick -> mapOf(ChatViewModel.NAV_ARG_KIND to ChatViewModel.KIND_QUICK)
                 ChatIdentityArg.Draft -> mapOf(ChatViewModel.NAV_ARG_KIND to ChatViewModel.KIND_DRAFT)
+                is ChatIdentityArg.DraftInProject -> mapOf(
+                    ChatViewModel.NAV_ARG_KIND to ChatViewModel.KIND_DRAFT,
+                    ChatViewModel.NAV_ARG_PROJECT_ID to identity.projectId,
+                )
                 is ChatIdentityArg.Persistent -> mapOf(ChatViewModel.NAV_ARG_CHAT_ID to identity.id)
             }
         )
@@ -2946,6 +3024,7 @@ private class FakeChatRepository : ChatRepository {
         val stagingDir: File?,
         val stagedImageFilename: String?,
         val stagedAudioFilename: String?,
+        val projectId: Long?,
     )
 
     data class PersistentAttachmentCall(
@@ -2979,6 +3058,7 @@ private class FakeChatRepository : ChatRepository {
         filesDir: File,
         stagedImageFilename: String?,
         stagedAudioFilename: String?,
+        projectId: Long?,
     ): Long {
         eventLog?.add("commitDraftChat")
         commitCalls += CommitCall(
@@ -2987,6 +3067,7 @@ private class FakeChatRepository : ChatRepository {
             stagingDir = stagingDir,
             stagedImageFilename = stagedImageFilename,
             stagedAudioFilename = stagedAudioFilename,
+            projectId = projectId,
         )
         return nextChatId
     }

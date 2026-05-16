@@ -256,6 +256,7 @@ class SanctumApplicationTest {
             filesDir: java.io.File,
             stagedImageFilename: String?,
             stagedAudioFilename: String?,
+            projectId: Long?,
         ): Long = 0L
         override suspend fun writeAttachmentStaging(
             stagingDir: java.io.File,

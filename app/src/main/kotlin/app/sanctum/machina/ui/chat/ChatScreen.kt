@@ -457,6 +457,7 @@ private fun ChatTopAppBarTitle(
         is TopAppBarState.Draft -> DraftModelPicker(
             models = state.models,
             currentModelId = state.currentModelId,
+            projectName = state.projectName,
             onModelPicked = onModelPicked,
         )
         is TopAppBarState.Loading -> LoadingTitle(modelName = state.modelName)
@@ -642,6 +643,7 @@ private fun FailedLoadButton(modelId: String, onLoadClicked: (String) -> Unit) {
 private fun DraftModelPicker(
     models: List<ModelEntry>,
     currentModelId: String,
+    projectName: String?,
     onModelPicked: (String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -649,49 +651,65 @@ private fun DraftModelPicker(
     val currentName = models.firstOrNull { it.model.modelId == currentModelId }?.model?.name
         ?: currentModelId.ifEmpty { stringResource(R.string.chat_topappbar_pick_model_desc) }
 
-    TextButton(onClick = { expanded = true }, enabled = models.isNotEmpty()) {
-        Text(text = currentName)
-        Icon(
-            imageVector = SanctumIcons.IconChevronDown,
-            contentDescription = stringResource(R.string.chat_topappbar_pick_model_desc),
-            modifier = Modifier.size(18.dp),
-        )
-    }
-    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-        for (entry in models) {
-            DropdownMenuItem(
-                text = { Text(entry.model.name) },
-                onClick = {
-                    expanded = false
-                    val picked = entry.model.modelId
-                    if (picked == currentModelId) return@DropdownMenuItem
-                    pendingModelId = picked
-                },
-                leadingIcon = if (entry.model.modelId == currentModelId) {
-                    { Icon(SanctumIcons.IconCheck, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                } else null,
+    // Phase 4 Task 19: surface «{project} / Новый чат» above the model-picker
+    // button when the draft was opened from a project surface. The picker
+    // itself stays unchanged — the user can still pick any downloaded model
+    // and the project linkage is preserved via the `projectId` nav-arg.
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        if (projectName != null) {
+            Text(
+                text = stringResource(
+                    R.string.chat_project_title_format,
+                    projectName,
+                    stringResource(R.string.drawer_new_chat),
+                ),
+                style = MaterialTheme.typography.bodyMedium,
             )
         }
-    }
-    pendingModelId?.let { picked ->
-        AlertDialog(
-            onDismissRequest = { pendingModelId = null },
-            title = { Text(stringResource(R.string.chat_topappbar_cross_model_title)) },
-            text = { Text(stringResource(R.string.chat_topappbar_cross_model_body)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    pendingModelId = null
-                    onModelPicked(picked)
-                }) {
-                    Text(stringResource(R.string.chat_topappbar_cross_model_confirm))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingModelId = null }) {
-                    Text(stringResource(R.string.btn_cancel))
-                }
-            },
-        )
+        TextButton(onClick = { expanded = true }, enabled = models.isNotEmpty()) {
+            Text(text = currentName)
+            Icon(
+                imageVector = SanctumIcons.IconChevronDown,
+                contentDescription = stringResource(R.string.chat_topappbar_pick_model_desc),
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            for (entry in models) {
+                DropdownMenuItem(
+                    text = { Text(entry.model.name) },
+                    onClick = {
+                        expanded = false
+                        val picked = entry.model.modelId
+                        if (picked == currentModelId) return@DropdownMenuItem
+                        pendingModelId = picked
+                    },
+                    leadingIcon = if (entry.model.modelId == currentModelId) {
+                        { Icon(SanctumIcons.IconCheck, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                    } else null,
+                )
+            }
+        }
+        pendingModelId?.let { picked ->
+            AlertDialog(
+                onDismissRequest = { pendingModelId = null },
+                title = { Text(stringResource(R.string.chat_topappbar_cross_model_title)) },
+                text = { Text(stringResource(R.string.chat_topappbar_cross_model_body)) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        pendingModelId = null
+                        onModelPicked(picked)
+                    }) {
+                        Text(stringResource(R.string.chat_topappbar_cross_model_confirm))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingModelId = null }) {
+                        Text(stringResource(R.string.btn_cancel))
+                    }
+                },
+            )
+        }
     }
 }
 

@@ -139,17 +139,34 @@ fun SanctumApp() {
                             navController.navigate("chat/$chatId") {
                                 // Draft→Persistent atomic handover (AC-P7): remove the draft
                                 // route so Back from the persistent chat returns to Home.
-                                popUpTo("chat/draft") { inclusive = true }
+                                // popUpTo argument must match the registered route template,
+                                // which carries the `?projectId={projectId}` query arg after
+                                // Phase 4 Task 19.
+                                popUpTo("chat/draft?projectId={projectId}") { inclusive = true }
                             }
                         },
                     )
                 }
                 composable(
-                    route = "chat/draft",
+                    // Phase 4 Task 19: optional `?projectId={id}` query arg. Drawer
+                    // «+ Новый чат» keeps using the parameter-less form — the
+                    // route still matches because the projectId default below
+                    // is the -1L sentinel that `ChatViewModel` reads back as
+                    // `null` (Long primitives reject `nullable = true` in
+                    // AndroidX Nav). `ProjectDetailScreen` lands on
+                    // `chat/draft?projectId=$projectId` so the VM's Draft
+                    // identity carries the project linkage forward into
+                    // `commitDraftChat` and the new `chats.project_id` lands
+                    // non-null (US-AC3 invariant).
+                    route = "chat/draft?projectId={projectId}",
                     arguments = listOf(
                         navArgument("kind") {
                             type = NavType.StringType
                             defaultValue = "draft"
+                        },
+                        navArgument("projectId") {
+                            type = NavType.LongType
+                            defaultValue = -1L
                         },
                     ),
                 ) {
@@ -157,7 +174,7 @@ fun SanctumApp() {
                         onBack = { navController.popBackStack() },
                         onNavigateToPersistent = { chatId ->
                             navController.navigate("chat/$chatId") {
-                                popUpTo("chat/draft") { inclusive = true }
+                                popUpTo("chat/draft?projectId={projectId}") { inclusive = true }
                             }
                         },
                     )
@@ -199,10 +216,19 @@ fun SanctumApp() {
                         },
                         onOpenChat = { chatId -> navController.navigate("chat/$chatId") },
                         onNewChat = { _ ->
-                            // Project chat creation route lands in Task 11; for now route into
-                            // the standard draft entry — ChatViewModel will resolve `project_id`
-                            // from the parent surface when that task lands.
-                            navController.navigate("chat/draft")
+                            // Phase 4 Task 19: route `chat/draft?projectId={id}`. The optional
+                            // `defaultModelId` callback arg is intentionally ignored — the
+                            // model is still picked from the Draft model picker (project chats
+                            // inherit the user's chat-tier choice; the project's `defaultModelId`
+                            // is reserved for a future "pin project model" feature, not Phase 4).
+                            // `projectId` is non-null here by construction of the project
+                            // route, but guard defensively so a navigation-arg corruption
+                            // falls back to the plain Drawer flow rather than crashing.
+                            if (projectId != null) {
+                                navController.navigate("chat/draft?projectId=$projectId")
+                            } else {
+                                navController.navigate("chat/draft")
+                            }
                         },
                         onOpenModelManager = { navController.navigate("model_manager") },
                     )

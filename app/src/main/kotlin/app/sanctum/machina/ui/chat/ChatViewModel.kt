@@ -108,9 +108,22 @@ private fun formatChatFooter(
  * variant is derived from the engine's init status for the pinned `modelId`.
  */
 sealed class TopAppBarState {
-    /** Draft mode — model picker. [models] contains only downloaded entries; [currentModelId]
-     *  marks which one to check in the dropdown. */
-    data class Draft(val models: List<ModelEntry>, val currentModelId: String) : TopAppBarState()
+    /**
+     * Draft mode — model picker. [models] contains only downloaded entries; [currentModelId]
+     * marks which one to check in the dropdown.
+     *
+     * Phase 4 Task 19: [projectName] is non-null when the draft was opened from
+     * `ProjectDetailScreen` (route `chat/draft?projectId={id}`). `ChatScreen`
+     * surfaces «{projectName} / Новый чат» above the model picker so the user
+     * sees they are about to start a RAG-augmented project chat — the model
+     * picker still works (project-draft inherits the same model-picker UX as a
+     * plain draft until the first commit pins `chat.model_id`).
+     */
+    data class Draft(
+        val models: List<ModelEntry>,
+        val currentModelId: String,
+        val projectName: String? = null,
+    ) : TopAppBarState()
 
     /**
      * Warmup / reinit in flight — show spinner, Send disabled. [modelName] is
@@ -463,7 +476,7 @@ constructor(
         }
 
         when (val id = identity) {
-            ChatIdentity.Draft -> commitDraft(normalized, pending)
+            is ChatIdentity.Draft -> commitDraft(normalized, pending)
             ChatIdentity.Quick -> runInferenceQuick(normalized, pending)
             is ChatIdentity.Persistent -> runInferencePersistent(id, normalized, pending)
         }
@@ -485,7 +498,7 @@ constructor(
                 // intentionally not saved, matching AC-R3.
                 _streamingMessage.update { it?.copy(streaming = false, interrupted = true) }
             }
-            ChatIdentity.Quick, ChatIdentity.Draft -> {
+            ChatIdentity.Quick, is ChatIdentity.Draft -> {
                 updateLastAssistantInMemory { it.copy(streaming = false, interrupted = true) }
             }
         }
@@ -552,11 +565,12 @@ constructor(
         val effectiveModelName = models.firstOrNull { it.model.modelId == effectiveModelId }?.model?.name
         if (warmupInFlight) return TopAppBarState.Loading(effectiveModelId, effectiveModelName)
         return when (identity) {
-            ChatIdentity.Draft -> TopAppBarState.Draft(
+            is ChatIdentity.Draft -> TopAppBarState.Draft(
                 models = models.filter {
                     it.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED
                 },
                 currentModelId = effectiveModelId,
+                projectName = projectName,
             )
             ChatIdentity.Quick, is ChatIdentity.Persistent -> {
                 val entry = pinnedModelId?.let { id ->
@@ -920,7 +934,16 @@ constructor(
         val chatId: Long? = savedStateHandle[NAV_ARG_CHAT_ID]
         if (chatId != null) return ChatIdentity.Persistent(chatId)
         val kind: String? = savedStateHandle[NAV_ARG_KIND]
-        return if (kind == KIND_DRAFT) ChatIdentity.Draft else ChatIdentity.Quick
+        if (kind != KIND_DRAFT) return ChatIdentity.Quick
+        // Phase 4 Task 19: optional `projectId` nav-arg on `chat/draft`. The
+        // route declares `LongType` + `defaultValue = NO_PROJECT_ID_SENTINEL`
+        // (-1L) because AndroidX Nav primitives reject `nullable = true` —
+        // we map the sentinel back to `null` so downstream code only ever
+        // sees `Long? = id-of-real-project | null` (real project ids start
+        // at 1L via Room AUTOINCREMENT, so -1L can never collide).
+        val rawProjectId: Long? = savedStateHandle[NAV_ARG_PROJECT_ID]
+        val projectId = rawProjectId?.takeIf { it != NO_PROJECT_ID_SENTINEL }
+        return ChatIdentity.Draft(projectId = projectId)
     }
 
     /**
@@ -1041,7 +1064,38 @@ constructor(
                     }
                 }
             }
-            ChatIdentity.Quick, ChatIdentity.Draft -> {
+            ChatIdentity.Quick, is ChatIdentity.Draft -> {
+                // Phase 4 Task 19: project-draft entry path. When the draft was
+                // opened from `ProjectDetailScreen`, seed `projectId` here and
+                // start observing the project's name + ready-doc count so the
+                // TopAppBar surfaces «{project} / Новый чат» and the engine-side
+                // structural blocks (1 = no embedder, 2 = empty corpus) fire
+                // before the first commit just like they do for project-Persistent.
+                // Drawer «+ Новый чат» constructs `Draft(projectId = null)` —
+                // none of this branch executes, the file behaves verbatim Phase 3.
+                if (identity is ChatIdentity.Draft && identity.projectId != null) {
+                    val pid = identity.projectId
+                    projectId = pid
+                    viewModelScope.launch {
+                        runCatching { embedderGate.warmup() }
+                            .onFailure { errorLog.e("embed-init", "warmup failed from project draft entry", it) }
+                    }
+                    runCatching {
+                        _projectReadyDocCount.value = projectFileDao.observeReadyCount(pid).first()
+                    }.onFailure {
+                        errorLog.e("history-read", "observeReadyCount initial read failed (draft)", it)
+                    }
+                    viewModelScope.launch {
+                        projectRepository.observeProjectById(pid).collect { project ->
+                            _projectName.value = project?.name
+                        }
+                    }
+                    viewModelScope.launch {
+                        projectFileDao.observeReadyCount(pid).collect { count ->
+                            _projectReadyDocCount.value = count
+                        }
+                    }
+                }
                 val pinned = explicitModelId
                     ?: registry.activeModelName.value
                     // Suspend until WarmupCoordinator publishes a Ready model.
@@ -1147,7 +1201,7 @@ constructor(
                 initialValue = emptyList(),
             )
         }
-        ChatIdentity.Quick, ChatIdentity.Draft -> _messages.asStateFlow()
+        ChatIdentity.Quick, is ChatIdentity.Draft -> _messages.asStateFlow()
     }
 
     /**
@@ -1337,6 +1391,12 @@ constructor(
                     retain = setOfNotNull(stagedImage, stagedAudio),
                 )
             }
+            // Phase 4 Task 19: thread the optional `projectId` snapshot into
+            // the commit. Two reads of `projectId` is fine here — the field is
+            // seeded once during `bootstrapChatModelId` (Draft branch) from
+            // the immutable nav-arg and never reassigned, so a concurrent
+            // mutator cannot race the commit.
+            val pid = projectId
             val result = runCatching {
                 chatRepository.commitDraftChat(
                     modelId = modelId,
@@ -1345,6 +1405,7 @@ constructor(
                     filesDir = filesDir,
                     stagedImageFilename = stagedImage,
                     stagedAudioFilename = stagedAudio,
+                    projectId = pid,
                 )
             }
             result.fold(
@@ -2171,6 +2232,18 @@ constructor(
          * `?modelId={id}` query arg).
          */
         const val NAV_ARG_MODEL_ID: String = "modelId"
+
+        /**
+         * Phase 4 Task 19 — optional nav-arg on `chat/draft?projectId={id}`.
+         * AndroidX Compose Navigation does not accept `nullable = true` on
+         * primitive `Long` arg types, so the route declares
+         * `defaultValue = NO_PROJECT_ID_SENTINEL` (-1L) and the VM maps the
+         * sentinel back to `null` inside [resolveIdentity]. Real `project.id`
+         * values start at 1L (Room AUTOINCREMENT) — the sentinel can never
+         * collide with a legitimate id.
+         */
+        const val NAV_ARG_PROJECT_ID: String = "projectId"
+        const val NO_PROJECT_ID_SENTINEL: Long = -1L
 
         const val KIND_DRAFT: String = "draft"
         const val KIND_QUICK: String = "quick"

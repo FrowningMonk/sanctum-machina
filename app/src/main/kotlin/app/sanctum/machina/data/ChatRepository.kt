@@ -42,6 +42,12 @@ interface ChatRepository {
    * is non-null it MUST live under `filesDir/attachments/`; otherwise the
    * call throws `IOException` before any Room work.
    *
+   * Phase 4 Task 19: pass [projectId] non-null when the draft was opened
+   * from a project surface — it lands on the new `chats.project_id` column
+   * verbatim, making the row a project-chat for RAG purposes (US-AC3:
+   * project chat ⇔ `chat.project_id != null`). Null preserves the Phase-3
+   * behaviour: Drawer «+ Новый чат» commits a plain persistent chat.
+   *
    * @return the newly inserted chat id.
    * @throws java.io.IOException when [stagingDir] is outside the attachments
    *   root, missing, not a directory, or when the rename to the final
@@ -54,6 +60,7 @@ interface ChatRepository {
     filesDir: File,
     stagedImageFilename: String? = null,
     stagedAudioFilename: String? = null,
+    projectId: Long? = null,
   ): Long
 
   /**

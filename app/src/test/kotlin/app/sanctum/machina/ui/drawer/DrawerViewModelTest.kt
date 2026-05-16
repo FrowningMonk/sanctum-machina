@@ -695,6 +695,7 @@ private class FakeChatRepository : ChatRepository {
     filesDir: File,
     stagedImageFilename: String?,
     stagedAudioFilename: String?,
+    projectId: Long?,
   ): Long = 0L
   override suspend fun writeAttachmentStaging(
     stagingDir: File,
