@@ -196,7 +196,7 @@ fun ProjectDetailScreen(
           )
         }
       } else {
-        items(chats, key = { it.id }) { chat ->
+        items(chats, key = { "chat-${it.id}" }) { chat ->
           ProjectChatRow(chat = chat, onClick = { onOpenChat(chat.id) })
         }
       }
@@ -220,7 +220,7 @@ fun ProjectDetailScreen(
           )
         }
       } else {
-        items(files, key = { it.id }) { file ->
+        items(files, key = { "file-${it.id}" }) { file ->
           DocumentRow(
             file = file,
             onReindex = { viewModel.reindex(file.id) },
