@@ -448,7 +448,11 @@ private fun ChatTopAppBarTitle(
         )
         is TopAppBarState.Loading -> LoadingTitle(modelName = state.modelName)
         is TopAppBarState.Failed -> FailedLoadButton(modelId = state.modelId, onLoadClicked = onLoadClicked)
-        is TopAppBarState.Ready -> ReadyTitle(modelName = state.modelName)
+        is TopAppBarState.Ready -> ReadyTitle(
+            modelName = state.modelName,
+            projectName = state.projectName,
+            chatTitle = state.chatTitle,
+        )
     }
 }
 
@@ -542,13 +546,25 @@ private fun IncognitoFailedRow(modelId: String, onLoadClicked: (String) -> Unit)
 }
 
 @Composable
-private fun ReadyTitle(modelName: String) {
+private fun ReadyTitle(modelName: String, projectName: String?, chatTitle: String?) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         StatusDot(color = MaterialTheme.colorScheme.primary)
-        Text(text = modelName)
+        // Phase 4 Task 11 cosmetic: project chats surface «{project} / {chat}» so the user
+        // sees they are in a RAG-augmented conversation. Non-project chats fall back to the
+        // Phase-3 model-name title verbatim.
+        val title = if (projectName != null) {
+            stringResource(
+                R.string.chat_project_title_format,
+                projectName,
+                chatTitle.orEmpty(),
+            )
+        } else {
+            modelName
+        }
+        Text(text = title)
     }
 }
 

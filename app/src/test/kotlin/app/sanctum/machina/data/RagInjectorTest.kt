@@ -18,7 +18,7 @@ import app.sanctum.machina.engine.EmbedderState
 import app.sanctum.machina.rag.EmbedderEncodeException
 import app.sanctum.machina.rag.EmbeddingBlob
 import app.sanctum.machina.rag.EmptyCorpusException
-import app.sanctum.machina.rag.RagInjector
+import app.sanctum.machina.rag.DefaultRagInjector
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -68,7 +68,7 @@ class RagInjectorTest {
   @Test
   fun retrieve_throwsEmptyCorpusWhenNoRows() = runTest {
     val registry = FakeEmbedderRegistry(state = EmbedderState.Ready)
-    val injector = RagInjector(registry, embeddingDao, errorLog)
+    val injector = DefaultRagInjector(registry, embeddingDao, errorLog)
 
     val thrown = runCatching { injector.retrieve(projectId = 42L, query = "q", topK = 4) }
       .exceptionOrNull()
@@ -85,7 +85,7 @@ class RagInjectorTest {
     embeddingDao.rows.add(rowWith(fileId = 1L, vec = floatArrayOf(1f, 0f)))
     val boom = RuntimeException("interpreter aborted")
     val registry = FakeEmbedderRegistry(state = EmbedderState.Ready, encodeException = boom)
-    val injector = RagInjector(registry, embeddingDao, errorLog)
+    val injector = DefaultRagInjector(registry, embeddingDao, errorLog)
 
     val thrown = runCatching { injector.retrieve(projectId = 1L, query = "q", topK = 4) }
       .exceptionOrNull()
@@ -99,7 +99,7 @@ class RagInjectorTest {
   @Test
   fun retrieve_throwsNotReadyWhenStateNotReady() = runTest {
     val registry = FakeEmbedderRegistry(state = EmbedderState.Initializing)
-    val injector = RagInjector(registry, embeddingDao, errorLog)
+    val injector = DefaultRagInjector(registry, embeddingDao, errorLog)
 
     val thrown = runCatching { injector.retrieve(1L, "q", 4) }.exceptionOrNull()
     assertTrue("EmbedderNotReadyException expected, got $thrown",
@@ -117,7 +117,7 @@ class RagInjectorTest {
     embeddingDao.rows.add(rowWith(fileId = 3L, vec = floatArrayOf(0f, 0f, 1f), page = null, name = "c.pdf"))
     val query = floatArrayOf(0f, 1f, 0f)
     val registry = FakeEmbedderRegistry(state = EmbedderState.Ready, encodeResult = query)
-    val injector = RagInjector(registry, embeddingDao, errorLog)
+    val injector = DefaultRagInjector(registry, embeddingDao, errorLog)
 
     val out = injector.retrieve(1L, "anything", topK = 3)
 
@@ -135,7 +135,7 @@ class RagInjectorTest {
   fun retrieve_passesQueryVerbatim() = runTest {
     embeddingDao.rows.add(rowWith(fileId = 1L, vec = floatArrayOf(1f, 0f)))
     val registry = FakeEmbedderRegistry(state = EmbedderState.Ready, encodeResult = floatArrayOf(1f, 0f))
-    val injector = RagInjector(registry, embeddingDao, errorLog)
+    val injector = DefaultRagInjector(registry, embeddingDao, errorLog)
 
     val rawQuery = "  has  Trailing   whitespace AND MIXED case  "
     injector.retrieve(1L, rawQuery, topK = 1)
@@ -147,7 +147,7 @@ class RagInjectorTest {
   fun retrieve_emptyQuery_passesThroughToEmbedder() = runTest {
     embeddingDao.rows.add(rowWith(fileId = 1L, vec = floatArrayOf(1f, 0f)))
     val registry = FakeEmbedderRegistry(state = EmbedderState.Ready, encodeResult = floatArrayOf(0.5f, 0.5f))
-    val injector = RagInjector(registry, embeddingDao, errorLog)
+    val injector = DefaultRagInjector(registry, embeddingDao, errorLog)
 
     injector.retrieve(1L, query = "", topK = 1) // must not pre-validate empty
     assertEquals("", registry.lastEncodeQuery)
@@ -157,7 +157,7 @@ class RagInjectorTest {
   fun retrieve_failedState_carriesStateInException() = runTest {
     val failed = EmbedderState.Failed("native abort", RuntimeException("x"))
     val registry = FakeEmbedderRegistry(state = failed)
-    val injector = RagInjector(registry, embeddingDao, errorLog)
+    val injector = DefaultRagInjector(registry, embeddingDao, errorLog)
 
     val thrown = runCatching { injector.retrieve(1L, "q", 4) }.exceptionOrNull()
         as EmbedderNotReadyException?

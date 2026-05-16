@@ -280,4 +280,11 @@
   <string name="model_manager_embedder_delete_warning_no_undo">Действие необратимо.</string>
   <string name="model_manager_embedder_delete_confirm">Удалить</string>
   <string name="model_manager_embedder_delete_cancel">Отмена</string>
+
+  <!-- Phase 4 Task 11 — Project chat RAG injection. -->
+  <string name="chat_project_title_format">%1$s / %2$s</string>
+  <string name="rag_block_no_embedder">Загрузите модель эмбеддингов</string>
+  <string name="rag_block_no_embedder_cta">К менеджеру моделей</string>
+  <string name="rag_block_empty_corpus">В корпусе нет проиндексированных документов. Загрузите хотя бы один документ.</string>
+  <string name="rag_block_retrieve_error">Ошибка retrieval — попробуйте ещё раз.</string>
 </resources>

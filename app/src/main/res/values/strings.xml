@@ -280,4 +280,14 @@
   <string name="model_manager_embedder_delete_warning_no_undo">This action cannot be undone.</string>
   <string name="model_manager_embedder_delete_confirm">Delete</string>
   <string name="model_manager_embedder_delete_cancel">Cancel</string>
+
+  <!-- Phase 4 Task 11 — Project chat RAG injection. Title format combines project name and
+       chat title; `rag_block_*` keys back the three fail-loud structural blocks (embedder
+       not downloaded, empty corpus, retrieve failure). Sequencing note: T11 commits these
+       keys first; T12 follows with `citation_*`. -->
+  <string name="chat_project_title_format">%1$s / %2$s</string>
+  <string name="rag_block_no_embedder">Download the embedding model</string>
+  <string name="rag_block_no_embedder_cta">To Model Manager</string>
+  <string name="rag_block_empty_corpus">No indexed documents in the corpus. Upload at least one document.</string>
+  <string name="rag_block_retrieve_error">Retrieval error — please try again.</string>
 </resources>

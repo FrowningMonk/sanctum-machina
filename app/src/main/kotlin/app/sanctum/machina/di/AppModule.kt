@@ -15,6 +15,8 @@ import app.sanctum.machina.data.dao.ProjectDao
 import app.sanctum.machina.data.dao.ProjectEmbeddingDao
 import app.sanctum.machina.data.dao.ProjectFileDao
 import app.sanctum.machina.engine.AppCorruptionState
+import app.sanctum.machina.rag.DefaultRagInjector
+import app.sanctum.machina.rag.RagInjector
 import com.google.gson.Gson
 import dagger.Binds
 import dagger.Module
@@ -58,6 +60,10 @@ abstract class AppModule {
   @Binds
   @Singleton
   abstract fun bindProjectRepository(impl: DefaultProjectRepository): ProjectRepository
+
+  @Binds
+  @Singleton
+  abstract fun bindRagInjector(impl: DefaultRagInjector): RagInjector
 
   companion object {
 

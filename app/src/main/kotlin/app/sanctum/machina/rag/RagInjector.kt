@@ -32,15 +32,22 @@ private const val LOG_RETRIEVE = "rag-retrieve"
  *
  * No silent fallback to query-only inference — Decision 8 / US-AC8 require the user to be
  * notified that retrieval did not run, rather than silently degrading.
+ *
+ * Exposed as an interface so `ChatViewModel` (Task 11) can be unit-tested with a hand-rolled
+ * fake — the production binding is [DefaultRagInjector] via `@Binds` in `AppModule`.
  */
+interface RagInjector {
+  suspend fun retrieve(projectId: Long, query: String, topK: Int): List<RetrievedChunk>
+}
+
 @Singleton
-class RagInjector @Inject constructor(
+class DefaultRagInjector @Inject constructor(
   private val embedderRegistry: EmbedderRegistry,
   private val embeddingDao: ProjectEmbeddingDao,
   private val errorLog: ErrorLog,
-) {
+) : RagInjector {
 
-  suspend fun retrieve(
+  override suspend fun retrieve(
     projectId: Long,
     query: String,
     topK: Int,

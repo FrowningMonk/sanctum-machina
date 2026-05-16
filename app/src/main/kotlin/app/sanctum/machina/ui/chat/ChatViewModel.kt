@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import androidx.annotation.StringRes
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -24,11 +25,19 @@ import app.sanctum.machina.core.runtime.LlmModelHelper
 import app.sanctum.machina.core.settings.AppSettingsRepository
 import app.sanctum.machina.core.settings.proto.PerModelSettings
 import app.sanctum.machina.data.ChatRepository
+import app.sanctum.machina.data.Citation
+import app.sanctum.machina.data.ProjectRepository
 import app.sanctum.machina.data.dao.ChatDao
 import app.sanctum.machina.data.dao.MessageDao
+import app.sanctum.machina.data.dao.ProjectFileDao
 import app.sanctum.machina.data.model.MessageEntity
+import app.sanctum.machina.engine.EmbedderGate
+import app.sanctum.machina.engine.EmbedderState
 import app.sanctum.machina.engine.WarmupCoordinator
+import app.sanctum.machina.rag.RagInjector
+import app.sanctum.machina.rag.RetrievedChunk
 import com.google.ai.edge.litertlm.BenchmarkInfo
+import com.google.gson.Gson
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Message as LitertlmMessage
 import java.io.File
@@ -116,9 +125,32 @@ sealed class TopAppBarState {
     /** `ModelInitStatus.Idle` or `Failed` in a non-Draft chat — show «Загрузить» button. */
     data class Failed(val modelId: String) : TopAppBarState()
 
-    /** Engine ready — show read-only chip with [modelName] (Model.name, human-readable). */
-    data class Ready(val modelName: String) : TopAppBarState()
+    /**
+     * Engine ready — show read-only chip with [modelName] (Model.name, human-readable).
+     *
+     * Phase 4 Task 11: for project chats (`chat.project_id != null`), [projectName] and
+     * [chatTitle] are populated so the title region can render `«{projectName} / {chatTitle}»`
+     * via `chat_project_title_format` (Decision 6 cosmetic). Both are null for non-project
+     * persistent chats and for Quick — the title falls back to [modelName] there.
+     */
+    data class Ready(
+        val modelName: String,
+        val projectName: String? = null,
+        val chatTitle: String? = null,
+    ) : TopAppBarState()
 }
+
+/**
+ * Phase 4 Task 11 — Block 1 fail-loud event. Surfaced when the user attempts to send into a
+ * project chat while [EmbedderRegistry] state is not [EmbedderState.Ready]. The UI renders a
+ * snackbar with [messageRes] body and an action button labelled [actionLabelRes] that
+ * navigates to the Model Manager. The USER row is NOT persisted; the user can retry after
+ * downloading the embedder.
+ */
+data class RagBlockEmbedderEvent(
+    @StringRes val messageRes: Int,
+    @StringRes val actionLabelRes: Int,
+)
 
 /**
  * Capability flags derived from the active [Model] when the engine reports
@@ -149,7 +181,31 @@ constructor(
     private val messageDao: MessageDao,
     private val chatDao: ChatDao,
     private val warmupCoordinator: WarmupCoordinator,
+    private val ragInjector: RagInjector,
+    private val embedderGate: EmbedderGate,
+    private val projectRepository: ProjectRepository,
+    private val projectFileDao: ProjectFileDao,
 ) : ViewModel() {
+
+    /**
+     * Phase 4 Task 11. Captured from `chat.project_id` once during persistent bootstrap. Non-
+     * null only for project chats; the project-chat send branch and the TopAppBar title
+     * resolution both read this snapshot. Quick / Draft / non-project Persistent leave it null
+     * and the file behaves exactly as Phase 3 (no `RagInjector` references, no guards, no
+     * citations on the assistant write).
+     */
+    private var projectId: Long? = null
+
+    /**
+     * Snapshot of `chats.title` taken at bootstrap. Threaded into [TopAppBarState.Ready] via
+     * [deriveTopAppBarState] so project chats render «{projectName} / {chatTitle}». Snapshot
+     * (not Flow) is acceptable for MVP — Phase 4 doesn't expose a chat-rename surface, so a
+     * stale title cannot diverge from the persisted row inside the VM's lifetime.
+     */
+    private var chatTitle: String? = null
+
+    /** Single shared Gson — Decision 7. Re-used for citations encode + decode in this VM. */
+    private val gson = Gson()
 
     // Eagerly resolved so a missing/mis-typed nav arg surfaces at construction
     // time rather than lazily on the first send() (AC-E4 requires the route to
@@ -215,6 +271,34 @@ constructor(
     private val _streamingMessage = MutableStateFlow<Message?>(null)
 
     /**
+     * Phase 4 Task 11 — mid-stream citations for the in-flight assistant bubble. Declared
+     * BEFORE [messages] so the eagerly-subscribing combine in [buildMessagesFlow] never
+     * observes a null source flow during the VM init phase. See [_streamingMessage] kdoc
+     * for the same ordering rationale on [attachmentCache].
+     */
+    private val _streamingCitations = MutableStateFlow<List<RetrievedChunk>>(emptyList())
+    val streamingCitations: StateFlow<List<RetrievedChunk>> = _streamingCitations.asStateFlow()
+
+    /**
+     * Phase 4 Task 11 — observed name of the project owning this chat, when [projectId] is
+     * non-null. Drives [TopAppBarState.Ready.projectName]. Null for non-project chats and for
+     * project chats whose project has been deleted concurrently (`observeProjectById` emits
+     * null on cascade delete). Declared BEFORE [topAppBarState] for the same eager-subscribe
+     * reason as [_streamingCitations] above.
+     */
+    private val _projectName = MutableStateFlow<String?>(null)
+    val projectName: StateFlow<String?> = _projectName.asStateFlow()
+
+    /**
+     * Phase 4 Task 11 pre-send guard 2 — live count of `project_files.status = 'ready'` rows
+     * for the chat's project. Collected only when [projectId] is non-null; reads `.value`
+     * inside the send path so a doc-delete on another screen mid-conversation flips the gate
+     * before the next send rather than from a frozen snapshot.
+     */
+    private val _projectReadyDocCount = MutableStateFlow(0)
+    val projectReadyDocCount: StateFlow<Int> = _projectReadyDocCount.asStateFlow()
+
+    /**
      * Single messages stream for the UI: Persistent combines Room-backed
      * [MessageEntity]s with [_streamingMessage]; Quick/Draft just mirror the
      * in-memory [_messages] list.
@@ -275,6 +359,18 @@ constructor(
     val navigation: SharedFlow<ChatNavigationEvent> = _navigation.asSharedFlow()
 
     /**
+     * Phase 4 Task 11 — Block 1 fail-loud event. UI host renders a snackbar with the `messageRes`
+     * body and an action button labelled `actionLabelRes` that navigates to the Model Manager.
+     * `extraBufferCapacity = 4` keeps `tryEmit` non-suspending for rapid retries.
+     */
+    private val _ragBlockEmbedderEvent = MutableSharedFlow<RagBlockEmbedderEvent>(
+        replay = 0,
+        extraBufferCapacity = 4,
+    )
+    val ragBlockEmbedderEvent: SharedFlow<RagBlockEmbedderEvent> =
+        _ragBlockEmbedderEvent.asSharedFlow()
+
+    /**
      * Drives the `ChatScreen` TopAppBar title region (AC-U5–U7, AC-E3/E3b). Derived reactively
      * from [ChatIdentity], [ModelRegistry.models] and [WarmupCoordinator.isWarmupInProgress]:
      *
@@ -292,8 +388,9 @@ constructor(
         _chatModelId,
         warmupCoordinator.isWarmupInProgress,
         registry.activeModelName,
-    ) { models, modelId, warmupInFlight, activeModelId ->
-        deriveTopAppBarState(models, modelId, warmupInFlight, activeModelId)
+        _projectName,
+    ) { models, modelId, warmupInFlight, activeModelId, projectName ->
+        deriveTopAppBarState(models, modelId, warmupInFlight, activeModelId, projectName, chatTitle)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.Eagerly,
@@ -440,6 +537,8 @@ constructor(
         pinnedModelId: String?,
         warmupInFlight: Boolean,
         activeModelId: String?,
+        projectName: String?,
+        chatTitle: String?,
     ): TopAppBarState {
         val effectiveModelId = pinnedModelId ?: activeModelId ?: ""
         val effectiveModelName = models.firstOrNull { it.model.modelId == effectiveModelId }?.model?.name
@@ -456,7 +555,11 @@ constructor(
                     models.firstOrNull { it.model.modelId == id }
                 }
                 when (entry?.initStatus) {
-                    ModelInitStatus.Ready -> TopAppBarState.Ready(entry.model.name)
+                    ModelInitStatus.Ready -> TopAppBarState.Ready(
+                        modelName = entry.model.name,
+                        projectName = projectName,
+                        chatTitle = chatTitle,
+                    )
                     ModelInitStatus.Initializing ->
                         TopAppBarState.Loading(effectiveModelId, entry.model.name)
                     is ModelInitStatus.Failed -> TopAppBarState.Failed(effectiveModelId)
@@ -838,6 +941,29 @@ constructor(
                     .onFailure { errorLog.e("history-read", "chat row lookup failed for id=${id.id}", it) }
                     .getOrNull()
                 _chatModelId.value = entity?.modelId
+                // Phase 4 Task 11: capture project linkage + chat title once. `projectId` is
+                // immutable post-commit (FK), and Phase 4 does not introduce a chat-rename
+                // surface, so a one-shot snapshot here is sufficient. Project name is
+                // observed reactively below — the project owns its name and Task 9 exposes
+                // a rename surface that may update mid-session.
+                projectId = entity?.projectId
+                chatTitle = entity?.title
+                projectId?.let { pid ->
+                    viewModelScope.launch {
+                        runCatching { embedderGate.warmup() }
+                            .onFailure { errorLog.e("embed-init", "warmup failed from project chat entry", it) }
+                    }
+                    viewModelScope.launch {
+                        projectRepository.observeProjectById(pid).collect { project ->
+                            _projectName.value = project?.name
+                        }
+                    }
+                    viewModelScope.launch {
+                        projectFileDao.observeReadyCount(pid).collect { count ->
+                            _projectReadyDocCount.value = count
+                        }
+                    }
+                }
                 applyEffectiveConfigToModel()
                 // B4: Detect Draft→Persistent handover gap. Draft commits a USER
                 // row and navigates; the new Persistent VM never received
@@ -952,7 +1078,17 @@ constructor(
             // only bumped an existing row does not re-read the same file.
             val decoded = messageDao.observeByChat(id.id)
                 .map { list -> list.map { toDomainMessageWithAttachments(it) } }
-            combine(decoded, _streamingMessage) { persisted, streaming ->
+            combine(decoded, _streamingMessage, _streamingCitations) { persisted, streamingRaw, streamingCits ->
+                // Phase 4 Task 11: hydrate the in-flight assistant bubble with mid-stream
+                // citations so the chip-strip (Task 12) renders before `done = true`. After
+                // handover the persisted Room row carries citations of its own and
+                // `_streamingCitations` is reset to empty, so this branch falls back to the
+                // raw bubble for non-project chats.
+                val streaming = if (streamingRaw != null && streamingCits.isNotEmpty()) {
+                    streamingRaw.copy(citations = streamingCits.toCitationListForStreaming())
+                } else {
+                    streamingRaw
+                }
                 // Sole mechanism for the double-bubble invariant (user-spec
                 // Risks, D4): the moment the Room list ends in an ASSISTANT
                 // row the in-memory streaming bubble is hidden. No second
@@ -1227,6 +1363,35 @@ constructor(
         val accumulateThinking = shouldAccumulateThinking(model)
         val initialThinkingText: String? = if (accumulateThinking) "" else null
 
+        // Phase 4 Task 11 pre-USER fail-loud structural blocks (project chats only). Blocks
+        // 1 and 2 run BEFORE the AC-R1 synchronous USER persist so the USER row is never
+        // written for an un-runnable send. Block 3 (retrieve failure) runs after USER is
+        // persisted — see [dispatchInferencePersistent] — because the user must be able to
+        // re-send the same query (AC-R1 invariant retained).
+        val pid = projectId
+        if (pid != null) {
+            val embedderState = embedderGate.state.value
+            if (embedderState !is EmbedderState.Ready) {
+                _ragBlockEmbedderEvent.tryEmit(
+                    RagBlockEmbedderEvent(
+                        messageRes = R.string.rag_block_no_embedder,
+                        actionLabelRes = R.string.rag_block_no_embedder_cta,
+                    )
+                )
+                _uiState.value = ChatUiState.Ready(isGenerating = false)
+                return
+            }
+            if (_projectReadyDocCount.value == 0) {
+                _streamingMessage.value = Message(
+                    role = MessageRole.ASSISTANT,
+                    text = context.getString(R.string.rag_block_empty_corpus),
+                    streaming = false,
+                )
+                _uiState.value = ChatUiState.Ready(isGenerating = false)
+                return
+            }
+        }
+
         _streamingMessage.value = Message(
             role = MessageRole.ASSISTANT,
             text = "",
@@ -1330,6 +1495,82 @@ constructor(
         model: Model,
         accumulateThinking: Boolean,
     ) {
+        // Phase 4 Task 11 / Decision 6: branch on `chat.project_id`. Non-project chats keep
+        // the Phase-3 path verbatim (no `RagInjector` references, no citations). Project
+        // chats run retrieval first, then invoke the same dispatch body with the augmented
+        // input and a citations snapshot — `helper.runInference` receives the prefix, the
+        // Room ASSISTANT row carries the JSON-encoded chunks.
+        val pid = projectId
+        if (pid == null) {
+            doRunInferencePersistent(
+                identity = identity,
+                pending = pending,
+                model = model,
+                accumulateThinking = accumulateThinking,
+                input = text,
+                citations = null,
+            )
+            return
+        }
+        viewModelScope.launch {
+            val ragConfig = runCatching { projectRepository.getEffectiveRagSettings(pid) }
+                .onFailure { errorLog.e("rag-retrieve", "effective RAG settings read failed", it) }
+                .getOrNull()
+            val topK = ragConfig?.topK ?: DEFAULT_TOP_K
+            val retrieved: List<RetrievedChunk> = try {
+                ragInjector.retrieve(pid, text, topK)
+            } catch (cause: Throwable) {
+                // Block 3 fail-loud: the USER row is already persisted (synchronously
+                // before this dispatch fires), so the user can re-send the same query
+                // without losing it. Bubble carries the user-facing reason; ErrorLog
+                // captures the leaf cause for diagnostics. The log write is detached so
+                // the UI bubble flip is not gated by `errorLog.e`'s Dispatchers.IO hop —
+                // mirrors the `inference` error path in `doRunInferencePersistent`.
+                viewModelScope.launch {
+                    errorLog.e("rag-retrieve", "RagInjector.retrieve failed for projectId=$pid", cause)
+                }
+                _streamingMessage.value = Message(
+                    role = MessageRole.ASSISTANT,
+                    text = context.getString(R.string.rag_block_retrieve_error),
+                    streaming = false,
+                )
+                _uiState.value = ChatUiState.Ready(isGenerating = false)
+                return@launch
+            }
+            // Set citations BEFORE invoking helper.runInference so the chip-strip (Task 12)
+            // observes a non-empty list as soon as the first token streams. The combine in
+            // `buildMessagesFlow` hydrates the in-flight bubble from this snapshot.
+            _streamingCitations.value = retrieved
+            val augmented = buildRagPrefix(retrieved, text)
+            doRunInferencePersistent(
+                identity = identity,
+                pending = pending,
+                model = model,
+                accumulateThinking = accumulateThinking,
+                input = augmented,
+                citations = retrieved,
+            )
+        }
+    }
+
+    /**
+     * Phase 4 Task 11 — shared dispatch body. Drives `helper.runInference` and persists the
+     * ASSISTANT row on `done = true`. Parameters [input] and [citations] differ between the
+     * Phase-3 non-project path (raw user text + null) and the project path (augmented prefix
+     * + retrieved chunks). The persist-clean invariant is enforced at the call sites: the
+     * caller alone owns the decision to pass [input] = augmented vs original — this function
+     * does not see the original query at all when the project path is taken, so it cannot
+     * accidentally leak the prefix into `messages.text` (USER row is persisted elsewhere
+     * with the original verbatim).
+     */
+    private fun doRunInferencePersistent(
+        identity: ChatIdentity.Persistent,
+        pending: List<Attachment>,
+        model: Model,
+        accumulateThinking: Boolean,
+        input: String,
+        citations: List<RetrievedChunk>?,
+    ) {
         val startMs = System.currentTimeMillis()
         var firstTokenMs = 0L
         var chunkCount = 0
@@ -1344,7 +1585,7 @@ constructor(
 
         helper.runInference(
             model = model,
-            input = text,
+            input = input,
             resultListener = { partial, done, partialThinking, benchmarkInfo ->
                 val bubble = _streamingMessage.value
                 if (bubble?.interrupted == true) return@runInference
@@ -1373,6 +1614,7 @@ constructor(
                     val createdAt = System.currentTimeMillis()
                     val assistantText = sb.toString()
                     val thinkingText = if (accumulateThinking) thinkingSb.toString() else null
+                    val citationsJson = encodeCitationsJsonOrNull(citations)
                     viewModelScope.launch {
                         val assistantMsg = MessageEntity(
                             chatId = identity.id,
@@ -1380,6 +1622,7 @@ constructor(
                             text = assistantText,
                             thinkingText = thinkingText,
                             createdAt = createdAt,
+                            citations = citationsJson,
                         )
                         val savedOk = runCatching { chatRepository.savePersistentMessage(assistantMsg) }
                             .onFailure { errorLog.e("history-write", "savePersistentMessage ASSISTANT failed", it) }
@@ -1387,6 +1630,11 @@ constructor(
                         if (savedOk) {
                             chatRepository.updateChatLastMessage(identity.id, createdAt)
                         }
+                        // Reset mid-stream citations AFTER the Room write enqueues. The Room
+                        // emission carries the authoritative copy of citations on the
+                        // persisted ASSISTANT row; the in-memory snapshot is no longer the
+                        // source of truth.
+                        _streamingCitations.value = emptyList()
                     }
                     // Update the in-memory bubble to carry footer/streaming=false
                     // in case the Room write is slow — the combine guarantees
@@ -1401,12 +1649,36 @@ constructor(
                 viewModelScope.launch { errorLog.e("inference", safeMsg) }
                 _streamingMessage.update { it?.copy(streaming = false, interrupted = true) }
                 _uiState.value = ChatUiState.Ready(isGenerating = false)
+                // Drop mid-stream citations — no ASSISTANT row will land in Room, so the
+                // in-memory chip-strip would otherwise linger past the failed turn.
+                _streamingCitations.value = emptyList()
             },
             images = images,
             audioClips = audioClips,
             coroutineScope = viewModelScope,
             extraContext = extraContext,
         )
+    }
+
+    /**
+     * Phase 4 Task 11 / Decision 7 — citations encode. Wraps Gson in a `try/catch` so an
+     * encode failure (defensive — Gson reflection on a vanilla `data class` should not
+     * throw in practice) does not abort the ASSISTANT handover. On failure we log under
+     * `rag-retrieve` and persist `citations = null` rather than crash the chat write path.
+     */
+    private fun encodeCitationsJsonOrNull(chunks: List<RetrievedChunk>?): String? {
+        if (chunks == null) return null
+        val list = chunks.map {
+            Citation(it.fileId, it.fileName, it.page, it.chunkText, stale = false)
+        }
+        return try {
+            gson.toJson(list)
+        } catch (cause: Throwable) {
+            viewModelScope.launch {
+                errorLog.e("rag-retrieve", "citations encode failed", cause)
+            }
+            null
+        }
     }
 
     private fun appendUserAndStreamingBubbleInMemory(
@@ -1613,6 +1885,8 @@ constructor(
             attachmentCache[entity.id] = decoded
             decoded
         }
+        val citations: List<Citation> = entity.citations?.let { json -> decodeCitationsOrEmpty(json) }
+            ?: emptyList()
         return Message(
             role = role,
             text = entity.text,
@@ -1621,7 +1895,47 @@ constructor(
             footer = null,
             thinkingText = entity.thinkingText,
             attachments = attachments,
+            citations = citations,
         )
+    }
+
+    /**
+     * Phase 4 Task 11 / Decision 7 — decode persisted `messages.citations` JSON. Gson is
+     * lenient by default, but the on-disk JSON is owned by the previous write; corrupted
+     * recovery or a future schema drift could surface garbage here. Wrap in `try/catch` so
+     * one malformed row never crashes the chat surface — empty list + a `rag-retrieve` log
+     * line is the documented degradation path (R-T2).
+     */
+    private fun decodeCitationsOrEmpty(json: String): List<Citation> = try {
+        gson.fromJson(json, Array<Citation>::class.java)?.toList() ?: emptyList()
+    } catch (cause: Throwable) {
+        viewModelScope.launch {
+            errorLog.e("rag-retrieve", "citations decode failed", cause)
+        }
+        emptyList()
+    }
+
+    private fun List<RetrievedChunk>.toCitationListForStreaming(): List<Citation> =
+        map { Citation(it.fileId, it.fileName, it.page, it.chunkText, stale = false) }
+
+    /**
+     * Phase 4 Task 11 / Decision 6 — RAG prefix builder. Single concatenated string is
+     * prepended to the chat helper's `input` parameter. The persist-clean invariant (US-AC3)
+     * requires this string NEVER leak into `messages.text`; it lives only inside the call to
+     * `helper.runInference`.
+     *
+     * Format mirrors tech-spec § Architecture: «Context from project documents:\n\n[1]
+     * {file_name}, p. {page}\n{chunk_text}\n\n[2] ...\n\nUser question: » + original.
+     */
+    private fun buildRagPrefix(chunks: List<RetrievedChunk>, userQuery: String): String {
+        val sb = StringBuilder("Context from project documents:\n\n")
+        chunks.forEachIndexed { idx, chunk ->
+            sb.append("[").append(idx + 1).append("] ").append(chunk.fileName)
+            if (chunk.page != null) sb.append(", p. ").append(chunk.page)
+            sb.append("\n").append(chunk.chunkText).append("\n\n")
+        }
+        sb.append("User question: ").append(userQuery)
+        return sb.toString()
     }
 
     /**
@@ -1782,6 +2096,14 @@ constructor(
 
         private const val MAX_IMAGES: Int = 10
         private const val MAX_IMAGE_EDGE: Int = 1024
+
+        /**
+         * Phase 4 Task 11 — fallback when [ProjectRepository.getEffectiveRagSettings] returns
+         * null (project deleted concurrently or the read failed). Matches Decision 11's
+         * documented baseline (`topK = 4` from PocketSage / EmbeddingGemma model card). The
+         * project's own settings override this whenever they resolve cleanly.
+         */
+        private const val DEFAULT_TOP_K: Int = 4
 
         // MAX_TOKENS is intentionally NOT here (Phase 3.6 Decision 4):
         // `maxNumTokens` is a field of LiteRT-LM `EngineConfig`, not
