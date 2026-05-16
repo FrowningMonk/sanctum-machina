@@ -930,6 +930,42 @@ constructor(
 
     // --- init helpers --------------------------------------------------------
 
+    /**
+     * Phase 4 Task 19 — shared between project-Persistent bootstrap (Task 11)
+     * and project-Draft bootstrap. Warms the embedder, seeds the ready-count
+     * snapshot synchronously, then launches the two long-lived collectors for
+     * project name and ready-count.
+     *
+     * `observeReadyCount(pid).first()` is invoked synchronously (not on a
+     * coroutine) so the pre-send empty-corpus guard sees the real count
+     * before the user can tap Send — a fast tap that beat the Flow's first
+     * emission would otherwise trip Block 2 and lose the USER row on a
+     * populated corpus (carry-over of the Task 11 code-reviewer-1 major fix).
+     * [entryLabel] disambiguates the two entry paths in `ErrorLog` so a
+     * warmup failure surfaces which surface the user came from.
+     */
+    private suspend fun bootstrapProjectFlows(pid: Long, entryLabel: String) {
+        viewModelScope.launch {
+            runCatching { embedderGate.warmup() }
+                .onFailure { errorLog.e("embed-init", "warmup failed from $entryLabel", it) }
+        }
+        runCatching {
+            _projectReadyDocCount.value = projectFileDao.observeReadyCount(pid).first()
+        }.onFailure {
+            errorLog.e("history-read", "observeReadyCount initial read failed ($entryLabel)", it)
+        }
+        viewModelScope.launch {
+            projectRepository.observeProjectById(pid).collect { project ->
+                _projectName.value = project?.name
+            }
+        }
+        viewModelScope.launch {
+            projectFileDao.observeReadyCount(pid).collect { count ->
+                _projectReadyDocCount.value = count
+            }
+        }
+    }
+
     private fun resolveIdentity(savedStateHandle: SavedStateHandle): ChatIdentity {
         val chatId: Long? = savedStateHandle[NAV_ARG_CHAT_ID]
         if (chatId != null) return ChatIdentity.Persistent(chatId)
@@ -984,32 +1020,7 @@ constructor(
                 // closes that theoretical sub-second window.
                 projectId = entity?.projectId
                 chatTitle = entity?.title
-                projectId?.let { pid ->
-                    viewModelScope.launch {
-                        runCatching { embedderGate.warmup() }
-                            .onFailure { errorLog.e("embed-init", "warmup failed from project chat entry", it) }
-                    }
-                    // code-reviewer-1 major: seed the ready-count snapshot synchronously
-                    // BEFORE launching the continuous collector. The empty-corpus pre-send
-                    // guard reads `_projectReadyDocCount.value` synchronously; a fast user
-                    // tap that beat the Flow's first emission would have tripped Block 2
-                    // and lost the USER row on a populated corpus.
-                    runCatching {
-                        _projectReadyDocCount.value = projectFileDao.observeReadyCount(pid).first()
-                    }.onFailure {
-                        errorLog.e("history-read", "observeReadyCount initial read failed", it)
-                    }
-                    viewModelScope.launch {
-                        projectRepository.observeProjectById(pid).collect { project ->
-                            _projectName.value = project?.name
-                        }
-                    }
-                    viewModelScope.launch {
-                        projectFileDao.observeReadyCount(pid).collect { count ->
-                            _projectReadyDocCount.value = count
-                        }
-                    }
-                }
+                projectId?.let { pid -> bootstrapProjectFlows(pid, entryLabel = "project chat entry") }
                 _chatModelId.value = entity?.modelId
                 applyEffectiveConfigToModel()
                 // B4: Detect Draft→Persistent handover gap. Draft commits a USER
@@ -1074,27 +1085,8 @@ constructor(
                 // Drawer «+ Новый чат» constructs `Draft(projectId = null)` —
                 // none of this branch executes, the file behaves verbatim Phase 3.
                 if (identity is ChatIdentity.Draft && identity.projectId != null) {
-                    val pid = identity.projectId
-                    projectId = pid
-                    viewModelScope.launch {
-                        runCatching { embedderGate.warmup() }
-                            .onFailure { errorLog.e("embed-init", "warmup failed from project draft entry", it) }
-                    }
-                    runCatching {
-                        _projectReadyDocCount.value = projectFileDao.observeReadyCount(pid).first()
-                    }.onFailure {
-                        errorLog.e("history-read", "observeReadyCount initial read failed (draft)", it)
-                    }
-                    viewModelScope.launch {
-                        projectRepository.observeProjectById(pid).collect { project ->
-                            _projectName.value = project?.name
-                        }
-                    }
-                    viewModelScope.launch {
-                        projectFileDao.observeReadyCount(pid).collect { count ->
-                            _projectReadyDocCount.value = count
-                        }
-                    }
+                    projectId = identity.projectId
+                    bootstrapProjectFlows(identity.projectId, entryLabel = "project draft entry")
                 }
                 val pinned = explicitModelId
                     ?: registry.activeModelName.value
@@ -1392,11 +1384,9 @@ constructor(
                 )
             }
             // Phase 4 Task 19: thread the optional `projectId` snapshot into
-            // the commit. Two reads of `projectId` is fine here — the field is
-            // seeded once during `bootstrapChatModelId` (Draft branch) from
-            // the immutable nav-arg and never reassigned, so a concurrent
-            // mutator cannot race the commit.
-            val pid = projectId
+            // the commit. The field is seeded once during `bootstrapChatModelId`
+            // (Draft branch) from the immutable nav-arg and never reassigned,
+            // so reading it here is race-free with respect to the bootstrap.
             val result = runCatching {
                 chatRepository.commitDraftChat(
                     modelId = modelId,
@@ -1405,7 +1395,7 @@ constructor(
                     filesDir = filesDir,
                     stagedImageFilename = stagedImage,
                     stagedAudioFilename = stagedAudio,
-                    projectId = pid,
+                    projectId = projectId,
                 )
             }
             result.fold(

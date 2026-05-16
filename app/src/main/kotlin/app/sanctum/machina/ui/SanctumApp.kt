@@ -16,6 +16,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import app.sanctum.machina.ui.about.AboutScreen
 import app.sanctum.machina.ui.chat.ChatScreen
+import app.sanctum.machina.ui.chat.ChatViewModel
 import app.sanctum.machina.ui.diagnostics.DiagnosticsScreen
 import app.sanctum.machina.ui.drawer.DrawerContent
 import app.sanctum.machina.ui.home.HomeScreen
@@ -26,6 +27,14 @@ import app.sanctum.machina.ui.projects.ProjectDetailScreen
 import app.sanctum.machina.ui.projects.ProjectSettingsScreen
 import app.sanctum.machina.ui.theme.SanctumTheme
 import kotlinx.coroutines.launch
+
+/**
+ * Phase 4 Task 19 — single source of truth for the draft route template.
+ * Used by the `composable(...)` declaration and the two `popUpTo(...)` calls
+ * that need to match the registered template verbatim, so they cannot drift
+ * apart on a future rename.
+ */
+private const val ROUTE_CHAT_DRAFT = "chat/draft?projectId={projectId}"
 
 @Composable
 fun SanctumApp() {
@@ -142,7 +151,7 @@ fun SanctumApp() {
                                 // popUpTo argument must match the registered route template,
                                 // which carries the `?projectId={projectId}` query arg after
                                 // Phase 4 Task 19.
-                                popUpTo("chat/draft?projectId={projectId}") { inclusive = true }
+                                popUpTo(ROUTE_CHAT_DRAFT) { inclusive = true }
                             }
                         },
                     )
@@ -158,15 +167,15 @@ fun SanctumApp() {
                     // identity carries the project linkage forward into
                     // `commitDraftChat` and the new `chats.project_id` lands
                     // non-null (US-AC3 invariant).
-                    route = "chat/draft?projectId={projectId}",
+                    route = ROUTE_CHAT_DRAFT,
                     arguments = listOf(
-                        navArgument("kind") {
+                        navArgument(ChatViewModel.NAV_ARG_KIND) {
                             type = NavType.StringType
-                            defaultValue = "draft"
+                            defaultValue = ChatViewModel.KIND_DRAFT
                         },
-                        navArgument("projectId") {
+                        navArgument(ChatViewModel.NAV_ARG_PROJECT_ID) {
                             type = NavType.LongType
-                            defaultValue = -1L
+                            defaultValue = ChatViewModel.NO_PROJECT_ID_SENTINEL
                         },
                     ),
                 ) {
@@ -174,7 +183,7 @@ fun SanctumApp() {
                         onBack = { navController.popBackStack() },
                         onNavigateToPersistent = { chatId ->
                             navController.navigate("chat/$chatId") {
-                                popUpTo("chat/draft?projectId={projectId}") { inclusive = true }
+                                popUpTo(ROUTE_CHAT_DRAFT) { inclusive = true }
                             }
                         },
                     )

@@ -551,6 +551,18 @@ class ChatViewModelTest {
         val vm = buildViewModel(ChatIdentityArg.DraftInProject(projectId = 42L))
         advanceUntilIdle()
 
+        // test-reviewer-1 major: also pin AC line 140 — TopAppBar surfaces the
+        // project name in project-draft mode. Asserted on the Draft state so a
+        // regression that drops the `_projectName` collect or the new field on
+        // `TopAppBarState.Draft` fails here, not only on Honor 200 smoke.
+        val draftState = vm.topAppBarState.value
+        assertTrue("draft state expected", draftState is TopAppBarState.Draft)
+        assertEquals(
+            "TopAppBarState.Draft.projectName must surface the seeded project name",
+            "Test-RAG",
+            (draftState as TopAppBarState.Draft).projectName,
+        )
+
         vm.send("test")
         advanceUntilIdle()
 
@@ -573,12 +585,72 @@ class ChatViewModelTest {
         val vm = buildViewModel(ChatIdentityArg.Draft)
         advanceUntilIdle()
 
+        // test-reviewer-1 major: project name must be null for the plain draft —
+        // the Drawer path must never paint a project-prefix in the TopAppBar.
+        val draftState = vm.topAppBarState.value
+        assertTrue("draft state expected", draftState is TopAppBarState.Draft)
+        assertNull(
+            "plain draft must not surface a project name in TopAppBar",
+            (draftState as TopAppBarState.Draft).projectName,
+        )
+
         vm.send("test")
         advanceUntilIdle()
 
         val commit = fakeChatRepository.commitCalls.single()
         assertNull(
             "plain draft commit must pass projectId = null",
+            commit.projectId,
+        )
+    }
+
+    @Test
+    fun draftWithSentinelProjectId_mapsToNullAndCommitsAsRegularChat() = runTest(dispatcher) {
+        // test-reviewer-1 major: exercise the production sentinel path. The
+        // route `chat/draft` (parameter-less Drawer entry) resolves through
+        // `NavType.LongType` with `defaultValue = NO_PROJECT_ID_SENTINEL`, so
+        // `SavedStateHandle["projectId"] == -1L` is the on-the-wire shape that
+        // hits `resolveIdentity`. Going through `SavedStateHandle` directly
+        // (rather than `ChatIdentityArg`) lets the test fail loudly if a
+        // future tweak inlines a `0L` default or drops the `takeIf` map.
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        val savedState = SavedStateHandle(
+            mapOf(
+                ChatViewModel.NAV_ARG_KIND to ChatViewModel.KIND_DRAFT,
+                ChatViewModel.NAV_ARG_PROJECT_ID to ChatViewModel.NO_PROJECT_ID_SENTINEL,
+            )
+        )
+        val vm = ChatViewModel(
+            savedStateHandle = savedState,
+            registry = fakeRegistry,
+            helper = fakeHelper,
+            errorLog = ErrorLog(context),
+            context = context,
+            imageDecoder = fakeDecoder,
+            settingsRepository = fakeRepo,
+            chatRepository = fakeChatRepository,
+            messageDao = fakeMessageDao,
+            chatDao = fakeChatDao,
+            warmupCoordinator = fakeWarmupCoordinator,
+            ragInjector = fakeRagInjector,
+            embedderGate = fakeEmbedderGate,
+            projectRepository = fakeProjectRepository,
+            projectFileDao = fakeProjectFileDao,
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            "sentinel -1L on the nav-arg must resolve to Draft(projectId = null)",
+            ChatIdentity.Draft(projectId = null),
+            vm.identity,
+        )
+
+        vm.send("test")
+        advanceUntilIdle()
+
+        val commit = fakeChatRepository.commitCalls.single()
+        assertNull(
+            "sentinel projectId must NOT propagate to commitDraftChat",
             commit.projectId,
         )
     }
