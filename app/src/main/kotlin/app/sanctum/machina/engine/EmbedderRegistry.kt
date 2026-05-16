@@ -11,6 +11,7 @@
 package app.sanctum.machina.engine
 
 import android.content.Context
+import android.content.res.AssetManager
 import androidx.annotation.VisibleForTesting
 import app.sanctum.machina.core.data.Model
 import app.sanctum.machina.core.data.ModelDownloadStatusType
@@ -20,6 +21,7 @@ import app.sanctum.machina.core.log.ErrorLog
 import app.sanctum.machina.core.registry.ModelRegistry
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
+import java.io.FileNotFoundException
 import java.util.concurrent.Executors
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -44,6 +46,14 @@ import kotlinx.coroutines.withContext
 private const val LOG_INIT = "embed-init"
 private const val TOKENIZER_FILE_NAME = "sentencepiece.model"
 private const val TASK_TYPE_QUERY = "retrieval_query"
+
+/**
+ * Phase 4 Task 17: directory under `cacheDir/` where bundled embedder assets are extracted on
+ * first warmup. Symmetric with the assets/-side layout (`assets/embedding/...`) so a future
+ * reviewer can grep both paths under one substring.
+ */
+private const val BUNDLED_ASSET_SUBDIR = "embedding"
+private const val EXTRACT_BUFFER_BYTES = 1 shl 16 // 64 KiB — large enough that 196 MB extracts in ~3 ms/MB.
 
 /**
  * Phase 4 Task 4 (Decision 2): `@Singleton` owner of [EmbedderEngine] lifecycle, sibling of
@@ -148,11 +158,16 @@ open class EmbedderRegistry @VisibleForTesting(otherwise = VisibleForTesting.PRI
     }
 
     _state.value = EmbedderState.Initializing
-    val modelFile = File(entry.model.getPath(context, entry.model.downloadFileName))
-    val tokenizerFile = resolveTokenizerFile(entry.model)
 
     val initResult = try {
       withContext(engineDispatcher) {
+        // Decision 2: engineDispatcher is single-threaded and decoupled from the call-site's
+        // coroutine context. Running `resolveEngineFiles` inside the same hop ensures the
+        // (potentially blocking) bundled-asset extraction never lands on Main, AND keeps the
+        // hop count identical for both branches — relevant for `runTest`'s virtual-time
+        // scheduler, which drives a substituted `engineDispatcher` but does not advance
+        // `Dispatchers.IO`.
+        val (modelFile, tokenizerFile) = resolveEngineFiles(entry.model)
         engine.initialize(context, modelFile, tokenizerFile)
       }
     } catch (ce: CancellationException) {
@@ -271,14 +286,61 @@ open class EmbedderRegistry @VisibleForTesting(otherwise = VisibleForTesting.PRI
     }
   }
 
-  private fun resolveTokenizerFile(model: Model): File {
-    // Prefer the explicit extraDataFiles entry once Task 1 follow-up plumbs it through the
-    // allowlist; today the entry is absent and the engine will fail with a clean
-    // `tokenizer file missing` IllegalArgumentException → state = Failed (surfaced via
-    // `embed-init` ErrorLog), which is the intended fail-loud behaviour for downstream tests.
-    val explicit = model.getExtraDataFile(TOKENIZER_FILE_NAME)
-    val fileName = explicit?.downloadFileName ?: TOKENIZER_FILE_NAME
-    return File(model.getPath(context, fileName))
+  /**
+   * Returns the on-disk [File] handles the [EmbedderEngine] consumes. Two branches per
+   * [Model.bundled]:
+   *  - **bundled = true (Task 17, current EmbeddingGemma row)** — assets ship inside the APK
+   *    at `assets/$BUNDLED_ASSET_SUBDIR/`. Extract them to `cacheDir/$BUNDLED_ASSET_SUBDIR/`
+   *    on first warmup; subsequent warmups are zero-copy (size-gated short-circuit).
+   *  - **bundled = false (downloadable rows, future use)** — files live under
+   *    `Model.getPath()` (externalFilesDir / imported overrides), same code path the engine
+   *    used pre-Task-17.
+   */
+  internal fun resolveEngineFiles(model: Model): Pair<File, File> {
+    return if (model.bundled) {
+      val cacheDir = File(context.cacheDir, BUNDLED_ASSET_SUBDIR).apply { mkdirs() }
+      val modelOut = File(cacheDir, model.downloadFileName)
+      val tokOut = File(cacheDir, TOKENIZER_FILE_NAME)
+      extractAssetIfStale(context.assets, "$BUNDLED_ASSET_SUBDIR/${model.downloadFileName}", modelOut)
+      extractAssetIfStale(context.assets, "$BUNDLED_ASSET_SUBDIR/$TOKENIZER_FILE_NAME", tokOut)
+      modelOut to tokOut
+    } else {
+      val modelFile = File(model.getPath(context, model.downloadFileName))
+      val explicit = model.getExtraDataFile(TOKENIZER_FILE_NAME)
+      val tokFileName = explicit?.downloadFileName ?: TOKENIZER_FILE_NAME
+      val tokFile = File(model.getPath(context, tokFileName))
+      modelFile to tokFile
+    }
+  }
+
+  /**
+   * Copy [assetPath] from the APK to [dst] iff [dst] is missing or its byte length differs
+   * from the asset's declared length. Build config pins these assets to `noCompress` (see
+   * `app/build.gradle.kts`), which is the precondition for `openFd().length` to be a valid
+   * size oracle — on compressed assets `openFd` throws `FileNotFoundException`.
+   *
+   * Path traversal is bounded statically: callers pass `"$BUNDLED_ASSET_SUBDIR/<known-file>"`,
+   * where the filename is a `Model` field that has already passed [AllowlistLoader]'s
+   * `MODEL_FILE_REGEX` gate (no `..`, no path separators).
+   */
+  private fun extractAssetIfStale(assets: AssetManager, assetPath: String, dst: File) {
+    val expectedSize = try {
+      assets.openFd(assetPath).use { it.length }
+    } catch (e: FileNotFoundException) {
+      // `openFd` throws on compressed assets too — re-raise with a clearer hint for the
+      // bench-day-2 reviewer than the framework's stock message.
+      throw IllegalStateException(
+        "bundled asset '$assetPath' is missing or compressed in APK — check `noCompress` in " +
+          "app/build.gradle.kts and the assets/ layout",
+        e,
+      )
+    }
+    if (dst.exists() && dst.length() == expectedSize) return
+    assets.open(assetPath).use { input ->
+      dst.outputStream().use { output ->
+        input.copyTo(output, bufferSize = EXTRACT_BUFFER_BYTES)
+      }
+    }
   }
 
   companion object {

@@ -373,6 +373,7 @@ private fun ModelCard(
                 downloadStatus = entry.downloadStatus,
                 gate = gate,
                 isEmbedder = isEmbedder,
+                isBundled = entry.model.bundled,
                 onDownload = onDownload,
                 onCancel = onCancel,
                 onLoad = onLoad,
@@ -387,6 +388,7 @@ private fun ModelStatusSection(
     downloadStatus: ModelDownloadStatus,
     gate: GateDecision,
     isEmbedder: Boolean,
+    isBundled: Boolean,
     onDownload: () -> Unit,
     onCancel: () -> Unit,
     onLoad: () -> Unit,
@@ -441,17 +443,34 @@ private fun ModelStatusSection(
             }
         }
         ModelDownloadStatusType.SUCCEEDED -> {
-            StatusBadge(text = stringResource(R.string.model_status_downloaded))
+            // Task 17: bundled embedder row replaces «Status: Downloaded» with «Bundled» —
+            // «Downloaded» would be a lie (the file was never downloaded) and obscures the
+            // build-time provenance the About-screen Licenses section commits us to surface.
+            if (isEmbedder && isBundled) {
+                StatusBadge(text = stringResource(R.string.model_manager_embedder_bundled))
+            } else {
+                StatusBadge(text = stringResource(R.string.model_status_downloaded))
+            }
             if (isEmbedder) {
-                // Embedder is consumed by ProjectDetail / project chat — there is no
-                // «Load into chat» flow. Disabled chip is decorative; tap is a no-op.
-                AssistChip(
-                    onClick = {},
-                    enabled = false,
-                    label = { Text(stringResource(R.string.model_manager_embedder_in_use)) },
-                )
-                Button(onClick = onDeleteEmbedder) {
-                    Text(stringResource(R.string.model_manager_embedder_delete_action))
+                if (isBundled) {
+                    // No delete action — the file is owned by the APK install, not by app data;
+                    // reclamation requires uninstall. Surfaced visually only.
+                    AssistChip(
+                        onClick = {},
+                        enabled = false,
+                        label = { Text(stringResource(R.string.model_manager_embedder_bundled)) },
+                    )
+                } else {
+                    // Downloadable embedder (legacy / future row) — disabled «in use» chip plus
+                    // a destructive delete that cascades through ModelRegistry.delete.
+                    AssistChip(
+                        onClick = {},
+                        enabled = false,
+                        label = { Text(stringResource(R.string.model_manager_embedder_in_use)) },
+                    )
+                    Button(onClick = onDeleteEmbedder) {
+                        Text(stringResource(R.string.model_manager_embedder_delete_action))
+                    }
                 }
             } else {
                 Button(onClick = onLoad) {

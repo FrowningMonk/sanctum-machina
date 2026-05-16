@@ -229,7 +229,13 @@
   <string name="project_detail_no_chats">No chats yet</string>
   <string name="project_detail_add_document_fab">Add documents</string>
   <string name="project_detail_new_chat_fab">New chat</string>
-  <string name="project_detail_embedder_not_downloaded_snackbar">Download the embedding model first</string>
+  <!-- Task 17: post-bundle the embedder cannot be "not downloaded" in steady state — the
+       allowlist row carries `bundled = true` and DefaultModelRegistry surfaces it as SUCCEEDED
+       immediately. The snackbar still appears in two race-window cases: (a) FAB tap during the
+       cold-start window before refreshAllowlist completes, (b) asset extraction failed and the
+       registry sits in Failed. Wording stays neutral and points to Model Manager, where the
+       user sees the bundled chip and can diagnose. -->
+  <string name="project_detail_embedder_not_downloaded_snackbar">Embedder is not ready</string>
   <string name="project_detail_embedder_not_downloaded_cta">Open Model Manager</string>
   <string name="project_detail_duplicate_document_toast">Document already in project</string>
   <string name="project_detail_import_failed_toast">Failed to import document</string>
@@ -274,6 +280,10 @@
        %1$s in `…_delete_body_with_projects` is a comma-separated list of project names. -->
   <string name="model_manager_embedder_subtitle">Embedder for RAG</string>
   <string name="model_manager_embedder_in_use">Used in projects</string>
+  <!-- Task 17: status label + AssistChip text for an embedder that ships inside the APK
+       (currently EmbeddingGemma; the HF blob is gated and runtime auth would violate the
+       «no API keys» manifest constraint). -->
+  <string name="model_manager_embedder_bundled">Bundled</string>
   <string name="model_manager_embedder_delete_action">Delete embedder</string>
   <string name="model_manager_embedder_delete_title">Delete embedder?</string>
   <string name="model_manager_embedder_delete_body_empty">The model file will be removed from this device.</string>

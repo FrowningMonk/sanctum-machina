@@ -662,6 +662,34 @@ class AllowlistLoaderTest {
   }
 
   @Test
+  fun bundled_flag_defaults_false_when_missing() {
+    // Regression guard: every pre-Task-17 row (`Gemma-4-E2B-it`, `Gemma-4-E4B-it`) omits
+    // `bundled`; the parser must default to `false`, otherwise DefaultModelRegistry would
+    // surface chat rows as SUCCEEDED on first emission and skip the download flow entirely.
+    val parsed = parseRaw(embeddingGemmaJson()).getOrThrow().single()
+    assertFalse("bundled must default to false when key absent", parsed.bundled)
+    assertFalse("bundled must propagate as false to domain Model", parsed.toModel().bundled)
+  }
+
+  @Test
+  fun bundled_true_propagates_through_toModel() {
+    // Task 17: EmbeddingGemma row carries `bundled: true`. AllowlistLoader must accept it
+    // without complaint and propagate the flag onto the domain `Model` so EmbedderRegistry
+    // can branch on it at warmup time.
+    val json = """{"models":[{"name":"EmbeddingGemma-300M",
+      "modelId":"litert-community/embeddinggemma-300m",
+      "modelFile":"embeddinggemma-300M_seq2048_mixed-precision.tflite",
+      "commitHash":"e054b9751a203d96508b87532585e20730f23ef6",
+      "sizeInBytes":205520896,"minDeviceMemoryInGb":4,
+      "bundled":true,
+      "taskTypes":["llm_embedding"],
+      "defaultRagConfig":{"chunkSize":800,"chunkOverlap":100,"topK":4,"embeddingDim":768}}]}"""
+    val parsed = parseRaw(json).getOrThrow().single()
+    assertTrue("AllowedModel.bundled must reflect JSON value", parsed.bundled)
+    assertTrue("Model.bundled must reflect JSON value", parsed.toModel().bundled)
+  }
+
+  @Test
   fun parses_real_bundled_allowlist_with_three_rows() {
     // Asserts the bundled prod asset (after adding EmbeddingGemma row in this task)
     // contains all three rows and they all parse — aggregate doesn't fail-fast.

@@ -144,10 +144,20 @@ constructor(
     _models.update { current ->
       val existing = current.associateBy { it.model.name }
       loaded.map { model ->
+        // Phase 4 Task 17: bundled rows are present in-APK by construction; surface them as
+        // SUCCEEDED on first emission so UI gates (Model Manager row, EmbedderRegistry warmup)
+        // do not have to special-case them downstream. `scanLocalFiles` skips bundled rows to
+        // preserve this status (the underlying file lives under cacheDir post-extraction, not
+        // under `Model.getPath()`'s externalFilesDir).
+        val initialStatus = if (model.bundled) {
+          ModelDownloadStatusType.SUCCEEDED
+        } else {
+          ModelDownloadStatusType.NOT_DOWNLOADED
+        }
         existing[model.name]?.copy(model = model)
           ?: ModelEntry(
             model = model,
-            downloadStatus = ModelDownloadStatus(status = ModelDownloadStatusType.NOT_DOWNLOADED),
+            downloadStatus = ModelDownloadStatus(status = initialStatus),
             initStatus = ModelInitStatus.Idle,
           )
       }
@@ -156,6 +166,14 @@ constructor(
   }
 
   override fun download(model: Model): Flow<ModelDownloadStatus> = callbackFlow {
+    // Phase 4 Task 17 defence-in-depth: bundled rows have no remote source. The UI hides the
+    // download button for them, but a programmatic call (test, deeplink, hostile JSON drift)
+    // must not enqueue a WorkManager job for a non-existent URL.
+    if (model.bundled) {
+      trySend(ModelDownloadStatus(status = ModelDownloadStatusType.SUCCEEDED))
+      awaitClose { }
+      return@callbackFlow
+    }
     downloadRepository.downloadModel(model) { _, status ->
       updateEntry(model.name) { it.copy(downloadStatus = status) }
       trySend(status)
@@ -175,6 +193,12 @@ constructor(
   override suspend fun delete(modelName: String) {
     lifecycleMutex.withLock {
       val entry = _models.value.find { it.model.name == modelName } ?: return@withLock
+      // Phase 4 Task 17: bundled assets are owned by the APK install, not by app data. There
+      // is no «delete» semantic — the user would have to uninstall to reclaim the space. The
+      // UI hides the delete button for bundled rows; this guard prevents a programmatic call
+      // (test, deeplink) from leaving the entry stuck at NOT_DOWNLOADED with the asset still
+      // present in cacheDir.
+      if (entry.model.bundled) return@withLock
       // Cancel any in-flight download first so the worker can't resurrect the file we're about
       // to delete (security-auditor-1 SM1).
       downloadRepository.cancelDownloadModel(entry.model)
@@ -399,6 +423,11 @@ constructor(
   private suspend fun scanLocalFiles() {
     val snapshot = _models.value
     snapshot.forEach { entry ->
+      // Phase 4 Task 17: bundled rows are already SUCCEEDED via [refreshAllowlist]; their on-disk
+      // presence lives under cacheDir (managed by [EmbedderRegistry.ensureBundledAssetsExtracted])
+      // rather than under [Model.getPath]'s externalFilesDir, so a presence check here would
+      // wrongly flip them back to NOT_DOWNLOADED on every cold start.
+      if (entry.model.bundled) return@forEach
       runCatching {
           val present = File(entry.model.getPath(context)).exists()
           if (present) {

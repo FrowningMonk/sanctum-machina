@@ -74,10 +74,11 @@
       "name": "EmbeddingGemma-300M",
       "modelId": "litert-community/embeddinggemma-300m",
       "modelFile": "embeddinggemma-300M_seq2048_mixed-precision.tflite",
-      "description": "Multilingual sentence-transformer encoder (300M params, Matryoshka 768/512/256/128). Used for RAG retrieval in Projects — encodes both ingest-time chunks and per-send queries. Runs on the LiteRT Interpreter runtime (separate from Gemma 4 chat models on litert-lm).",
-      "sizeInBytes": 205520896,
+      "description": "Multilingual sentence-transformer encoder (300M params, Matryoshka 768/512/256/128). Used for RAG retrieval in Projects — encodes both ingest-time chunks and per-send queries. Runs on the LiteRT Interpreter runtime (separate from Gemma 4 chat models on litert-lm). Bundled inside the APK assets (Task 17) — the Hugging Face blob is auth-gated and runtime auth would violate the manifest's «no API keys» constraint.",
+      "sizeInBytes": 195912440,
       "minDeviceMemoryInGb": 4,
       "commitHash": "e054b9751a203d96508b87532585e20730f23ef6",
+      "bundled": true,
       "taskTypes": [
         "llm_embedding"
       ],

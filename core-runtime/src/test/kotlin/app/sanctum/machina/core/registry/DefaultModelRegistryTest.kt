@@ -555,6 +555,58 @@ class DefaultModelRegistryTest {
     assertTrue("skip line must contain 'skipped': $line", line.contains("skipped"))
   }
 
+  // --- Phase 4 Task 17: bundled-row handling -------------------------------
+
+  @Test
+  fun refreshAllowlist_surfacesBundledRowAsSucceeded_andNonBundledAsNotDownloaded() = runBlocking {
+    // Real bundled allowlist drives the test: third row (`EmbeddingGemma-300M`) carries
+    // `bundled: true` since Task 17; the two Gemma 4 rows do not. The init-block scan runs
+    // refreshAllowlist on construction, so by the time `awaitEntry` returns the contract has
+    // already been enforced for every row.
+    val helper = QueuedLlmModelHelper(emptyList())
+    val registry = buildRegistry(helper, RecordingInitDiagnostics())
+    registry.awaitEntry(modelName) // Gemma 4 E2B — non-bundled
+    registry.awaitEntry("EmbeddingGemma-300M")
+
+    val entries = registry.models.value
+    val embedder = entries.single { it.model.name == "EmbeddingGemma-300M" }
+    val chatGemma = entries.single { it.model.name == modelName }
+
+    assertTrue("EmbeddingGemma row must carry bundled = true post-Task-17", embedder.model.bundled)
+    assertEquals(
+      "bundled row must be surfaced as SUCCEEDED so EmbedderRegistry's gate clears immediately",
+      app.sanctum.machina.core.data.ModelDownloadStatusType.SUCCEEDED,
+      embedder.downloadStatus.status,
+    )
+    assertFalse("Gemma 4 chat row must NOT be bundled", chatGemma.model.bundled)
+    assertEquals(
+      "non-bundled rows must start as NOT_DOWNLOADED — scan flips them to SUCCEEDED only when " +
+        "the file exists under getPath()",
+      app.sanctum.machina.core.data.ModelDownloadStatusType.NOT_DOWNLOADED,
+      chatGemma.downloadStatus.status,
+    )
+  }
+
+  @Test
+  fun delete_isNoOpForBundledRow() = runBlocking {
+    // Defence-in-depth: bundled assets live inside the APK install; the registry must refuse a
+    // delete request so the entry doesn't drift to NOT_DOWNLOADED while the cacheDir-extracted
+    // copy stays on disk. The UI hides the delete CTA for bundled rows, but a programmatic
+    // call (test, deeplink) must short-circuit.
+    val helper = QueuedLlmModelHelper(emptyList())
+    val registry = buildRegistry(helper, RecordingInitDiagnostics())
+    registry.awaitEntry("EmbeddingGemma-300M")
+
+    registry.delete("EmbeddingGemma-300M")
+
+    val entry = registry.models.value.single { it.model.name == "EmbeddingGemma-300M" }
+    assertEquals(
+      "bundled row must stay SUCCEEDED after a delete attempt",
+      app.sanctum.machina.core.data.ModelDownloadStatusType.SUCCEEDED,
+      entry.downloadStatus.status,
+    )
+  }
+
   // --- helpers ---------------------------------------------------------------
 
   /**

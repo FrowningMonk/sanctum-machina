@@ -103,6 +103,17 @@ data class Model(
   val accelerators: List<Accelerator> = listOf(),
   val visionAccelerator: Accelerator = Accelerator.GPU,
   val imported: Boolean = false,
+  /**
+   * Phase 4 Task 17: row ships inside the APK's assets/ rather than downloading from
+   * Hugging Face. Bundled rows skip the [DownloadRepository] path, are surfaced as
+   * `SUCCEEDED` immediately by [DefaultModelRegistry.refreshAllowlist], and are loaded
+   * by their owning runtime through asset-extraction (currently consumed only by
+   * [app.sanctum.machina.engine.EmbedderRegistry] for EmbeddingGemma). Semantically
+   * distinct from [imported] — `imported` means «user picked a .gguf via SAF», `bundled`
+   * means «we shipped this file inside the APK». Both opt out of the download flow but
+   * for different reasons.
+   */
+  val bundled: Boolean = false,
   var normalizedName: String = "",
   var instance: Any? = null,
   var initializing: Boolean = false,

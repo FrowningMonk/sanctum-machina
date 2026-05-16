@@ -24,6 +24,11 @@
 - [Gemma](https://ai.google.dev/gemma) — семейство моделей от Google.
 - [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) — рантайм для инференса на устройстве.
 
+## Лицензии
+
+- **EmbeddingGemma-300M** встроена в это приложение и распространяется на условиях [Gemma Terms of Use](https://ai.google.dev/gemma/terms).
+- **Gemma 4 E2B / E4B** — чат-модели, скачиваются пользователем с Hugging Face на тех же условиях [Gemma Terms of Use](https://ai.google.dev/gemma/terms).
+
 ## Обратная связь
 
 Проект развивается итеративно. Этот файл (`assets/about_ru.md`) редактируется напрямую — меняйте содержимое под свои нужды, пересобирайте APK, получаете обновлённый экран.

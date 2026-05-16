@@ -37,6 +37,12 @@ android {
 
     androidResources {
         localeFilters += listOf("en", "ru")
+        // Phase 4 Task 17: bundled EmbeddingGemma assets (.tflite + .model). Without `noCompress`,
+        // AGP would gzip them on package — saves install footprint, but the extractor in
+        // [EmbedderRegistry.ensureBundledAssetsExtracted] could not size-gate using
+        // `AssetManager.openFd().length` (openFd throws on compressed entries), and the run-time
+        // copy from APK to cacheDir would pay decompression cost on every cold install.
+        noCompress += listOf("tflite", "model")
     }
 
     compileOptions {

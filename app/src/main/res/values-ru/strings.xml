@@ -229,7 +229,8 @@
   <string name="project_detail_no_chats">Чатов пока нет</string>
   <string name="project_detail_add_document_fab">Добавить документы</string>
   <string name="project_detail_new_chat_fab">Новый чат</string>
-  <string name="project_detail_embedder_not_downloaded_snackbar">Загрузите модель эмбеддингов</string>
+  <!-- Task 17: см. EN-комментарий. -->
+  <string name="project_detail_embedder_not_downloaded_snackbar">Эмбеддер не готов</string>
   <string name="project_detail_embedder_not_downloaded_cta">Открыть Model Manager</string>
   <string name="project_detail_duplicate_document_toast">Документ уже в проекте</string>
   <string name="project_detail_import_failed_toast">Не удалось загрузить документ</string>
@@ -274,6 +275,8 @@
        %1$s in `…_delete_body_with_projects` is a comma-separated list of project names. -->
   <string name="model_manager_embedder_subtitle">Эмбеддер для RAG</string>
   <string name="model_manager_embedder_in_use">Используется в проектах</string>
+  <!-- Task 17. -->
+  <string name="model_manager_embedder_bundled">Встроено</string>
   <string name="model_manager_embedder_delete_action">Удалить эмбеддер</string>
   <string name="model_manager_embedder_delete_title">Удалить эмбеддер?</string>
   <string name="model_manager_embedder_delete_body_empty">Файл модели будет удалён с устройства.</string>

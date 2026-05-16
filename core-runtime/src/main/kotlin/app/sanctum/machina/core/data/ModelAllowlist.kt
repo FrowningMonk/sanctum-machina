@@ -64,6 +64,10 @@ data class AllowedModel(
   val bestForTaskTypes: List<String>? = null,
   // Phase 4 Task 1 (Decision 11): present only on embedder rows.
   val defaultRagConfig: AllowedRagConfig? = null,
+  // Phase 4 Task 17 (user-spec AC-9 option «в»): row ships inside the APK rather than
+  // downloading from Hugging Face. Today only set on the EmbeddingGemma row (HF blob is
+  // gated; embedding the auth token would violate the «no API keys» manifest constraint).
+  val bundled: Boolean = false,
 ) {
   fun toModel(): Model {
     val downloadUrl = "https://huggingface.co/$modelId/resolve/$commitHash/$modelFile?download=true"
@@ -131,6 +135,7 @@ data class AllowedModel(
       isLlm = isLlmModel,
       runtimeType = derivedRuntimeType,
       defaultRagConfig = ragDefaults,
+      bundled = bundled,
     )
   }
 

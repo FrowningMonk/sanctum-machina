@@ -42,6 +42,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -548,6 +549,64 @@ class EmbedderRegistryTest {
     )
     assertTrue(
       "tokenizerFile path must end with the SentencePiece tokenizer filename, got: ${tokenizerFile.absolutePath}",
+      tokenizerFile.absolutePath.endsWith("sentencepiece.model"),
+    )
+  }
+
+  // ---- Phase 4 Task 17: bundled-asset routing ----
+
+  @Test
+  fun resolveEngineFiles_routesBundledToCacheDirNotExternalFilesDir() = runRegistryTest {
+    // White-box check on the bundled vs downloadable split: bundled rows must hit
+    // `cacheDir/embedding/`, NOT `getExternalFilesDir()/<normalizedName>/<version>/`. Asserting
+    // the path prefix is enough — full extraction is exercised by the on-device user smoke
+    // (Task 16 § User-required verification) where the 196 MB asset actually ships.
+    val registry = newRegistry()
+    val bundled = embedderModel().copy(bundled = true)
+
+    val expectedPrefix = File(context.cacheDir, "embedding").absolutePath + File.separator
+
+    try {
+      val (modelFile, tokenizerFile) = registry.resolveEngineFiles(bundled)
+      assertTrue(
+        "bundled modelFile must live under cacheDir/embedding/, got ${modelFile.absolutePath}",
+        modelFile.absolutePath.startsWith(expectedPrefix),
+      )
+      assertTrue(
+        "bundled tokenizerFile must live under cacheDir/embedding/, got ${tokenizerFile.absolutePath}",
+        tokenizerFile.absolutePath.startsWith(expectedPrefix),
+      )
+    } catch (ise: IllegalStateException) {
+      // The Robolectric host classpath does not carry the 196 MB EmbeddingGemma asset by
+      // default — `openFd` then surfaces a wrapped FileNotFoundException with a clear hint
+      // about `noCompress` + assets layout. Either outcome proves the bundled branch was
+      // taken; the downloadable-branch failure mode would NOT mention `noCompress`.
+      assertTrue(
+        "bundled-branch failure must surface the noCompress hint, got: ${ise.message}",
+        ise.message.orEmpty().contains("noCompress"),
+      )
+    }
+  }
+
+  @Test
+  fun resolveEngineFiles_routesNonBundledToGetPath() = runRegistryTest {
+    // Regression guard: non-bundled embedder rows must continue to use Model.getPath() —
+    // pre-Task-17 download flow. The path string lives under externalFilesDir, not cacheDir.
+    val registry = newRegistry()
+    val downloadable = embedderModel() // bundled defaults to false
+    val (modelFile, tokenizerFile) = registry.resolveEngineFiles(downloadable)
+
+    val cacheDirPath = context.cacheDir.absolutePath + File.separator
+    assertFalse(
+      "non-bundled modelFile must NOT live under cacheDir, got ${modelFile.absolutePath}",
+      modelFile.absolutePath.startsWith(cacheDirPath),
+    )
+    assertTrue(
+      "non-bundled modelFile name must match the model's downloadFileName",
+      modelFile.absolutePath.endsWith("embeddinggemma-300M_seq2048_mixed-precision.tflite"),
+    )
+    assertTrue(
+      "non-bundled tokenizerFile name must default to sentencepiece.model",
       tokenizerFile.absolutePath.endsWith("sentencepiece.model"),
     )
   }
