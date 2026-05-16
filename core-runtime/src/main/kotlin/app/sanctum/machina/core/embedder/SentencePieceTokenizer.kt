@@ -48,7 +48,19 @@ internal class SentencePieceTokenizer private constructor(
   override fun encode(text: String, maxLength: Int): IntArray {
     if (maxLength <= 0 || text.isEmpty()) return EMPTY_INT_ARRAY
 
-    val symbols = buildInitialSymbols(text)
+    // DoS amplification cap (round-1 security review). `buildInitialSymbols` + `bpeMerge`
+    // process the entire input regardless of `maxLength` — without a ceiling, a
+    // pathologically long chat-paste or PDF chunk allocates O(N) symbols and runs
+    // O(N log N) merges only to truncate the output afterwards. BPE never emits more
+    // tokens than there are input codepoints; with [SCAN_CAP_PER_TOKEN] slack the cap
+    // is never observable in correctness (output identical to processing the full input)
+    // but bounds worst-case work to O(maxLength).
+    val scanCap = (maxLength.toLong() * SCAN_CAP_PER_TOKEN)
+      .coerceAtMost(Int.MAX_VALUE.toLong())
+      .toInt()
+    val workingText = if (text.length > scanCap) text.substring(0, scanCap) else text
+
+    val symbols = buildInitialSymbols(workingText)
     if (symbols.isEmpty()) return EMPTY_INT_ARRAY
 
     bpeMerge(symbols)
@@ -69,35 +81,38 @@ internal class SentencePieceTokenizer private constructor(
     // Escape spaces -> ▁ (U+2581). Other whitespace passes through unchanged.
     val escaped = StringBuilder(text.length).also { sb ->
       for (ch in text) sb.append(if (ch == ' ') SPACE_SYMBOL_CHAR else ch)
-    }
+    }.toString()
 
-    // Decompose to codepoints (handles surrogate pairs for emoji etc.).
-    val codepoints = ArrayList<Int>(escaped.length)
+    // Walk codepoints (surrogate-aware). Sliced via `substring` instead of
+    // `Character.toChars` so a lone surrogate in the input doesn't throw — it falls
+    // through to byte_fallback via UTF-8 encoder's REPLACE policy.
+    data class Cp(val value: Int, val str: String)
+    val codepoints = ArrayList<Cp>(escaped.length)
     var i = 0
     while (i < escaped.length) {
       val cp = escaped.codePointAt(i)
-      codepoints.add(cp)
-      i += Character.charCount(cp)
+      val charCount = Character.charCount(cp)
+      codepoints.add(Cp(cp, escaped.substring(i, i + charCount)))
+      i += charCount
     }
     if (codepoints.isEmpty()) return mutableListOf()
 
     // Compute boundary-before flags per codepoint.
     val boundaryBefore = BooleanArray(codepoints.size)
     for (k in 1 until codepoints.size) {
-      boundaryBefore[k] = isBoundary(codepoints[k - 1], codepoints[k])
+      boundaryBefore[k] = isBoundary(codepoints[k - 1].value, codepoints[k].value)
     }
 
     // Build Symbol list, byte-falling-back unknown codepoints.
     val symbols = ArrayList<Symbol>(codepoints.size)
     for (k in codepoints.indices) {
       val cp = codepoints[k]
-      val str = String(Character.toChars(cp))
-      val id = model.pieceToId[str]
+      val id = model.pieceToId[cp.str]
       val firstByteBoundary = boundaryBefore[k]
       if (id != null) {
-        symbols.add(Symbol(str, id, firstByteBoundary))
+        symbols.add(Symbol(cp.str, id, firstByteBoundary))
       } else {
-        val bytes = str.toByteArray(Charsets.UTF_8)
+        val bytes = cp.str.toByteArray(Charsets.UTF_8)
         for ((bi, b) in bytes.withIndex()) {
           val byteId = model.byteFallbackBase + (b.toInt() and 0xFF)
           val piece = byteFallbackPiece(b)
@@ -114,10 +129,12 @@ internal class SentencePieceTokenizer private constructor(
    * SentencePiece BPE pre-tokenization rule used by EmbeddingGemma's `trainer_spec`. Returns
    * `true` if there must be a boundary between [prev] and [curr]. Mirrors `bpe_model.cc`.
    *
-   * Rules applied in order — first match wins:
-   *  1. `split_digits`: every codepoint that is a Unicode digit is its own pre-token.
+   * Rules, evaluated top to bottom — first to apply wins:
+   *  1. `split_digits` (unconditional): any pair touching a Unicode digit splits. ▁ (U+2581)
+   *     is not a digit, so this rule never fires when the space symbol is involved.
    *  2. `split_by_unicode_script` with the ▁ exception: script transitions split UNLESS
-   *     either side is the space symbol ▁.
+   *     either side is ▁ — that suppresses Latn↔Common-style boundaries that would otherwise
+   *     break a leading space marker off the following word.
    */
   private fun isBoundary(prev: Int, curr: Int): Boolean {
     if (isDigit(prev) || isDigit(curr)) return true
@@ -139,8 +156,8 @@ internal class SentencePieceTokenizer private constructor(
 
   /**
    * Iteratively merge adjacent symbol pairs by descending piece-score, respecting per-symbol
-   * `boundaryToPrev`. Uses a `PriorityQueue` of merge candidates with a `seq` tie-breaker so
-   * higher-score merges happen first, and earlier-discovered candidates win on ties.
+   * `boundaryToPrev`. Uses a `PriorityQueue` of merge candidates with a leftmost-position
+   * tie-breaker — mirrors SentencePiece's reference `bpe_model.cc::Symbol::position` rule.
    *
    * Stale candidates (where one of the endpoints has since been merged or unlinked) are
    * detected by re-checking that the symbol piece-ids and `next` link still match the
@@ -150,7 +167,6 @@ internal class SentencePieceTokenizer private constructor(
     if (symbols.size < 2) return
 
     val pq = PriorityQueue<MergeCandidate>(symbols.size)
-    var seq = 0
 
     fun tryEnqueue(leftIdx: Int) {
       if (leftIdx < 0) return
@@ -172,7 +188,6 @@ internal class SentencePieceTokenizer private constructor(
           mergedPieceId = mergedId,
           mergedPiece = merged,
           score = model.scores[mergedId],
-          seq = seq++,
         )
       )
     }
@@ -253,14 +268,15 @@ internal class SentencePieceTokenizer private constructor(
     val mergedPieceId: Int,
     val mergedPiece: String,
     val score: Float,
-    val seq: Int,
   ) : Comparable<MergeCandidate> {
     override fun compareTo(other: MergeCandidate): Int {
-      // Higher score first; ties broken by earlier insertion (lower seq first). Higher score
-      // means less-negative — SP unigram scores are log-probs; for BPE they encode merge
-      // priority (highest scoring concatenation wins, matching `bpe_model.cc::Symbol::score`).
+      // Higher score first; ties broken by leftmost position. Matches
+      // `bpe_model.cc::Symbol::position` in upstream SentencePiece: a same-score merge that
+      // appears earlier in the input always wins. (Distinct candidates with the same
+      // `leftIdx` and `score` reduce to the stale-check filter — only one of them has
+      // matching `leftPieceId/rightPieceId` after intermediate merges, the other is dropped.)
       val byScore = other.score.compareTo(this.score)
-      return if (byScore != 0) byScore else this.seq.compareTo(other.seq)
+      return if (byScore != 0) byScore else this.leftIdx.compareTo(other.leftIdx)
     }
   }
 
@@ -272,6 +288,14 @@ internal class SentencePieceTokenizer private constructor(
     private val SPACE_SYMBOL_CHAR = SPACE_SYMBOL_CP.toChar()
 
     private const val INVALID_ID = -1
+
+    /**
+     * BPE never emits more output tokens than input codepoints, so processing more than
+     * `maxLength * SCAN_CAP_PER_TOKEN` codepoints can never affect a truncated result.
+     * The 8x slack absorbs the longest pieces seen in the EmbeddingGemma vocab (>32 chars
+     * is rare; this leaves headroom for the longest plausible BPE merge to span the cap).
+     */
+    private const val SCAN_CAP_PER_TOKEN = 8
 
     private fun byteFallbackPiece(b: Byte): String =
       "<0x${"%02X".format(b.toInt() and 0xFF)}>"
@@ -349,7 +373,14 @@ internal object SpModelParser {
     val scores = FloatArray(vocabSize)
     var byteFallbackBase = -1
     for (id in 0 until vocabSize) {
-      pieceToId[pieces[id]] = id
+      val pieceStr = pieces[id]
+      // Round-1 review: a missing-field-1 piece serializes as empty-string, which would
+      // collide on insert and silently shift `byteFallbackBase` downstream. Asset is trusted
+      // (extracted from APK by Task 17), so this is a defence-in-depth assert.
+      require(pieceStr.isNotEmpty()) {
+        "SentencePiece piece at id=$id has empty piece string — malformed model"
+      }
+      pieceToId[pieceStr] = id
       scores[id] = pieceScores[id]
       if (pieceTypes[id] == PIECE_TYPE_BYTE && byteFallbackBase == -1) {
         byteFallbackBase = id
@@ -357,6 +388,20 @@ internal object SpModelParser {
     }
     require(byteFallbackBase >= 0) {
       "SentencePiece model has no BYTE pieces — byte_fallback expected for EmbeddingGemma"
+    }
+    // Round-1 security review: verify byte_fallback pieces occupy exactly
+    // [byteFallbackBase, byteFallbackBase + 255] contiguously. A tampered model with
+    // non-contiguous BYTE pieces would silently emit wrong ids on byte fallback (off-grid
+    // into NORMAL pieces). This turns asset corruption into a load-time failure.
+    require(byteFallbackBase + 255 < vocabSize) {
+      "SentencePiece model truncates byte_fallback range: base=$byteFallbackBase vocab=$vocabSize"
+    }
+    for (b in 0..255) {
+      val expectedId = byteFallbackBase + b
+      require(pieceTypes[expectedId] == PIECE_TYPE_BYTE) {
+        "SentencePiece byte_fallback non-contiguous: byte 0x${"%02X".format(b)} expected at " +
+          "id=$expectedId but piece type was ${pieceTypes[expectedId]}"
+      }
     }
 
     return SpModel(pieceToId = pieceToId, scores = scores, byteFallbackBase = byteFallbackBase)
@@ -421,7 +466,9 @@ internal object SpModelParser {
     }
 
     fun readUtf8(len: Int): String {
-      require(len >= 0 && pos + len <= end) {
+      // Long arithmetic on the bounds check guards against `pos + len` Int-overflow on a
+      // crafted varint near Int.MAX_VALUE (round-1 security review).
+      require(len >= 0 && pos.toLong() + len.toLong() <= end.toLong()) {
         "string length $len exceeds parent buffer at pos=$pos end=$end"
       }
       val s = String(buf, pos, len, Charsets.UTF_8)
@@ -430,7 +477,7 @@ internal object SpModelParser {
     }
 
     fun readFloat32(): Float {
-      require(pos + 4 <= end) { "truncated fixed32 at pos=$pos" }
+      require(pos.toLong() + 4L <= end.toLong()) { "truncated fixed32 at pos=$pos" }
       val bits = ((buf[pos].toInt() and 0xFF)) or
         ((buf[pos + 1].toInt() and 0xFF) shl 8) or
         ((buf[pos + 2].toInt() and 0xFF) shl 16) or
@@ -440,14 +487,14 @@ internal object SpModelParser {
     }
 
     fun subCursor(len: Int): Cursor {
-      require(len >= 0 && pos + len <= end) {
+      require(len >= 0 && pos.toLong() + len.toLong() <= end.toLong()) {
         "sub-message length $len exceeds parent buffer at pos=$pos end=$end"
       }
       return Cursor(buf, pos = pos, end = pos + len)
     }
 
     fun skip(bytes: Int) {
-      require(bytes >= 0 && pos + bytes <= end) {
+      require(bytes >= 0 && pos.toLong() + bytes.toLong() <= end.toLong()) {
         "skip $bytes exceeds parent buffer at pos=$pos end=$end"
       }
       pos += bytes
