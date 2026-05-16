@@ -173,8 +173,51 @@ class ProjectEmbeddingDaoTest {
         // a_doc.pdf rows come first (file_name ASC); within a file, ids are monotonic.
         assertEquals(listOf("a1", "a2", "a3", "b1", "b2", "b3"), rows.map { it.chunkText })
         assertEquals(listOf("a_doc.pdf", "a_doc.pdf", "a_doc.pdf", "b_doc.pdf", "b_doc.pdf", "b_doc.pdf"), rows.map { it.fileName })
+        // Round-1 test-reviewer minor: pin the `page` column too — a broken alias on
+        // `pe.page AS page` would slip past chunkText/fileName-only assertions.
+        assertEquals(listOf(1, 2, 3, 1, 2, 3), rows.map { it.page })
         val aIds = rows.filter { it.fileName == "a_doc.pdf" }.map { it.id }
         assertEquals("per-file id ordering must be ascending", aIds.sorted(), aIds)
+    }
+
+    @Test
+    fun chunksByProject_excludesOtherProjects() = runBlocking {
+        // Round-1 test-reviewer minor: pin the `WHERE pe.project_id = :projectId` clause.
+        // Without this test, dropping the filter would silently leak cross-project rows.
+        val ownFile = insertFile("h-own", fileName = "own.pdf")
+        dao.insertAll(listOf(embedding(ownFile, chunkText = "own")))
+
+        val otherProjectId = projectDao.insert(ProjectEntity(name = "other", createdAt = 2L))
+        val otherFile = fileDao.insert(
+            ProjectFileEntity(
+                projectId = otherProjectId,
+                fileName = "other.pdf",
+                relativePath = "projects/$otherProjectId/docs/other.pdf",
+                contentHash = "h-other",
+                status = "ready",
+                createdAt = 2L,
+            )
+        )
+        dao.insertAll(
+            listOf(
+                ProjectEmbeddingEntity(
+                    projectId = otherProjectId,
+                    fileId = otherFile,
+                    page = 1,
+                    chunkText = "leak-marker",
+                    embeddingBlob = byteArrayOf(0),
+                )
+            )
+        )
+
+        val rows = dao.chunksByProject(projectId)
+
+        assertEquals(1, rows.size)
+        assertEquals("own", rows.single().chunkText)
+        assertTrue(
+            "cross-project leak detected",
+            rows.none { it.chunkText == "leak-marker" },
+        )
     }
 
     @Test

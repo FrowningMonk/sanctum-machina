@@ -68,8 +68,8 @@ import kotlinx.coroutines.launch
  *  - No `animateContentSize` / item animations — `LazyColumn` with 500+ items needs to
  *    scroll cleanly on Honor 200 and recompositions cost more than the visual win.
  *  - `chunk_text` is untrusted PDF-derived content; we route it through a plain `Text`
- *    composable, never markdown / HTML renderers (consistent with the citation modal,
- *    see strings.xml:305-308).
+ *    composable, never markdown / HTML renderers (consistent with the `citation_modal_*`
+ *    string block in strings.xml, established in Phase 4 Task 12 / `CitationModal.kt`).
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable

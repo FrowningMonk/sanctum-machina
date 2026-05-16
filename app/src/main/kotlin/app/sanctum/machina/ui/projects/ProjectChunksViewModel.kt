@@ -60,8 +60,11 @@ internal constructor(
     init { reload() }
 
     fun reload() {
+        // Flip to Loading synchronously so the spinner is observable the moment the user
+        // triggers a refresh — without this, the state stays on the previous Loaded snapshot
+        // until the coroutine actually resumes on Dispatchers.Main.
+        _state.value = ChunksUiState.Loading
         viewModelScope.launch {
-            _state.value = ChunksUiState.Loading
             val rows = withContext(ioDispatcher) { embeddingDao.chunksByProject(projectId) }
             _state.value = if (rows.isEmpty()) {
                 ChunksUiState.Empty
