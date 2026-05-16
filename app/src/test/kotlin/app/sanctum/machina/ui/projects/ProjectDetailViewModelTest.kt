@@ -14,11 +14,16 @@ import android.content.Context
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import app.sanctum.machina.core.log.ErrorLog
+import app.sanctum.machina.data.ChatRepository
+import app.sanctum.machina.data.PersistedAttachment
 import app.sanctum.machina.data.ProjectRepository
 import app.sanctum.machina.data.RagConfig
 import app.sanctum.machina.data.dao.ProjectFileDao
+import app.sanctum.machina.data.model.ChatEntity
+import app.sanctum.machina.data.model.MessageEntity
 import app.sanctum.machina.data.model.ProjectEntity
 import app.sanctum.machina.data.model.ProjectFileEntity
+import app.sanctum.machina.ui.chat.Attachment
 import app.sanctum.machina.engine.EmbedderGate
 import app.sanctum.machina.engine.EmbedderState
 import java.io.File
@@ -65,6 +70,7 @@ class ProjectDetailViewModelTest {
   private lateinit var fakeFilesDir: File
   private lateinit var repo: DetailFakeProjectRepository
   private lateinit var fileDao: DetailFakeProjectFileDao
+  private lateinit var chatRepository: DetailFakeChatRepository
   private lateinit var embedderGate: DetailFakeEmbedderGate
   private lateinit var errorLog: ErrorLog
 
@@ -75,6 +81,7 @@ class ProjectDetailViewModelTest {
     fakeFilesDir = context.filesDir
     fileDao = DetailFakeProjectFileDao()
     repo = DetailFakeProjectRepository(fileDao)
+    chatRepository = DetailFakeChatRepository()
     embedderGate = DetailFakeEmbedderGate()
     errorLog = ErrorLog(context)
     // Clean any prior run's project dirs to avoid cross-test pollution.
@@ -111,6 +118,49 @@ class ProjectDetailViewModelTest {
     val vm = newViewModel(warmupOnInit = true)
     advanceUntilIdle()
     assertEquals(1, embedderGate.warmupCalls)
+  }
+
+  // ---- Project chats projection (Task 19 follow-up) ----
+
+  @Test
+  fun chats_filtersByProjectId_andSortsByLastMessageAtDesc() = runTest {
+    // Bug fix: ProjectDetailScreen showed «Чатов пока нет» even when chats existed,
+    // because the chats list was never wired (Task 9 stub). VM now filters
+    // `observeChats()` by projectId and sorts by `lastMessageAt DESC`.
+    val mine1 = chatEntity(id = 1L, projectId = PROJECT_ID, lastMessageAt = 100L, title = "old")
+    val mine2 = chatEntity(id = 2L, projectId = PROJECT_ID, lastMessageAt = 300L, title = "newest")
+    val mine3 = chatEntity(id = 3L, projectId = PROJECT_ID, lastMessageAt = 200L, title = "middle")
+    val foreign = chatEntity(id = 4L, projectId = 999L, lastMessageAt = 500L, title = "other-project")
+    val nonProject = chatEntity(id = 5L, projectId = null, lastMessageAt = 600L, title = "drawer-plain")
+    chatRepository.emit(listOf(mine1, foreign, mine3, nonProject, mine2))
+
+    val vm = newViewModel()
+    backgroundScope.launch { vm.chats.collect {} }
+    advanceUntilIdle()
+
+    assertEquals(
+      "only chats with projectId == this projectId, sorted by lastMessageAt DESC",
+      listOf(2L, 3L, 1L),
+      vm.chats.value.map { it.id },
+    )
+  }
+
+  @Test
+  fun chats_emitsUpdate_whenObserveChatsEmitsNewRow() = runTest {
+    // After commitDraft, the drawer flow re-emits with the new project-chat row;
+    // VM's `chats` StateFlow must propagate that update so the screen flips from
+    // empty-state to the chat list without a manual refresh.
+    val vm = newViewModel()
+    backgroundScope.launch { vm.chats.collect {} }
+    advanceUntilIdle()
+    assertTrue("initially empty", vm.chats.value.isEmpty())
+
+    chatRepository.emit(
+      listOf(chatEntity(id = 7L, projectId = PROJECT_ID, lastMessageAt = 1L, title = "fresh"))
+    )
+    advanceUntilIdle()
+
+    assertEquals(listOf(7L), vm.chats.value.map { it.id })
   }
 
   @Test
@@ -388,6 +438,7 @@ class ProjectDetailViewModelTest {
       projectId = PROJECT_ID,
       projectRepository = repo,
       projectFileDao = fileDao,
+      chatRepository = chatRepository,
       embedderGate = embedderGate,
       errorLog = errorLog,
       context = context,
@@ -408,6 +459,21 @@ class ProjectDetailViewModelTest {
       chunkCount = null,
       createdAt = id,
     )
+
+  private fun chatEntity(
+    id: Long,
+    projectId: Long?,
+    lastMessageAt: Long,
+    title: String,
+  ): ChatEntity = ChatEntity(
+    id = id,
+    projectId = projectId,
+    modelId = "m/x",
+    title = title,
+    isManuallyTitled = 0,
+    createdAt = 0L,
+    lastMessageAt = lastMessageAt,
+  )
 
   private fun writeFileUri(file: File, bytes: ByteArray): Uri {
     file.writeBytes(bytes)
@@ -552,6 +618,51 @@ private class DetailFakeProjectFileDao : ProjectFileDao {
 
   override suspend fun findAllByProject(projectId: Long): List<ProjectFileEntity> =
     byHash.values.filter { it.projectId == projectId }
+}
+
+private class DetailFakeChatRepository : ChatRepository {
+  private val chatsFlow = MutableStateFlow<List<ChatEntity>>(emptyList())
+
+  fun emit(rows: List<ChatEntity>) { chatsFlow.value = rows }
+
+  override fun observeChats(): Flow<List<ChatEntity>> = chatsFlow.asStateFlow()
+
+  // ---- unused (returns defaults) ----
+  override suspend fun commitDraftChat(
+    modelId: String,
+    firstMessage: MessageEntity,
+    stagingDir: File?,
+    filesDir: File,
+    stagedImageFilename: String?,
+    stagedAudioFilename: String?,
+    projectId: Long?,
+  ): Long = 0L
+  override suspend fun writeAttachmentStaging(
+    stagingDir: File,
+    filesDir: File,
+    attachment: Attachment,
+  ): String = ""
+  override suspend fun deleteStagedAttachment(
+    stagingDir: File,
+    filesDir: File,
+    filename: String,
+  ) = Unit
+  override suspend fun pruneStagingDir(
+    stagingDir: File,
+    filesDir: File,
+    retain: Set<String>,
+  ) = Unit
+  override suspend fun savePersistentAttachment(
+    chatId: Long,
+    filesDir: File,
+    attachment: Attachment,
+  ): PersistedAttachment = PersistedAttachment()
+  override suspend fun savePersistentMessage(message: MessageEntity) = Unit
+  override suspend fun updateChatLastMessage(chatId: Long, timestampMs: Long) = Unit
+  override suspend fun updateChatTitle(chatId: Long, title: String, isManuallyTitled: Boolean) = Unit
+  override suspend fun deleteChat(chatId: Long, filesDir: File) = Unit
+  override fun observeMessages(chatId: Long): Flow<List<MessageEntity>> = emptyFlow()
+  override suspend fun sweepZombieChats(filesDir: File) = Unit
 }
 
 private class DetailFakeEmbedderGate : EmbedderGate {

@@ -13,6 +13,7 @@ package app.sanctum.machina.ui.projects
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.AlertDialog
@@ -60,6 +62,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.sanctum.machina.R
+import app.sanctum.machina.data.model.ChatEntity
 import app.sanctum.machina.data.model.ProjectFileEntity
 
 /**
@@ -86,6 +89,7 @@ fun ProjectDetailScreen(
 ) {
   val project by viewModel.project.collectAsState()
   val files by viewModel.files.collectAsState()
+  val chats by viewModel.chats.collectAsState()
   val fabEnabled by viewModel.fabEnabled.collectAsState()
   val failedBanner by viewModel.failedDocsBanner.collectAsState()
 
@@ -183,15 +187,18 @@ fun ProjectDetailScreen(
       }
 
       item { SectionHeader(text = stringResource(R.string.project_detail_chats_section)) }
-      item {
-        // Chats list is wired in Task 11 (project-scoped chats projection). For T9 we render
-        // an empty-state placeholder so the section is structurally present and the "+ Новый
-        // чат" FAB is reachable.
-        Text(
-          text = stringResource(R.string.project_detail_no_chats),
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-          modifier = Modifier.padding(vertical = 4.dp),
-        )
+      if (chats.isEmpty()) {
+        item {
+          Text(
+            text = stringResource(R.string.project_detail_no_chats),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(vertical = 4.dp),
+          )
+        }
+      } else {
+        items(chats, key = { it.id }) { chat ->
+          ProjectChatRow(chat = chat, onClick = { onOpenChat(chat.id) })
+        }
       }
       item {
         ExtendedFloatingActionButton(
@@ -363,6 +370,34 @@ private fun DocumentRow(
         )
       }
     }
+  }
+}
+
+@Composable
+private fun ProjectChatRow(chat: ChatEntity, onClick: () -> Unit) {
+  // Minimal row — title + last-message timestamp delegated to the chat detail screen.
+  // No overflow menu here: delete from inside the chat or via the drawer (matches the
+  // documents-list / drawer split of responsibilities).
+  val title = chat.title?.takeIf { it.isNotBlank() }
+    ?: stringResource(R.string.drawer_untitled_chat)
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .clickable(onClick = onClick)
+      .padding(vertical = 8.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(10.dp),
+  ) {
+    Icon(
+      imageVector = Icons.Outlined.ChatBubbleOutline,
+      contentDescription = null,
+      modifier = Modifier.size(20.dp),
+    )
+    Text(
+      text = title,
+      style = MaterialTheme.typography.bodyMedium,
+      modifier = Modifier.weight(1f),
+    )
   }
 }
 

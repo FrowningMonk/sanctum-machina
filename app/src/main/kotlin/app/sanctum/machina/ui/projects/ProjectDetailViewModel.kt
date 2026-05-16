@@ -17,8 +17,10 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.sanctum.machina.core.log.ErrorLog
+import app.sanctum.machina.data.ChatRepository
 import app.sanctum.machina.data.ProjectRepository
 import app.sanctum.machina.data.dao.ProjectFileDao
+import app.sanctum.machina.data.model.ChatEntity
 import app.sanctum.machina.data.model.ProjectEntity
 import app.sanctum.machina.data.model.ProjectFileEntity
 import app.sanctum.machina.engine.EmbedderGate
@@ -112,6 +114,7 @@ internal constructor(
   private val projectId: Long,
   private val projectRepository: ProjectRepository,
   private val projectFileDao: ProjectFileDao,
+  private val chatRepository: ChatRepository,
   private val embedderGate: EmbedderGate,
   private val errorLog: ErrorLog,
   private val context: Context,
@@ -124,6 +127,7 @@ internal constructor(
     savedStateHandle: SavedStateHandle,
     projectRepository: ProjectRepository,
     projectFileDao: ProjectFileDao,
+    chatRepository: ChatRepository,
     embedderGate: EmbedderGate,
     errorLog: ErrorLog,
     @ApplicationContext context: Context,
@@ -133,6 +137,7 @@ internal constructor(
     },
     projectRepository = projectRepository,
     projectFileDao = projectFileDao,
+    chatRepository = chatRepository,
     embedderGate = embedderGate,
     errorLog = errorLog,
     context = context,
@@ -156,6 +161,24 @@ internal constructor(
 
   /** Files in this project, ordered by `created_at ASC` (Room-side). */
   val files: StateFlow<List<ProjectFileEntity>> = projectRepository.observeFiles(projectId)
+    .stateIn(
+      scope = viewModelScope,
+      started = SharingStarted.WhileSubscribed(5_000L),
+      initialValue = emptyList(),
+    )
+
+  /**
+   * Phase 4 Task 19 follow-up — chats belonging to this project, sorted by
+   * `last_message_at DESC`. The DAO exposes only an `observeAll()` snapshot
+   * (drawer already filters client-side, see `DrawerViewModel.buildProjectGroups`),
+   * so this VM reuses the same approach: cheap in-memory `filter` on a stream
+   * the drawer is already collecting, no new query / no schema change.
+   * Adding a `chatRepository.observeChatsByProjectId(...)` is a worthwhile
+   * follow-up if the chat-row count per project grows past ~100, but for the
+   * Phase-4 MVP corpus the linear scan is negligible.
+   */
+  val chats: StateFlow<List<ChatEntity>> = chatRepository.observeChats()
+    .map { all -> all.filter { it.projectId == projectId }.sortedByDescending { it.lastMessageAt } }
     .stateIn(
       scope = viewModelScope,
       started = SharingStarted.WhileSubscribed(5_000L),
