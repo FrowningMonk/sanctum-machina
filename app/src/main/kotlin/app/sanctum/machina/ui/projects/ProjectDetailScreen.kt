@@ -40,6 +40,7 @@ import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -60,6 +61,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.annotation.VisibleForTesting
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.sanctum.machina.R
 import app.sanctum.machina.data.model.ChatEntity
@@ -333,42 +335,53 @@ private fun DocumentRow(
   onDelete: () -> Unit,
 ) {
   var menuExpanded by remember { mutableStateOf(false) }
-  Row(
-    modifier = Modifier
-      .fillMaxWidth()
-      .padding(vertical = 4.dp),
-    verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(8.dp),
-  ) {
-    Icon(
-      imageVector = Icons.Outlined.Description,
-      contentDescription = null,
-      modifier = Modifier.size(20.dp),
-    )
-    Column(modifier = Modifier.weight(1f)) {
-      Text(file.fileName, style = MaterialTheme.typography.bodyMedium)
-      StatusChip(file = file)
+  Column(modifier = Modifier.fillMaxWidth()) {
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(vertical = 4.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      Icon(
+        imageVector = Icons.Outlined.Description,
+        contentDescription = null,
+        modifier = Modifier.size(20.dp),
+      )
+      Column(modifier = Modifier.weight(1f)) {
+        Text(file.fileName, style = MaterialTheme.typography.bodyMedium)
+        StatusChip(file = file)
+      }
+      Box {
+        IconButton(onClick = { menuExpanded = true }) {
+          Icon(Icons.Outlined.MoreVert, contentDescription = null)
+        }
+        DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+          DropdownMenuItem(
+            text = { Text(stringResource(R.string.project_detail_file_overflow_reindex)) },
+            onClick = {
+              menuExpanded = false
+              onReindex()
+            },
+          )
+          DropdownMenuItem(
+            text = { Text(stringResource(R.string.project_detail_file_overflow_delete)) },
+            onClick = {
+              menuExpanded = false
+              onDelete()
+            },
+          )
+        }
+      }
     }
-    Box {
-      IconButton(onClick = { menuExpanded = true }) {
-        Icon(Icons.Outlined.MoreVert, contentDescription = null)
-      }
-      DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-        DropdownMenuItem(
-          text = { Text(stringResource(R.string.project_detail_file_overflow_reindex)) },
-          onClick = {
-            menuExpanded = false
-            onReindex()
-          },
-        )
-        DropdownMenuItem(
-          text = { Text(stringResource(R.string.project_detail_file_overflow_delete)) },
-          onClick = {
-            menuExpanded = false
-            onDelete()
-          },
-        )
-      }
+    if (file.status == PROJECT_FILE_STATUS_INDEXING) {
+      // Indeterminate — pdfbox extract has no known total before completion. The chip carries
+      // the discrete page/chunk counters; this bar is the «process is alive» signal.
+      LinearProgressIndicator(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(top = 2.dp),
+      )
     }
   }
 }
@@ -401,18 +414,20 @@ private fun ProjectChatRow(chat: ChatEntity, onClick: () -> Unit) {
   }
 }
 
+@VisibleForTesting
 @Composable
-private fun StatusChip(file: ProjectFileEntity) {
-  // While IngestWorker updates `chunk_count` mid-run, there is no companion `total_chunks`
-  // column yet — so the chip shows the running count alone (not N/M). Code-reviewer round-1
-  // major: the previous formatter rendered «N / N» which read as «complete» before completion.
-  // TODO(post-T9): add `total_chunks` column + matching migration; restore the two-int format.
+internal fun StatusChip(file: ProjectFileEntity) {
   val (label, color) = when (file.status) {
     PROJECT_FILE_STATUS_READY ->
       stringResource(R.string.project_file_status_ready) to MaterialTheme.colorScheme.primary
-    PROJECT_FILE_STATUS_INDEXING ->
-      stringResource(R.string.project_file_status_indexing_simple, file.chunkCount ?: 0) to
-        MaterialTheme.colorScheme.tertiary
+    PROJECT_FILE_STATUS_INDEXING -> {
+      // Task 23: prefer the live «стр. N · M чанков» string the IngestWorker writes into
+      // status_message; fall back to the chunk-only legacy string for rows still in the
+      // queue before the first page lands or for older snapshots without a message.
+      val text = file.statusMessage
+        ?: stringResource(R.string.project_file_status_indexing_simple, file.chunkCount ?: 0)
+      text to MaterialTheme.colorScheme.tertiary
+    }
     PROJECT_FILE_STATUS_FAILED ->
       stringResource(R.string.project_file_status_failed) to MaterialTheme.colorScheme.error
     else ->

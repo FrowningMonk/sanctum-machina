@@ -207,6 +207,23 @@ class IngestWorker(context: Context, params: WorkerParameters) :
     // the next. Decision 5 / Architecture: encode in batches of N=8.
     val chunkBuffer = ArrayList<Pair<Int, String>>(ENCODE_BATCH_SIZE) // page -> chunkText
 
+    // Task 23: write a live "стр. N · M чанков" string into `project_files.status_message`
+    // after each page and each flushBuffer so the UI chip ticks in real time. We use the
+    // resource string so locale honors the user's app language.
+    suspend fun persistProgress() {
+      deps.projectFileDao().update(
+        rowSnapshot.copy(
+          status = STATUS_INDEXING,
+          statusMessage = applicationContext.getString(
+            R.string.project_file_status_indexing_progress,
+            totalPages,
+            totalChunks,
+          ),
+          chunkCount = totalChunks,
+        ),
+      )
+    }
+
     suspend fun flushBuffer() {
       if (chunkBuffer.isEmpty()) return
       // Re-check isStopped right before paying for an encode call — pdfbox extraction loop
@@ -231,6 +248,7 @@ class IngestWorker(context: Context, params: WorkerParameters) :
       deps.projectEmbeddingDao().insertAll(rows)
       totalChunks += rows.size
       chunkBuffer.clear()
+      persistProgress()
     }
 
     extractor.extract(pdfFile).collect { page: PageText ->
@@ -260,6 +278,9 @@ class IngestWorker(context: Context, params: WorkerParameters) :
           KEY_PROGRESS_CHUNKS to totalChunks,
         ),
       )
+      // Persist progress per-page too: an empty page (or a page with chunks that didn't fill
+      // the encode batch) still ticks the page counter in the DB-driven UI chip.
+      persistProgress()
     }
     flushBuffer()
 

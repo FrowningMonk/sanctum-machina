@@ -256,6 +256,7 @@
   <string name="project_file_status_pending">Pending</string>
   <string name="project_file_status_indexing">Indexing %1$d / %2$d</string>
   <string name="project_file_status_indexing_simple">Indexing (%1$d chunks)</string>
+  <string name="project_file_status_indexing_progress">Indexing · p. %1$d · %2$d chunks</string>
   <string name="project_file_status_ready">Ready</string>
   <string name="project_file_status_failed">Failed</string>
 

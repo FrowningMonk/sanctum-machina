@@ -128,4 +128,8 @@ dependencies {
     androidTestImplementation(libs.room.testing)
     // Phase 4 Task 7: WorkManagerTestInitHelper + SynchronousExecutor for IngestWorkerTest.
     androidTestImplementation(libs.androidx.work.testing)
+    // Phase 4 Task 23: Compose UI tests for ProjectDetailScreen StatusChip.
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
 }

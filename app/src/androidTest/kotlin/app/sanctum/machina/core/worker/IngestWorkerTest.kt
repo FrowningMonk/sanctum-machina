@@ -304,6 +304,96 @@ class IngestWorkerTest {
     )
   }
 
+  /**
+   * Task 23: live progress chip. The worker must rewrite `project_files.status_message`
+   * after every flushBuffer and every page tick so the UI sees the `«стр. N · M чанков»`
+   * (localised in `values-ru/`, here we hit the en fallback) string climb in real time.
+   * Final `Result.success()` must clear the message so the chip flips back to «Ready».
+   */
+  @Test
+  fun happyPath_progressUpdatesAppearMidRun_andClearOnReady() = runBlocking {
+    val (projectId, fileId, pdfPath) = seedProjectAndFile(pages = 3)
+    val recording = RecordingProjectFileDao(fileDao)
+    IngestWorker.testEntryPoint = TestEntryPoint(
+      repo = repo,
+      fileDao = recording,
+      embeddingDao = embeddingDao,
+      embedder = fakeEmbedder,
+      errorLog = errorLog,
+    )
+
+    val result = buildWorker(projectId, fileId, pdfPath).doWork()
+
+    assertEquals(ListenableWorker.Result.success(), result)
+    // Initial transition update writes status=indexing with a NULL message; the per-page /
+    // per-flush updates carry the progress string; the final ready update clears it.
+    val progressUpdates = recording.updates.filter {
+      it.status == "indexing" && it.statusMessage != null
+    }
+    assertTrue(
+      "expected at least one mid-run progress update with a localised status_message",
+      progressUpdates.isNotEmpty(),
+    )
+    // Each progress message follows the format from `project_file_status_indexing_progress`.
+    // The marker `·` (middle dot) appears twice in both en and ru strings — exact-string check
+    // would over-couple the test to copy; presence of the marker is enough to prove the
+    // template was applied.
+    for (row in progressUpdates) {
+      assertTrue(
+        "progress status_message must use the indexing_progress template, was: ${row.statusMessage}",
+        row.statusMessage!!.contains("·"),
+      )
+    }
+    // Chunk count on at least one of the progress updates must be > 0 — the second flush
+    // (or the second page) sees chunks committed.
+    assertTrue(
+      "at least one progress update must carry chunkCount > 0",
+      progressUpdates.any { (it.chunkCount ?: 0) > 0 },
+    )
+    val finalUpdate = recording.updates.last()
+    assertEquals("ready", finalUpdate.status)
+    assertNull(
+      "final ready update must clear the progress message so the chip flips to «Ready»",
+      finalUpdate.statusMessage,
+    )
+  }
+
+  /**
+   * Task 23: failure clears progress. After a mid-run throw, cleanupPartialIngest must
+   * overwrite the progress string with a failure string — the chip must never «freeze»
+   * showing «стр. N · M чанков» when ingest is no longer running.
+   */
+  @Test
+  fun failure_clearsProgressMessageWithFailureString() = runBlocking {
+    val (projectId, fileId, pdfPath) = seedProjectAndFile(pages = 5)
+    val recording = RecordingProjectFileDao(fileDao)
+    IngestWorker.testEntryPoint = TestEntryPoint(
+      repo = repo,
+      fileDao = recording,
+      embeddingDao = embeddingDao,
+      embedder = fakeEmbedder,
+      errorLog = errorLog,
+    )
+    // Throw mid-ingest so at least one progress update lands before cleanup runs.
+    fakeEmbedder.throwAfterSuccessfulBatches = 1
+
+    val result = buildWorker(projectId, fileId, pdfPath).doWork()
+
+    assertEquals(ListenableWorker.Result.failure(), result)
+    // A progress message did land at some point.
+    assertTrue(
+      "expected progress updates before failure",
+      recording.updates.any { it.status == "indexing" && it.statusMessage?.contains("·") == true },
+    )
+    // ... but the row's final state carries the failure message, not the progress string.
+    val finalUpdate = recording.updates.last()
+    assertEquals("failed", finalUpdate.status)
+    assertEquals(
+      context.getString(app.sanctum.machina.R.string.ingest_status_failed_generic),
+      finalUpdate.statusMessage,
+    )
+  }
+
   @Test
   fun missingInputData_failsImmediately() = runBlocking {
     // Build with all-zero inputs — projectId<=0 short-circuits before any DB read.
@@ -374,6 +464,22 @@ class IngestWorkerTest {
         }
       }
       doc.save(target)
+    }
+  }
+
+  /**
+   * Task 23 helper: wraps a real [ProjectFileDao] and records every `update` call so tests
+   * can assert on the sequence of mid-run progress writes the worker performs against
+   * `project_files.status_message`. Reads delegate straight through to the real DAO so the
+   * worker still observes the production-shape rows for `getById` / etc.
+   */
+  private class RecordingProjectFileDao(
+    private val delegate: ProjectFileDao,
+  ) : ProjectFileDao by delegate {
+    val updates: MutableList<ProjectFileEntity> = mutableListOf()
+    override suspend fun update(file: ProjectFileEntity) {
+      updates.add(file)
+      delegate.update(file)
     }
   }
 

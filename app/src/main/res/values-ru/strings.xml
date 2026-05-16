@@ -251,6 +251,7 @@
   <string name="project_file_status_pending">Ожидает</string>
   <string name="project_file_status_indexing">Индексация %1$d / %2$d</string>
   <string name="project_file_status_indexing_simple">Индексация (%1$d чанков)</string>
+  <string name="project_file_status_indexing_progress">Индексация · стр. %1$d · %2$d чанков</string>
   <string name="project_file_status_ready">Готов</string>
   <string name="project_file_status_failed">Ошибка</string>
 
