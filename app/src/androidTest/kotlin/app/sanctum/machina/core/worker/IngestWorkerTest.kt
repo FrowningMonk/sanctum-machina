@@ -308,25 +308,26 @@ class IngestWorkerTest {
    * Task 23: live progress chip. The worker must rewrite `project_files.status_message`
    * after every flushBuffer and every page tick so the UI sees the `«стр. N · M чанков»`
    * (localised in `values-ru/`, here we hit the en fallback) string climb in real time.
+   *
+   * Round-2 test-reviewer (M-1): the previous shape only asserted «marker `·` present»,
+   * which the per-flush write alone satisfies on a 3-page PDF where every page produces
+   * chunks > batch size. A future refactor that drops the per-page `persistProgress()` call
+   * (e.g. moving it inside `if (chunks.isNotEmpty())`) would silently break the empty-page
+   * tick contract spelled out in task 23 §1 («чтобы счётчик страниц всё равно тикал»). The
+   * regex-parse + monotonic-page assertion below pins the integers, and the final
+   * pre-ready update's page count must equal the PDF page count — proving that the
+   * per-page tick fires for the last page even when the buffer flush already covered it.
+   *
    * Final `Result.success()` must clear the message so the chip flips back to «Ready».
    */
   @Test
   fun happyPath_progressUpdatesAppearMidRun_andClearOnReady() = runBlocking {
     val (projectId, fileId, pdfPath) = seedProjectAndFile(pages = 3)
-    val recording = RecordingProjectFileDao(fileDao)
-    IngestWorker.testEntryPoint = TestEntryPoint(
-      repo = repo,
-      fileDao = recording,
-      embeddingDao = embeddingDao,
-      embedder = fakeEmbedder,
-      errorLog = errorLog,
-    )
+    val recording = installRecordingFileDao()
 
     val result = buildWorker(projectId, fileId, pdfPath).doWork()
 
     assertEquals(ListenableWorker.Result.success(), result)
-    // Initial transition update writes status=indexing with a NULL message; the per-page /
-    // per-flush updates carry the progress string; the final ready update clears it.
     val progressUpdates = recording.updates.filter {
       it.status == "indexing" && it.statusMessage != null
     }
@@ -334,24 +335,30 @@ class IngestWorkerTest {
       "expected at least one mid-run progress update with a localised status_message",
       progressUpdates.isNotEmpty(),
     )
-    // Each progress message follows the format from `project_file_status_indexing_progress`.
-    // The marker `·` (middle dot) appears twice in both en and ru strings — exact-string check
-    // would over-couple the test to copy; presence of the marker is enough to prove the
-    // template was applied.
-    for (row in progressUpdates) {
-      assertTrue(
-        "progress status_message must use the indexing_progress template, was: ${row.statusMessage}",
-        row.statusMessage!!.contains("·"),
-      )
-    }
+    // Parse the integers out of every progress message — both en («Indexing · p. N · M chunks»)
+    // and ru («Индексация · стр. N · M чанков») expose the page and chunk counts as the only
+    // two integers in the string. Asserting monotonic non-decreasing page counts catches a
+    // regression that flips the call order or drops the per-page tick.
+    val pageCounts = progressUpdates.map { extractIntsFromStatusMessage(it.statusMessage!!)[0] }
+    assertTrue(
+      "page counts must be monotonically non-decreasing, was $pageCounts",
+      pageCounts.zipWithNext().all { (prev, next) -> next >= prev },
+    )
+    assertEquals(
+      "the final progress update before ready must report all 3 pages — proves the per-page tick fired for page 3 (not just the flushBuffer write)",
+      3,
+      pageCounts.last(),
+    )
     // Chunk count on at least one of the progress updates must be > 0 — the second flush
     // (or the second page) sees chunks committed.
     assertTrue(
       "at least one progress update must carry chunkCount > 0",
       progressUpdates.any { (it.chunkCount ?: 0) > 0 },
     )
-    val finalUpdate = recording.updates.last()
-    assertEquals("ready", finalUpdate.status)
+    // Use `last { ready }` instead of `.last()` so a future telemetry hook that writes after
+    // the ready transition doesn't make this assertion read the wrong row and surface a
+    // misleading failure (nit from test-reviewer round 1).
+    val finalUpdate = recording.updates.last { it.status == "ready" }
     assertNull(
       "final ready update must clear the progress message so the chip flips to «Ready»",
       finalUpdate.statusMessage,
@@ -366,14 +373,7 @@ class IngestWorkerTest {
   @Test
   fun failure_clearsProgressMessageWithFailureString() = runBlocking {
     val (projectId, fileId, pdfPath) = seedProjectAndFile(pages = 5)
-    val recording = RecordingProjectFileDao(fileDao)
-    IngestWorker.testEntryPoint = TestEntryPoint(
-      repo = repo,
-      fileDao = recording,
-      embeddingDao = embeddingDao,
-      embedder = fakeEmbedder,
-      errorLog = errorLog,
-    )
+    val recording = installRecordingFileDao()
     // Throw mid-ingest so at least one progress update lands before cleanup runs.
     fakeEmbedder.throwAfterSuccessfulBatches = 1
 
@@ -386,11 +386,46 @@ class IngestWorkerTest {
       recording.updates.any { it.status == "indexing" && it.statusMessage?.contains("·") == true },
     )
     // ... but the row's final state carries the failure message, not the progress string.
-    val finalUpdate = recording.updates.last()
-    assertEquals("failed", finalUpdate.status)
+    val finalUpdate = recording.updates.last { it.status == "failed" }
     assertEquals(
       context.getString(app.sanctum.machina.R.string.ingest_status_failed_generic),
       finalUpdate.statusMessage,
+    )
+  }
+
+  /**
+   * Task 23 edge case (test-reviewer round 1 m-5): single-page PDF. With one page, both the
+   * per-page tick and the per-flush write fire exactly once each, so the recorder sees at
+   * least one progress update whose `«p. N»` integer equals 1 and whose chunkCount matches
+   * the persisted column. A regression like an off-by-one in the page counter (or a
+   * guard `if (totalPages > 1)`) would only manifest here.
+   */
+  @Test
+  fun singlePagePdf_emitsProgressUpdateForPageOne() = runBlocking {
+    val (projectId, fileId, pdfPath) = seedProjectAndFile(pages = 1)
+    val recording = installRecordingFileDao()
+
+    val result = buildWorker(projectId, fileId, pdfPath).doWork()
+
+    assertEquals(ListenableWorker.Result.success(), result)
+    val progressUpdates = recording.updates.filter {
+      it.status == "indexing" && it.statusMessage != null
+    }
+    assertTrue(
+      "single-page PDF must still emit at least one progress update",
+      progressUpdates.isNotEmpty(),
+    )
+    val pageCounts = progressUpdates.map { extractIntsFromStatusMessage(it.statusMessage!!)[0] }
+    assertEquals(
+      "every progress update on a 1-page PDF must report page=1",
+      setOf(1),
+      pageCounts.toSet(),
+    )
+    val finalReady = recording.updates.last { it.status == "ready" }
+    assertEquals(
+      "chunk_count column on ready must match the last progress update's chunk count",
+      progressUpdates.last().chunkCount,
+      finalReady.chunkCount,
     )
   }
 
@@ -446,6 +481,32 @@ class IngestWorkerTest {
     return Triple(projectId, fileId, pdfFile.absolutePath)
   }
 
+  /**
+   * Task 23 (nit from test-reviewer round 1): centralise the «swap in a recording wrapper
+   * AFTER setUp() installed the bare DAO» dance so test bodies don't drift out of sync. A
+   * future test that forgets to re-wire `testEntryPoint` would silently exercise the bare
+   * DAO and the `recording.updates` assertions would fire against an empty list.
+   */
+  private fun installRecordingFileDao(): RecordingProjectFileDao {
+    val recording = RecordingProjectFileDao(fileDao)
+    IngestWorker.testEntryPoint = TestEntryPoint(
+      repo = repo,
+      fileDao = recording,
+      embeddingDao = embeddingDao,
+      embedder = fakeEmbedder,
+      errorLog = errorLog,
+    )
+    return recording
+  }
+
+  /**
+   * Task 23 progress-string parser. Both the en template («Indexing · p. N · M chunks») and
+   * the ru template («Индексация · стр. N · M чанков») expose exactly two integers in
+   * fixed order: page count then chunk count. Returns them as `[pageCount, chunkCount]`.
+   */
+  private fun extractIntsFromStatusMessage(message: String): List<Int> =
+    Regex("\\d+").findAll(message).map { it.value.toInt() }.toList()
+
   private fun buildPdf(target: File, pageCount: Int) {
     PDDocument().use { doc ->
       for (i in 1..pageCount) {
@@ -468,18 +529,38 @@ class IngestWorkerTest {
   }
 
   /**
-   * Task 23 helper: wraps a real [ProjectFileDao] and records every `update` call so tests
-   * can assert on the sequence of mid-run progress writes the worker performs against
-   * `project_files.status_message`. Reads delegate straight through to the real DAO so the
-   * worker still observes the production-shape rows for `getById` / etc.
+   * Task 23 helper: wraps a real [ProjectFileDao] and records every write call so tests can
+   * assert on the sequence of mid-run progress writes the worker performs against
+   * `project_files`. Read methods delegate straight through to the real DAO so the worker
+   * observes the production-shape rows for `getById` / `getByProjectAndHash` / etc.
+   *
+   * Round-2 test-reviewer (M-3) future-proofing: each `@Update` / `@Insert` / `@Query DELETE`
+   * surface is forwarded *explicitly* rather than relying on `by delegate` for writes — a
+   * future write overload (e.g. a second `@Update` method or a partial-write `@Query`) would
+   * silently bypass the recorder, and the litmus assertion «final update is ready/null» would
+   * still pass even if the production code took an undocumented write path. If you add a
+   * mutation method to [ProjectFileDao], add the matching `override` here.
    */
   private class RecordingProjectFileDao(
     private val delegate: ProjectFileDao,
   ) : ProjectFileDao by delegate {
     val updates: MutableList<ProjectFileEntity> = mutableListOf()
+    val inserts: MutableList<ProjectFileEntity> = mutableListOf()
+    val deletes: MutableList<Long> = mutableListOf()
+
     override suspend fun update(file: ProjectFileEntity) {
       updates.add(file)
       delegate.update(file)
+    }
+
+    override suspend fun insert(file: ProjectFileEntity): Long {
+      inserts.add(file)
+      return delegate.insert(file)
+    }
+
+    override suspend fun deleteById(id: Long) {
+      deletes.add(id)
+      delegate.deleteById(id)
     }
   }
 

@@ -58,6 +58,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -66,6 +67,10 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import app.sanctum.machina.R
 import app.sanctum.machina.data.model.ChatEntity
 import app.sanctum.machina.data.model.ProjectFileEntity
+
+/** Test tag for the per-document indeterminate progress bar — see Task 23 StatusChipTest. */
+@VisibleForTesting
+internal const val INGEST_PROGRESS_BAR_TEST_TAG: String = "ingest_progress_bar"
 
 /**
  * Phase 4 Task 9 — central project surface. Renders:
@@ -328,8 +333,9 @@ private fun DocumentsFab(enabled: Boolean, onTap: () -> Unit) {
   }
 }
 
+@VisibleForTesting
 @Composable
-private fun DocumentRow(
+internal fun DocumentRow(
   file: ProjectFileEntity,
   onReindex: () -> Unit,
   onDelete: () -> Unit,
@@ -380,7 +386,8 @@ private fun DocumentRow(
       LinearProgressIndicator(
         modifier = Modifier
           .fillMaxWidth()
-          .padding(top = 2.dp),
+          .padding(top = 2.dp)
+          .testTag(INGEST_PROGRESS_BAR_TEST_TAG),
       )
     }
   }
