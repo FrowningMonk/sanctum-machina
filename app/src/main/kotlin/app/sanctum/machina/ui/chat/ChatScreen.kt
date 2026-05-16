@@ -235,6 +235,11 @@ private fun ReadyContent(
     // the audio sheet, though AC-19 ON_PAUSE closes it on backgrounding.
     var showCameraSheet by rememberSaveable { mutableStateOf(false) }
     var showAudioSheet by rememberSaveable { mutableStateOf(false) }
+    // Phase 4 Task 12 — single shared modal state for citation chips across
+    // every assistant bubble (T12 § Modal state hoisting). Not
+    // rememberSaveable: `Citation` is not Parcelable and the user can re-tap
+    // a chip after restore; cheaper to drop selection than to plumb a Saver.
+    var selectedCitation by remember { mutableStateOf<app.sanctum.machina.data.Citation?>(null) }
     // Sticky-to-bottom state — hoisted in ReadyContent (D10) so the
     // onSend callback below can reset it before forwarding to the VM,
     // ensuring the autoscroll effect re-fires unconditionally after a
@@ -355,6 +360,7 @@ private fun ReadyContent(
                 supportThinking = modelCaps.supportThinking,
                 userScrolledAway = userScrolledAway,
                 onUserScrolledAwayChange = onUserScrolledAwayChange,
+                onCitationClick = { selectedCitation = it },
                 modifier = Modifier.weight(1f),
             )
             if (attachments.isNotEmpty()) {
@@ -395,6 +401,12 @@ private fun ReadyContent(
             },
         )
     }
+
+    // Phase 4 Task 12 — citation detail sheet, shared by every bubble's chip-strip.
+    CitationModal(
+        citation = selectedCitation,
+        onDismiss = { selectedCitation = null },
+    )
 
     if (showAudioSheet) {
         AudioRecorderBottomSheet(
@@ -717,6 +729,7 @@ private fun MessageList(
     supportThinking: Boolean,
     userScrolledAway: Boolean,
     onUserScrolledAwayChange: (Boolean) -> Unit,
+    onCitationClick: (app.sanctum.machina.data.Citation) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -791,7 +804,11 @@ private fun MessageList(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(messages) { message ->
-                MessageBubble(message = message, supportThinking = supportThinking)
+                MessageBubble(
+                    message = message,
+                    supportThinking = supportThinking,
+                    onCitationClick = onCitationClick,
+                )
             }
         }
         AnimatedVisibility(

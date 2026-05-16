@@ -1,4 +1,5 @@
-<resources xmlns:tools="http://schemas.android.com/tools">
+<resources xmlns:tools="http://schemas.android.com/tools"
+           xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
   <string name="app_name">Sanctum Machina</string>
 
   <!-- ModelManager screen -->
@@ -287,4 +288,14 @@
   <string name="rag_block_no_embedder_cta">К менеджеру моделей</string>
   <string name="rag_block_empty_corpus">В корпусе нет проиндексированных документов. Загрузите хотя бы один документ.</string>
   <string name="rag_block_retrieve_error">Ошибка retrieval — попробуйте ещё раз.</string>
+
+  <!-- Phase 4 Task 12 — Citation chip-strip + modal under assistant bubbles in project chats. -->
+  <string name="citation_chip_label_with_page">[<xliff:g id="filename" example="manual.pdf">%1$s</xliff:g> · стр. <xliff:g id="page" example="12">%2$d</xliff:g>]</string>
+  <string name="citation_chip_label_no_page">[<xliff:g id="filename" example="manual.pdf">%1$s</xliff:g>]</string>
+  <string name="citation_chip_content_description_with_page">Цитата: <xliff:g id="filename" example="manual.pdf">%1$s</xliff:g>, стр. <xliff:g id="page" example="12">%2$d</xliff:g></string>
+  <string name="citation_chip_content_description_no_page">Цитата: <xliff:g id="filename" example="manual.pdf">%1$s</xliff:g></string>
+  <string name="citation_modal_title_with_page"><xliff:g id="filename" example="manual.pdf">%1$s</xliff:g> · стр. <xliff:g id="page" example="12">%2$d</xliff:g></string>
+  <string name="citation_modal_title_no_page"><xliff:g id="filename" example="manual.pdf">%1$s</xliff:g></string>
+  <string name="citation_modal_stale_marker">(источник удалён)</string>
+  <string name="citation_modal_close">Закрыть</string>
 </resources>

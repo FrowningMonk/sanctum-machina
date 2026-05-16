@@ -1,4 +1,5 @@
-<resources xmlns:tools="http://schemas.android.com/tools">
+<resources xmlns:tools="http://schemas.android.com/tools"
+           xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
   <string name="app_name">Sanctum Machina</string>
 
   <!-- ModelManager screen -->
@@ -290,4 +291,17 @@
   <string name="rag_block_no_embedder_cta">To Model Manager</string>
   <string name="rag_block_empty_corpus">No indexed documents in the corpus. Upload at least one document.</string>
   <string name="rag_block_retrieve_error">Retrieval error — please try again.</string>
+
+  <!-- Phase 4 Task 12 — Citation chip-strip + modal under assistant bubbles in project chats.
+       `chunk_text` is untrusted PDF-derived content; rendered through plain Text (see
+       CitationModal.kt) — these strings are purely for the chip/modal chrome. xliff:g
+       placeholders so translators keep filename/page tokens intact. -->
+  <string name="citation_chip_label_with_page">[<xliff:g id="filename" example="manual.pdf">%1$s</xliff:g> · p. <xliff:g id="page" example="12">%2$d</xliff:g>]</string>
+  <string name="citation_chip_label_no_page">[<xliff:g id="filename" example="manual.pdf">%1$s</xliff:g>]</string>
+  <string name="citation_chip_content_description_with_page">Citation: <xliff:g id="filename" example="manual.pdf">%1$s</xliff:g>, page <xliff:g id="page" example="12">%2$d</xliff:g></string>
+  <string name="citation_chip_content_description_no_page">Citation: <xliff:g id="filename" example="manual.pdf">%1$s</xliff:g></string>
+  <string name="citation_modal_title_with_page"><xliff:g id="filename" example="manual.pdf">%1$s</xliff:g> · p. <xliff:g id="page" example="12">%2$d</xliff:g></string>
+  <string name="citation_modal_title_no_page"><xliff:g id="filename" example="manual.pdf">%1$s</xliff:g></string>
+  <string name="citation_modal_stale_marker">(source removed)</string>
+  <string name="citation_modal_close">Close</string>
 </resources>

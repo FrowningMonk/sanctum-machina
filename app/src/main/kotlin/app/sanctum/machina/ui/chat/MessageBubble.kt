@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -23,8 +26,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import app.sanctum.machina.R
+import app.sanctum.machina.data.Citation
 
 /**
  * Chat history row for a single [Message]. Extracted from `ChatScreen.kt`
@@ -49,6 +55,7 @@ fun MessageBubble(
     message: Message,
     supportThinking: Boolean,
     modifier: Modifier = Modifier,
+    onCitationClick: (Citation) -> Unit = {},
 ) {
     val isUser = message.role == MessageRole.USER
     val bubbleColor =
@@ -110,6 +117,88 @@ fun MessageBubble(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+
+            // Phase 4 Task 12 — citation chips for assistant messages in
+            // project chats. Mid-stream and persisted both flow through
+            // `message.citations`: `ChatViewModel.buildMessagesFlow` already
+            // merges `_streamingCitations` into the in-flight bubble's
+            // `citations` field (T11 wiring), so the bubble does not need to
+            // collect that StateFlow directly — uniform rendering by source
+            // of truth.
+            if (!isUser && message.citations.isNotEmpty()) {
+                CitationChipStrip(
+                    citations = message.citations,
+                    onChipClick = onCitationClick,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Horizontal chip-strip rendered beneath an assistant bubble (Phase 4 Task 12).
+ *
+ * `FlowRow` so a long citation list wraps inside the 320 dp `widthIn` parent
+ * column rather than overflowing horizontally. Each chip is keyed by
+ * `fileId + page` so identical-looking chips that point at distinct chunks
+ * (same file, different page) stay independent for accessibility focus.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CitationChipStrip(
+    citations: List<Citation>,
+    onChipClick: (Citation) -> Unit,
+) {
+    val mutedContainer = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    val mutedLabel = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        for (citation in citations) {
+            val label = if (citation.page != null) {
+                stringResource(
+                    R.string.citation_chip_label_with_page,
+                    citation.fileName,
+                    citation.page,
+                )
+            } else {
+                stringResource(R.string.citation_chip_label_no_page, citation.fileName)
+            }
+            val cd = if (citation.page != null) {
+                stringResource(
+                    R.string.citation_chip_content_description_with_page,
+                    citation.fileName,
+                    citation.page,
+                )
+            } else {
+                stringResource(
+                    R.string.citation_chip_content_description_no_page,
+                    citation.fileName,
+                )
+            }
+            val chipColors = if (citation.stale) {
+                AssistChipDefaults.assistChipColors(
+                    containerColor = mutedContainer,
+                    labelColor = mutedLabel,
+                )
+            } else {
+                AssistChipDefaults.assistChipColors()
+            }
+            AssistChip(
+                onClick = { onChipClick(citation) },
+                label = {
+                    // Plain Text — chip label includes a filename pulled from
+                    // user-supplied PDF metadata. No markdown / link parser.
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                },
+                colors = chipColors,
+                modifier = Modifier.semantics { contentDescription = cd },
+            )
         }
     }
 }
