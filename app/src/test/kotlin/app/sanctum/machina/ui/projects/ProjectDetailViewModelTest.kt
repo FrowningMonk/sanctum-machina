@@ -550,11 +550,12 @@ private class DetailFakeProjectRepository(
     enqueueCalls += EnqueueCall(projectId, fileId, filePath)
   }
 
-  override suspend fun reindexFile(fileId: Long) { reindexCalls += fileId }
+  override suspend fun reindexFile(fileId: Long, filesDir: File) { reindexCalls += fileId }
   override suspend fun applyReindexRequired(
     projectId: Long,
     chunkSize: Int,
     chunkOverlap: Int,
+    filesDir: File,
   ) = Unit
   override suspend fun projectsUsingEmbedder(embedderModelId: String) =
     emptyList<app.sanctum.machina.data.model.ProjectEntity>()

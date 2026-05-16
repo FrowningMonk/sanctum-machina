@@ -231,6 +231,7 @@ class ProjectSettingsViewModelTest {
       projectId = PROJECT_ID,
       projectRepository = repo,
       projectFileDao = fileDao,
+      filesDir = File("/tmp/test-files-dir"),
       ioDispatcher = UnconfinedTestDispatcher(testDispatcher.scheduler),
     )
 
@@ -287,11 +288,12 @@ private class SettingsFakeProjectRepository : ProjectRepository {
   override suspend fun getEffectiveRagSettings(projectId: Long): RagConfig = effective
 
   override suspend fun enqueueIngest(projectId: Long, fileId: Long, filePath: String) = Unit
-  override suspend fun reindexFile(fileId: Long) = Unit
+  override suspend fun reindexFile(fileId: Long, filesDir: File) = Unit
   override suspend fun applyReindexRequired(
     projectId: Long,
     chunkSize: Int,
     chunkOverlap: Int,
+    filesDir: File,
   ) {
     reindexApplies += chunkSize to chunkOverlap
     effective = effective.copy(chunkSize = chunkSize, chunkOverlap = chunkOverlap)

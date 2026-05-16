@@ -272,7 +272,7 @@ internal constructor(
     ingestEnqueuer.enqueue(projectId, fileId, filePath)
   }
 
-  override suspend fun reindexFile(fileId: Long) {
+  override suspend fun reindexFile(fileId: Long, filesDir: File) {
     withContext(ioDispatcher) {
       val file = projectFileDao.getById(fileId) ?: return@withContext
       // FK CASCADE wipes `project_embeddings` rows that were persisted before this reindex;
@@ -282,7 +282,16 @@ internal constructor(
       projectFileDao.update(
         file.copy(status = "pending", statusMessage = null, chunkCount = null),
       )
-      ingestEnqueuer.enqueue(file.projectId, fileId, file.relativePath)
+      // Task 20 fix: `IngestWorker.doWork` security-checks `expectedRoot` (always absolute)
+      // against the input `filePath`. `project_files.relative_path` is stored relative to
+      // [filesDir], so joining + canonicalising here keeps the worker's path-traversal guard
+      // honest. Symmetric with how `ProjectDetailViewModel.addDocuments` passes
+      // `pdfFile.absolutePath` on first ingest.
+      ingestEnqueuer.enqueue(
+        file.projectId,
+        fileId,
+        File(filesDir, file.relativePath).absolutePath,
+      )
     }
   }
 
@@ -290,6 +299,7 @@ internal constructor(
     projectId: Long,
     chunkSize: Int,
     chunkOverlap: Int,
+    filesDir: File,
   ) {
     withContext(ioDispatcher) {
       // Capture the existing effective config so the partial slider apply preserves topK +
@@ -319,7 +329,13 @@ internal constructor(
       // dropping the rest of the batch (code-reviewer round-1 minor — robustness).
       for (file in filesSnapshot) {
         try {
-          ingestEnqueuer.enqueue(projectId, file.id, file.relativePath)
+          // Task 20 fix: see `reindexFile` for rationale — pass absolute path so the
+          // `IngestWorker.doWork` path-traversal guard accepts the input.
+          ingestEnqueuer.enqueue(
+            projectId,
+            file.id,
+            File(filesDir, file.relativePath).absolutePath,
+          )
         } catch (t: Throwable) {
           errorLog.e(
             LOG_INDEX,

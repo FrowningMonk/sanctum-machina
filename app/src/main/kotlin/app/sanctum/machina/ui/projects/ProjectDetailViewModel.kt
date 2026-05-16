@@ -457,7 +457,7 @@ internal constructor(
   fun reindex(fileId: Long) {
     viewModelScope.launch {
       withContext(ioDispatcher) {
-        projectRepository.reindexFile(fileId)
+        projectRepository.reindexFile(fileId, context.filesDir)
       }
       // Reindex resolves the banner for this row — drop it from dismissed so a future
       // genuine failure for the same row surfaces again.

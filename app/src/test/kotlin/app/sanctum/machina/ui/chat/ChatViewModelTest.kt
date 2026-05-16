@@ -3343,8 +3343,8 @@ private class FakeProjectRepository : ProjectRepository {
     override suspend fun updateRagOverrides(projectId: Long, overrides: RagConfig?) { /* no-op */ }
     override suspend fun getEffectiveRagSettings(projectId: Long): RagConfig = effectiveSettings
     override suspend fun enqueueIngest(projectId: Long, fileId: Long, filePath: String) { /* no-op */ }
-    override suspend fun reindexFile(fileId: Long) { /* no-op */ }
-    override suspend fun applyReindexRequired(projectId: Long, chunkSize: Int, chunkOverlap: Int) { /* no-op */ }
+    override suspend fun reindexFile(fileId: Long, filesDir: File) { /* no-op */ }
+    override suspend fun applyReindexRequired(projectId: Long, chunkSize: Int, chunkOverlap: Int, filesDir: File) { /* no-op */ }
     override suspend fun projectsUsingEmbedder(embedderModelId: String): List<ProjectEntity> = emptyList()
 }
 

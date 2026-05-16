@@ -198,11 +198,12 @@ private class CreateFakeProjectRepository : ProjectRepository {
   override suspend fun getEffectiveRagSettings(projectId: Long): RagConfig =
     RagConfig(800, 100, 4, 768)
   override suspend fun enqueueIngest(projectId: Long, fileId: Long, filePath: String) = Unit
-  override suspend fun reindexFile(fileId: Long) = Unit
+  override suspend fun reindexFile(fileId: Long, filesDir: File) = Unit
   override suspend fun applyReindexRequired(
     projectId: Long,
     chunkSize: Int,
     chunkOverlap: Int,
+    filesDir: File,
   ) = Unit
   override suspend fun projectsUsingEmbedder(embedderModelId: String) =
     emptyList<app.sanctum.machina.data.model.ProjectEntity>()

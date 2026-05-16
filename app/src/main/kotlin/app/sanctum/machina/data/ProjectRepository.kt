@@ -130,8 +130,12 @@ interface ProjectRepository {
    *
    * Used by the failed-document banner («Переиндексировать» action) and by the per-document
    * overflow «Переиндексировать» menu item. Missing file id → no-op (idempotent for double-tap).
+   *
+   * Task 20 fix: [filesDir] is required so the implementation can resolve the file's
+   * `relative_path` into the absolute path that [IngestWorker]'s path-traversal guard expects.
+   * Mirror of the `filesDir` parameter on [delete] / [deleteFile].
    */
-  suspend fun reindexFile(fileId: Long)
+  suspend fun reindexFile(fileId: Long, filesDir: File)
 
   /**
    * Task 9 / Decision 11 reindex-required tier: writes new `chunkSize` / `chunkOverlap` into the
@@ -142,8 +146,16 @@ interface ProjectRepository {
    *
    * Single transaction for the DB mutations; ingest enqueues happen after commit so a Room
    * failure does not leave WorkManager with stale work for rows that never flipped to pending.
+   *
+   * Task 20 fix: [filesDir] is required so per-file enqueue passes the absolute path —
+   * `project_files.relative_path` joined against [filesDir]. Same rationale as [reindexFile].
    */
-  suspend fun applyReindexRequired(projectId: Long, chunkSize: Int, chunkOverlap: Int)
+  suspend fun applyReindexRequired(
+    projectId: Long,
+    chunkSize: Int,
+    chunkOverlap: Int,
+    filesDir: File,
+  )
 
   /**
    * Task 10 — projects that depend on the embedder identified by [embedderModelId]. Used by the

@@ -10,6 +10,7 @@
 
 package app.sanctum.machina.ui.projects
 
+import android.content.Context
 import androidx.annotation.VisibleForTesting
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -19,6 +20,8 @@ import app.sanctum.machina.data.ProjectRepository
 import app.sanctum.machina.data.RagConfig
 import app.sanctum.machina.data.dao.ProjectFileDao
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.File
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -62,6 +65,9 @@ internal constructor(
   private val projectId: Long,
   private val projectRepository: ProjectRepository,
   private val projectFileDao: ProjectFileDao,
+  // Task 20 fix: confirmReindex passes `filesDir` into `applyReindexRequired` so the worker
+  // receives absolute paths (parity with `addDocuments` first-ingest path).
+  private val filesDir: File,
   private val ioDispatcher: CoroutineDispatcher,
 ) : ViewModel() {
 
@@ -70,12 +76,14 @@ internal constructor(
     savedStateHandle: SavedStateHandle,
     projectRepository: ProjectRepository,
     projectFileDao: ProjectFileDao,
+    @ApplicationContext context: Context,
   ) : this(
     projectId = requireNotNull(savedStateHandle.get<Long>(NAV_ARG_PROJECT_ID)) {
       "ProjectSettingsViewModel requires '$NAV_ARG_PROJECT_ID' nav arg"
     },
     projectRepository = projectRepository,
     projectFileDao = projectFileDao,
+    filesDir = context.filesDir,
     ioDispatcher = Dispatchers.IO,
   )
 
@@ -208,6 +216,7 @@ internal constructor(
           projectId = projectId,
           chunkSize = state.pendingChunkSize,
           chunkOverlap = state.pendingChunkOverlap,
+          filesDir = filesDir,
         )
       }
       _effective.value = merged

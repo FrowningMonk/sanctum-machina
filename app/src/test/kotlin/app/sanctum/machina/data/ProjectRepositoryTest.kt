@@ -3,6 +3,7 @@ package app.sanctum.machina.data
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import app.sanctum.machina.core.log.ErrorLog
+import app.sanctum.machina.core.worker.IngestEnqueuer
 import app.sanctum.machina.data.dao.EmbeddingRow
 import app.sanctum.machina.data.dao.MessageDao
 import app.sanctum.machina.data.dao.ProjectDao
@@ -37,6 +38,9 @@ import org.robolectric.annotation.Config
 
 private val CITATION_LIST_TYPE = object : TypeToken<List<Citation>>() {}.type
 
+/** Captures one [IngestEnqueuer.enqueue] call for assertion in Task 20 reindex tests. */
+private data class RecordedEnqueue(val projectId: Long, val fileId: Long, val filePath: String)
+
 /** Mirror of `DefaultProjectRepository.STALE_MARK_BATCH_SIZE` for the pagination assertion. */
 private const val STALE_MARK_BATCH_SIZE_TEST = 50
 
@@ -55,6 +59,7 @@ class ProjectRepositoryTest {
   private lateinit var errorLog: ErrorLog
   private lateinit var errorLogFile: File
   private lateinit var filesDir: File
+  private lateinit var enqueueCalls: MutableList<RecordedEnqueue>
   private val gson = Gson()
 
   @Before
@@ -68,6 +73,7 @@ class ProjectRepositoryTest {
     errorLogFile = File(context.filesDir, "logs/errors.log")
     errorLogFile.parentFile?.deleteRecursively()
     filesDir = tempFolder.newFolder("filesDir")
+    enqueueCalls = mutableListOf()
   }
 
   @After
@@ -418,6 +424,84 @@ class ProjectRepositoryTest {
     assertNull(projectDao.getByIdSync(projectId))
   }
 
+  // ---- reindex enqueue: absolute path contract (Task 20) ----
+
+  /**
+   * Task 20 regression guard: `reindexFile` must pass an ABSOLUTE filePath to the worker.
+   * `IngestWorker.doWork` security-checks the input against `filesDir/projects/{projectId}/docs`
+   * canonicalised, and `File("projects/...")` canonicalises against process cwd, not filesDir.
+   * The bug was: caller passed `relativePath` verbatim, worker rejected as path traversal,
+   * row got stamped `failed / Internal path error` on every reindex tap.
+   */
+  @Test
+  fun reindexFile_passesAbsolutePathToEnqueuer() = runTest {
+    val fileId = 42L
+    val projectId = projectDao.insertSync(ProjectEntity(name = "p", createdAt = 1L))
+    fileDao.insertSync(
+      ProjectFileEntity(
+        id = fileId, projectId = projectId, fileName = "x.pdf",
+        relativePath = "projects/$projectId/docs/x.pdf",
+        contentHash = "h", status = "failed", createdAt = 1L,
+      ),
+    )
+    val repo = newRepository()
+
+    repo.reindexFile(fileId, filesDir)
+
+    val call = enqueueCalls.single()
+    assertEquals(projectId, call.projectId)
+    assertEquals(fileId, call.fileId)
+    // Production code: `File(filesDir, relativePath).absolutePath`. Pin the exact join so a
+    // future refactor that strips the join (or accidentally re-uses relativePath) trips here.
+    assertEquals(
+      File(filesDir, "projects/$projectId/docs/x.pdf").absolutePath,
+      call.filePath,
+    )
+    assertTrue(
+      "filePath must be absolute, was: ${call.filePath}",
+      File(call.filePath).isAbsolute,
+    )
+  }
+
+  @Test
+  fun applyReindexRequired_passesAbsolutePathsForAllFiles() = runTest {
+    val projectId = projectDao.insertSync(
+      ProjectEntity(name = "p", ragOverridesJson = null, createdAt = 1L),
+    )
+    val fileIds = listOf(10L, 11L, 12L)
+    for (id in fileIds) {
+      fileDao.insertSync(
+        ProjectFileEntity(
+          id = id, projectId = projectId, fileName = "f$id.pdf",
+          relativePath = "projects/$projectId/docs/$id.pdf",
+          contentHash = "h$id", status = "ready", createdAt = id,
+        ),
+      )
+    }
+    val repo = newRepository()
+
+    repo.applyReindexRequired(
+      projectId = projectId,
+      chunkSize = 1000,
+      chunkOverlap = 150,
+      filesDir = filesDir,
+    )
+
+    assertEquals(fileIds.size, enqueueCalls.size)
+    for (id in fileIds) {
+      val call = enqueueCalls.single { it.fileId == id }
+      assertEquals(projectId, call.projectId)
+      assertEquals(
+        File(filesDir, "projects/$projectId/docs/$id.pdf").absolutePath,
+        call.filePath,
+      )
+      assertTrue(
+        "bulk filePath must be absolute, was: ${call.filePath}",
+        File(call.filePath).isAbsolute,
+      )
+    }
+  }
+
   // ---- updateRagOverrides ----
 
   @Test
@@ -457,6 +541,9 @@ class ProjectRepositoryTest {
       ioDispatcher = UnconfinedTestDispatcher(),
       transactionRunner = { block -> block() }, // no real txn in unit tests
       clock = { 1L },
+      ingestEnqueuer = IngestEnqueuer { projectId, fileId, filePath ->
+        enqueueCalls += RecordedEnqueue(projectId, fileId, filePath)
+      },
     )
 
   /**

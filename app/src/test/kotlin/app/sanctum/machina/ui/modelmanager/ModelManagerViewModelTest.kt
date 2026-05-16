@@ -591,8 +591,8 @@ private class FakeProjectRepository : ProjectRepository {
     override suspend fun getEffectiveRagSettings(projectId: Long): RagConfig = error("not used")
     override suspend fun enqueueIngest(projectId: Long, fileId: Long, filePath: String) =
         error("not used")
-    override suspend fun reindexFile(fileId: Long) = error("not used")
+    override suspend fun reindexFile(fileId: Long, filesDir: File) = error("not used")
     override suspend fun applyReindexRequired(
-        projectId: Long, chunkSize: Int, chunkOverlap: Int,
+        projectId: Long, chunkSize: Int, chunkOverlap: Int, filesDir: File,
     ) = error("not used")
 }
