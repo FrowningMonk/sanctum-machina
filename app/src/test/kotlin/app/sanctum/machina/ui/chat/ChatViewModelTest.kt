@@ -2431,6 +2431,8 @@ class ChatViewModelTest {
         fakeEmbedderGate.setState(EmbedderState.Ready)
         fakeProjectFileDao.setReadyCount(42L, 3)
         fakeRagInjector.retrieveException = IllegalStateException("encode boom")
+        val errorLogFile = File(context.filesDir, "logs/errors.log")
+        errorLogFile.parentFile?.deleteRecursively()
 
         val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
         advanceUntilIdle()
@@ -2462,6 +2464,21 @@ class ChatViewModelTest {
             "block 3: uiState must return to Ready(isGenerating=false)",
             ChatUiState.Ready(isGenerating = false),
             vm.uiState.value,
+        )
+        // TDD anchor + AC line 84: `errorLog.e("rag-retrieve", …)` MUST fire so failed
+        // retrievals are observable in field bug reports (test-reviewer-1 major). The
+        // detached `viewModelScope.launch` hops to Dispatchers.IO; poll until the file
+        // contains the expected component string, with a generous deadline so a slow CI
+        // machine cannot flake.
+        val deadlineMs = System.currentTimeMillis() + 2_000
+        while (System.currentTimeMillis() < deadlineMs) {
+            if (errorLogFile.exists() && errorLogFile.readText().contains("rag-retrieve")) break
+            Thread.sleep(20)
+        }
+        assertTrue(
+            "expected errors.log entry under 'rag-retrieve' component; got: " +
+                (if (errorLogFile.exists()) errorLogFile.readText() else "<no log file>"),
+            errorLogFile.exists() && errorLogFile.readText().contains("rag-retrieve"),
         )
     }
 
@@ -2525,6 +2542,16 @@ class ChatViewModelTest {
         assertTrue(
             "augmented input must contain the original query",
             captured.contains("User question: what is foo?"),
+        )
+        // test-reviewer-1 minor: assert chunk content actually makes it into the prefix,
+        // otherwise a regression that emitted zero chunks would still pass header + tail.
+        assertTrue(
+            "augmented input must contain chunk A text and filename",
+            captured.contains("chunk A") && captured.contains("doc.pdf"),
+        )
+        assertTrue(
+            "augmented input must contain chunk B text and its (page-less) filename",
+            captured.contains("chunk B") && captured.contains("spec.pdf"),
         )
     }
 
