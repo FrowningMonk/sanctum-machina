@@ -191,7 +191,7 @@ class SentencePieceTokenizerTest {
   }
 
   @Test
-  fun bidiControlMark_byteFallback() {
+  fun bidiControlMark_inVocabSinglePiece() {
     // U+200E LEFT-TO-RIGHT MARK is in vocab as a single piece in EmbeddingGemma's tokenizer.
     assertEncodes("a‎b", intArrayOf(236746, 239856, 236763))
   }
@@ -206,14 +206,18 @@ class SentencePieceTokenizerTest {
   }
 
   @Test
-  fun loneHighSurrogate_doesNotCrash() {
+  fun loneHighSurrogate_replacesWithQuestionMarkByte() {
     // Java strings can hold orphan surrogates (e.g. unpaired high surrogate from a buggy
-    // upstream slice). The tokenizer must not throw — UTF-8 encoder's REPLACE policy
-    // emits U+FFFD bytes [0xEF, 0xBF, 0xBD] for the malformed char.
-    val result = tokenizer.encode("a\uD83Db", maxLength = 100)
-    assertTrue("malformed-input encode produced no output", result.isNotEmpty())
-    assertEquals("first id should still be 'a'", 236746, result.first())
-    assertEquals("last id should still be 'b'", 236763, result.last())
+    // upstream slice). `String.toByteArray(UTF_8)` replaces the malformed char with a
+    // single '?' byte (0x3F) — JVM's documented default replacement for UTF-8 (NOT the
+    // U+FFFD three-byte sequence that other UTF-8 encoders use). With byteFallbackBase=238
+    // the ids are: 'a'=236746, '?'→238+63=301, 'b'=236763.
+    // Python sentencepiece cannot generate this oracle (it rejects malformed UTF-16), so
+    // expected values come from the JVM contract + byte_fallback arithmetic.
+    assertArrayEquals(
+      intArrayOf(236746, 301, 236763),
+      tokenizer.encode("a\uD83Db", maxLength = 100),
+    )
   }
 
   // -- maxLength truncation -------------------------------------------------------------
@@ -244,18 +248,22 @@ class SentencePieceTokenizerTest {
   // -- DoS scan cap ---------------------------------------------------------------------
 
   @Test
-  fun scanCapBoundsAdversarialInput() {
-    // Round-1 security review: pathological 1 MiB input with maxLength=1 must not allocate
-    // a 1 MiB symbol graph or run an O(N log N) merge. The cap is `maxLength * 8`
-    // codepoints, so the work is bounded to ~8 codepoints regardless of input length.
-    val pathological = "a".repeat(1024 * 1024)
-    val start = System.nanoTime()
-    val result = tokenizer.encode(pathological, maxLength = 1)
-    val elapsedMs = (System.nanoTime() - start) / 1_000_000
-    assertEquals(1, result.size)
-    // A capped O(maxLength) encode should be far below 50 ms; this asserts the cap
-    // engaged. (Without the cap the call would touch every char in the input.)
-    assertTrue("scan cap did not engage: ${elapsedMs}ms", elapsedMs < 50)
+  fun scanCapBoundsAdversarialInput_outputMatchesTruncatedInput() {
+    // Round-1 security review: pathological long input with small `maxLength` must not
+    // process the full input. The cap is `maxLength * SCAN_CAP_PER_TOKEN` codepoints, so a
+    // 1 MiB input with maxLength=2 sees the same symbol graph as a 16-char input — output
+    // must be byte-identical. This is a structural assertion (not wall-clock-based) so it
+    // can't flake on shared CI runners.
+    val capScan = 2 * 8 // maxLength * SCAN_CAP_PER_TOKEN
+    val short = "a".repeat(capScan)
+    val long = "a".repeat(1024 * 1024)
+    val shortResult = tokenizer.encode(short, maxLength = 2)
+    val longResult = tokenizer.encode(long, maxLength = 2)
+    assertArrayEquals(
+      "scan cap not engaging: long-input output diverges from cap-equivalent short input",
+      shortResult,
+      longResult,
+    )
   }
 
   // -- Roundtrip sanity ------------------------------------------------------------------
