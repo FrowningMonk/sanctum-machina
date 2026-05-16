@@ -502,10 +502,16 @@ class IngestWorkerTest {
   /**
    * Task 23 progress-string parser. Both the en template («Indexing · p. N · M chunks») and
    * the ru template («Индексация · стр. N · M чанков») expose exactly two integers in
-   * fixed order: page count then chunk count. Returns them as `[pageCount, chunkCount]`.
+   * fixed order: page count then chunk count. Caller MUST only pass strings produced by
+   * `R.string.project_file_status_indexing_progress` — the `require` guards a future test
+   * that wires in a different status message (e.g. the simple-fallback string) and would
+   * otherwise hit an unhelpful IndexOutOfBounds (round-2 test-reviewer m-1).
    */
-  private fun extractIntsFromStatusMessage(message: String): List<Int> =
-    Regex("\\d+").findAll(message).map { it.value.toInt() }.toList()
+  private fun extractIntsFromStatusMessage(message: String): List<Int> {
+    val ints = Regex("\\d+").findAll(message).map { it.value.toInt() }.toList()
+    require(ints.size == 2) { "expected page+chunk ints in '$message', got $ints" }
+    return ints
+  }
 
   private fun buildPdf(target: File, pageCount: Int) {
     PDDocument().use { doc ->
