@@ -213,19 +213,14 @@ class EmbeddingGemmaEngine @javax.inject.Inject constructor() : EmbedderEngine {
   }
 
   /**
-   * SentencePiece tokenizer placeholder. The actual JVM-side SentencePiece dependency is an
-   * open question recorded in the spike report — candidates are `ai.djl:sentencepiece`
-   * (Apache 2.0, pure-JVM), a thin JNI wrapper around libsentencepiece, or a pure-Kotlin
-   * port. Choosing one is gated on (a) license fit, (b) cold-start cost vs runtime cost,
-   * (c) APK size impact. T4 EmbedderRegistry consumes a settled Tokenizer.create.
+   * SentencePiece tokenizer contract. Production implementation is [SentencePieceTokenizer]
+   * — a pure-Kotlin BPE port wired in Task 18; see its kdoc for the trade-off vs the
+   * `ai.djl:sentencepiece` / `io.gitlab.shubham0204:sentence-embeddings` alternatives.
    */
   internal interface Tokenizer : AutoCloseable {
     fun encode(text: String, maxLength: Int): IntArray
     companion object {
-      fun create(modelFile: File): Tokenizer = throw NotImplementedError(
-        "SentencePiece tokenizer not wired — see work/phase-4-projects-rag/logs/spike-day1.md " +
-          "§ Open question: SentencePiece tokenizer JVM choice"
-      )
+      fun create(modelFile: File): Tokenizer = SentencePieceTokenizer.fromFile(modelFile)
     }
   }
 
