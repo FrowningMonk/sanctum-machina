@@ -83,6 +83,20 @@ class CitationFormatTest {
     }
 
     @Test
+    fun formatChipLabel_pageZeroTakesWithPageBranch() {
+        // Page is `Int?`, not `Int >= 1`. `0` is a legal page number for PDFs
+        // with zero-based numbering metadata — must follow the with-page branch
+        // (not the noPage fallback).
+        val label = formatChipLabel(
+            filename = "zero-indexed.pdf",
+            page = 0,
+            withPageTemplate = withPage,
+            noPageTemplate = noPage,
+        )
+        assertEquals("[zero-indexed.pdf · p. 0]", label)
+    }
+
+    @Test
     fun retrievedChunkToCitation_nullPagePreserved() {
         val chunk = RetrievedChunk(
             fileId = 1L,

@@ -70,6 +70,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.sanctum.machina.R
 import app.sanctum.machina.core.registry.ModelEntry
+import app.sanctum.machina.data.Citation
 import app.sanctum.machina.ui.SanctumIcons
 import app.sanctum.machina.ui.theme.SanctumIncognitoTheme
 import kotlinx.coroutines.launch
@@ -239,7 +240,7 @@ private fun ReadyContent(
     // every assistant bubble (T12 § Modal state hoisting). Not
     // rememberSaveable: `Citation` is not Parcelable and the user can re-tap
     // a chip after restore; cheaper to drop selection than to plumb a Saver.
-    var selectedCitation by remember { mutableStateOf<app.sanctum.machina.data.Citation?>(null) }
+    var selectedCitation by remember { mutableStateOf<Citation?>(null) }
     // Sticky-to-bottom state — hoisted in ReadyContent (D10) so the
     // onSend callback below can reset it before forwarding to the VM,
     // ensuring the autoscroll effect re-fires unconditionally after a
@@ -729,7 +730,7 @@ private fun MessageList(
     supportThinking: Boolean,
     userScrolledAway: Boolean,
     onUserScrolledAwayChange: (Boolean) -> Unit,
-    onCitationClick: (app.sanctum.machina.data.Citation) -> Unit,
+    onCitationClick: (Citation) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()

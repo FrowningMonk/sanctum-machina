@@ -16,7 +16,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -135,37 +134,47 @@ fun MessageBubble(
     }
 }
 
+// Stale-chip color tokens. The base chip uses surfaceVariant /
+// onSurfaceVariant; we drop both alphas so a stale chip recedes visually
+// without losing legibility. Tuned against design_handoff_phase3_ui pill
+// tokens — moving to a design-system token table is tracked in tech-spec
+// AC-21 follow-ups.
+private const val STALE_CHIP_CONTAINER_ALPHA = 0.5f
+private const val STALE_CHIP_LABEL_ALPHA = 0.6f
+
 /**
  * Horizontal chip-strip rendered beneath an assistant bubble (Phase 4 Task 12).
  *
  * `FlowRow` so a long citation list wraps inside the 320 dp `widthIn` parent
- * column rather than overflowing horizontally. Each chip is keyed by
- * `fileId + page` so identical-looking chips that point at distinct chunks
- * (same file, different page) stay independent for accessibility focus.
+ * column rather than overflowing horizontally.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CitationChipStrip(
     citations: List<Citation>,
     onChipClick: (Citation) -> Unit,
 ) {
-    val mutedContainer = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-    val mutedLabel = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+    val mutedContainer = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = STALE_CHIP_CONTAINER_ALPHA)
+    val mutedLabel = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = STALE_CHIP_LABEL_ALPHA)
 
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         for (citation in citations) {
-            val label = if (citation.page != null) {
-                stringResource(
-                    R.string.citation_chip_label_with_page,
-                    citation.fileName,
-                    citation.page,
-                )
-            } else {
-                stringResource(R.string.citation_chip_label_no_page, citation.fileName)
-            }
+            // `formatChipLabel` resolves the strings.xml template once so the
+            // label format stays unit-testable (CitationFormatTest) without
+            // standing up a Compose tree. Same wiring would apply to title /
+            // content-description if their templates ever diverge from the
+            // chip label format; today they share the with-page / no-page
+            // structure but live as separate keys for locale flexibility.
+            val withPageTemplate = stringResource(R.string.citation_chip_label_with_page)
+            val noPageTemplate = stringResource(R.string.citation_chip_label_no_page)
+            val label = formatChipLabel(
+                filename = citation.fileName,
+                page = citation.page,
+                withPageTemplate = withPageTemplate,
+                noPageTemplate = noPageTemplate,
+            )
             val cd = if (citation.page != null) {
                 stringResource(
                     R.string.citation_chip_content_description_with_page,

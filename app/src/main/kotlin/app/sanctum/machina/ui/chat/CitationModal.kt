@@ -22,6 +22,12 @@ import androidx.compose.ui.unit.dp
 import app.sanctum.machina.R
 import app.sanctum.machina.data.Citation
 
+// Cap the scrollable chunk_text region inside the sheet so a 2000-char
+// citation never pushes the Close button off-screen on short devices.
+// Tuned against Honor 200 portrait (392 dp inner height after IME inset)
+// to leave room for title, optional stale marker, and the Close button.
+private val MODAL_BODY_MAX_HEIGHT = 360.dp
+
 /**
  * Bottom sheet that surfaces a single citation's full `chunk_text` (Phase 4 Task 12).
  *
@@ -73,11 +79,9 @@ fun CitationModal(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            // Cap the scrollable region so a 2000-char chunk never pushes the
-            // Close button off-screen on short devices.
             Column(
                 modifier = Modifier
-                    .heightIn(max = 360.dp)
+                    .heightIn(max = MODAL_BODY_MAX_HEIGHT)
                     .verticalScroll(rememberScrollState()),
             ) {
                 SelectionContainer {
