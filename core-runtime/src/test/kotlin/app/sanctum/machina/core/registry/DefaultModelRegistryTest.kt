@@ -588,6 +588,33 @@ class DefaultModelRegistryTest {
   }
 
   @Test
+  fun download_isNoOpForBundledRow() = runBlocking {
+    // Defence-in-depth (round-1 review): bundled rows have no remote source. The UI hides the
+    // download button, but a programmatic call (test, deeplink, hostile JSON drift) must short-
+    // circuit instead of enqueueing a WorkManager job for a non-existent URL. The callbackFlow
+    // emits SUCCEEDED synchronously so collectors get a deterministic terminal status.
+    val helper = QueuedLlmModelHelper(emptyList())
+    val registry = buildRegistry(helper, RecordingInitDiagnostics())
+    registry.awaitEntry("EmbeddingGemma-300M")
+
+    val entry = registry.models.value.single { it.model.name == "EmbeddingGemma-300M" }
+    val emitted = mutableListOf<app.sanctum.machina.core.data.ModelDownloadStatusType>()
+    val job = kotlinx.coroutines.GlobalScope.launch {
+      registry.download(entry.model).collect { status -> emitted += status.status }
+    }
+    withTimeout(2_000) {
+      while (emitted.isEmpty()) kotlinx.coroutines.delay(10)
+    }
+    job.cancel()
+
+    assertEquals(
+      "bundled download() must emit exactly one SUCCEEDED and never reach DownloadRepository",
+      listOf(app.sanctum.machina.core.data.ModelDownloadStatusType.SUCCEEDED),
+      emitted,
+    )
+  }
+
+  @Test
   fun delete_isNoOpForBundledRow() = runBlocking {
     // Defence-in-depth: bundled assets live inside the APK install; the registry must refuse a
     // delete request so the entry doesn't drift to NOT_DOWNLOADED while the cacheDir-extracted

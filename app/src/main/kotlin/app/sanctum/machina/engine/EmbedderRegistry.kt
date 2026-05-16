@@ -51,9 +51,22 @@ private const val TASK_TYPE_QUERY = "retrieval_query"
  * Phase 4 Task 17: directory under `cacheDir/` where bundled embedder assets are extracted on
  * first warmup. Symmetric with the assets/-side layout (`assets/embedding/...`) so a future
  * reviewer can grep both paths under one substring.
+ *
+ * `cacheDir` (vs `filesDir`) is deliberate: Android may evict the directory under memory
+ * pressure. The size-gated short-circuit in [EmbedderRegistry.extractAssetIfStale] re-extracts
+ * automatically on the next warmup if the file is gone — at the cost of one ~1-3 s copy of
+ * 196 MB on the affected start. `filesDir` would survive eviction but inflates the app-data
+ * footprint by the full asset size for every install, regardless of whether the user opens
+ * Projects.
  */
 private const val BUNDLED_ASSET_SUBDIR = "embedding"
 private const val EXTRACT_BUFFER_BYTES = 1 shl 16 // 64 KiB — large enough that 196 MB extracts in ~3 ms/MB.
+/**
+ * Defence-in-depth for [EmbedderRegistry.extractAssetIfStale] (round-1 security review).
+ * Same shape as [AllowlistLoader.MODEL_FILE_REGEX] but enforced locally so a future caller
+ * that bypasses the loader cannot pass a `..`-bearing or path-separator-bearing filename.
+ */
+private val SAFE_BUNDLED_FILE_NAME = Regex("^[A-Za-z0-9._-]+$")
 
 /**
  * Phase 4 Task 4 (Decision 2): `@Singleton` owner of [EmbedderEngine] lifecycle, sibling of
@@ -319,11 +332,19 @@ open class EmbedderRegistry @VisibleForTesting(otherwise = VisibleForTesting.PRI
    * `app/build.gradle.kts`), which is the precondition for `openFd().length` to be a valid
    * size oracle — on compressed assets `openFd` throws `FileNotFoundException`.
    *
-   * Path traversal is bounded statically: callers pass `"$BUNDLED_ASSET_SUBDIR/<known-file>"`,
-   * where the filename is a `Model` field that has already passed [AllowlistLoader]'s
-   * `MODEL_FILE_REGEX` gate (no `..`, no path separators).
+   * **Path traversal is bounded twice:**
+   *  - At construction by [AllowlistLoader]'s `MODEL_FILE_REGEX` gate on `Model.downloadFileName`.
+   *  - Defence-in-depth here via [SAFE_BUNDLED_FILE_NAME] applied to [dst]'s basename — a future
+   *    caller that bypasses the loader still cannot reach `..`-bearing names.
+   *
+   * **Atomicity:** writes go to `dst.tmp` and only `renameTo(dst)` on success, so a truncate-
+   * then-die race cannot leave a partial file at `dst`. A leftover `.tmp` is harmless — the
+   * size gate ignores it and the next call overwrites it.
    */
   private fun extractAssetIfStale(assets: AssetManager, assetPath: String, dst: File) {
+    require(SAFE_BUNDLED_FILE_NAME.matches(dst.name)) {
+      "bundled-asset target filename '${dst.name}' contains unsafe characters"
+    }
     val expectedSize = try {
       assets.openFd(assetPath).use { it.length }
     } catch (e: FileNotFoundException) {
@@ -336,10 +357,19 @@ open class EmbedderRegistry @VisibleForTesting(otherwise = VisibleForTesting.PRI
       )
     }
     if (dst.exists() && dst.length() == expectedSize) return
+    val tmp = File(dst.parentFile, "${dst.name}.tmp")
     assets.open(assetPath).use { input ->
-      dst.outputStream().use { output ->
+      tmp.outputStream().use { output ->
         input.copyTo(output, bufferSize = EXTRACT_BUFFER_BYTES)
       }
+    }
+    // Atomic publish: a process-kill between the copy and the rename leaves `.tmp` but not `dst`,
+    // so the next warmup's size check (dst missing) re-extracts cleanly.
+    if (!tmp.renameTo(dst)) {
+      // Fallback for unlikely cross-filesystem cases; cacheDir lives on the app's internal
+      // storage so this branch should be unreachable on the production runtime.
+      tmp.copyTo(dst, overwrite = true)
+      tmp.delete()
     }
   }
 
