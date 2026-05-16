@@ -183,6 +183,38 @@ class IngestWorkerTest {
     assertEquals(0, embeddingDao.countByFileId(fileId))
   }
 
+  /**
+   * Task 20 regression guard on the worker side. The repository bug fed `relative_path`
+   * verbatim into `enqueue` — `"projects/{projectId}/docs/{name}.pdf"`, no leading slash.
+   * `File(relative).canonicalPath` resolves against the JVM process cwd (`/` on Android),
+   * which produces `/projects/...` — not under the absolute `expectedRoot` derived from
+   * `filesDir/projects/.../docs`, so the prefix guard rejects.
+   *
+   * The two siblings above exercise the security check with absolute-but-escaping inputs.
+   * This one exercises the exact production-bug input shape — a relative path — so that a
+   * future relaxation of the canonical-prefix check (e.g. an "is the candidate name-equal
+   * after canonicalisation" simplification) breaks here and not silently in production.
+   */
+  @Test
+  fun pathTraversal_relativeFilePath_failsAndLogs() = runBlocking {
+    val (projectId, fileId, _) = seedProjectAndFile(pages = 1)
+    // Note: NO `File(context.filesDir, ...)` prefix — raw relative string, no leading slash.
+    // This is the literal value DefaultProjectRepository used to pass before Task 20.
+    val relative = "projects/$projectId/docs/fixture.pdf"
+
+    val result = buildWorker(projectId, fileId, relative).doWork()
+
+    assertEquals(ListenableWorker.Result.failure(), result)
+    val row = fileDao.getById(fileId)!!
+    assertEquals("failed", row.status)
+    assertEquals(
+      "relative-path reject must use the localised path-error message",
+      context.getString(app.sanctum.machina.R.string.ingest_status_failed_path),
+      row.statusMessage,
+    )
+    assertEquals(0, embeddingDao.countByFileId(fileId))
+  }
+
   @Test
   fun malformedPdf_failsAndKeepsConsistentState() = runBlocking {
     val (projectId, fileId, pdfPath) = seedProjectAndFile(pages = 1)
