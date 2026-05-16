@@ -301,4 +301,13 @@
   <string name="citation_modal_title_no_page"><xliff:g id="filename" example="manual.pdf">%1$s</xliff:g></string>
   <string name="citation_modal_stale_marker">(источник удалён)</string>
   <string name="citation_modal_close">Закрыть</string>
+
+  <!-- Phase 4 Task 22 — chunks inspector. -->
+  <string name="project_chunks_title">Чанки проекта</string>
+  <string name="project_chunks_header_format">%1$s · %2$d чанков</string>
+  <string name="project_chunks_item_label">Чанк %1$d · стр. %2$d</string>
+  <string name="project_chunks_item_label_no_page">Чанк %1$d</string>
+  <string name="project_chunks_empty">Индекс пуст. Добавьте документ в проекте.</string>
+  <string name="project_chunks_copied">Чанк скопирован</string>
+  <string name="project_settings_open_chunks">Чанки проекта</string>
 </resources>

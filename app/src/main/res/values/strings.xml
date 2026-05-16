@@ -314,4 +314,15 @@
   <string name="citation_modal_title_no_page"><xliff:g id="filename" example="manual.pdf">%1$s</xliff:g></string>
   <string name="citation_modal_stale_marker">(source removed)</string>
   <string name="citation_modal_close">Close</string>
+
+  <!-- Phase 4 Task 22 — chunks inspector. Diagnostic surface that lists every chunk
+       (file_name + page + full chunk_text) for a project. `chunk_text` is untrusted
+       PDF-derived content rendered through plain Text (see ProjectChunksScreen.kt). -->
+  <string name="project_chunks_title">Project chunks</string>
+  <string name="project_chunks_header_format">%1$s · %2$d chunks</string>
+  <string name="project_chunks_item_label">Chunk %1$d · page %2$d</string>
+  <string name="project_chunks_item_label_no_page">Chunk %1$d</string>
+  <string name="project_chunks_empty">Index is empty. Add a document to the project.</string>
+  <string name="project_chunks_copied">Chunk copied</string>
+  <string name="project_settings_open_chunks">Project chunks</string>
 </resources>

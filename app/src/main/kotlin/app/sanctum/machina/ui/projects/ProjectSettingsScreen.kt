@@ -58,6 +58,7 @@ import app.sanctum.machina.R
 @Composable
 fun ProjectSettingsScreen(
   onBack: () -> Unit,
+  onOpenChunks: () -> Unit = {},
   viewModel: ProjectSettingsViewModel = hiltViewModel(),
 ) {
   val chunkSize by viewModel.chunkSize.collectAsState()
@@ -143,6 +144,17 @@ fun ProjectSettingsScreen(
         ) {
           Text(stringResource(R.string.project_settings_apply_btn))
         }
+      }
+
+      HorizontalDivider()
+
+      // Phase 4 Task 22 — entry-point to the chunks inspector. Lives below the apply row
+      // because it is diagnostic surface, not part of the primary settings flow.
+      TextButton(
+        modifier = Modifier.fillMaxWidth(),
+        onClick = onOpenChunks,
+      ) {
+        Text(stringResource(R.string.project_settings_open_chunks))
       }
     }
   }

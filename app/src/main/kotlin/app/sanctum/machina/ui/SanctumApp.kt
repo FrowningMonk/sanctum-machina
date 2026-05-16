@@ -22,6 +22,7 @@ import app.sanctum.machina.ui.drawer.DrawerContent
 import app.sanctum.machina.ui.home.HomeScreen
 import app.sanctum.machina.ui.modelmanager.ModelManagerScreen
 import app.sanctum.machina.ui.projects.NAV_ARG_PROJECT_ID
+import app.sanctum.machina.ui.projects.ProjectChunksScreen
 import app.sanctum.machina.ui.projects.ProjectCreateScreen
 import app.sanctum.machina.ui.projects.ProjectDetailScreen
 import app.sanctum.machina.ui.projects.ProjectSettingsScreen
@@ -247,10 +248,24 @@ fun SanctumApp() {
                     arguments = listOf(
                         navArgument(NAV_ARG_PROJECT_ID) { type = NavType.LongType },
                     ),
-                ) {
+                ) { backStackEntry ->
+                    val projectId = backStackEntry.arguments?.getLong(NAV_ARG_PROJECT_ID)
                     ProjectSettingsScreen(
                         onBack = { navController.popBackStack() },
+                        onOpenChunks = {
+                            if (projectId != null) {
+                                navController.navigate("project/$projectId/chunks")
+                            }
+                        },
                     )
+                }
+                composable(
+                    route = "project/{projectId}/chunks",
+                    arguments = listOf(
+                        navArgument(NAV_ARG_PROJECT_ID) { type = NavType.LongType },
+                    ),
+                ) {
+                    ProjectChunksScreen(onBack = { navController.popBackStack() })
                 }
                 // Registration order matters: `chat/{chatId}` must be declared BEFORE the
                 // `chat/{modelName}` tombstone below. Navigation matches routes in registration

@@ -243,6 +243,9 @@ private class FakeEmbeddingDao : ProjectEmbeddingDao {
     queryCalls++
     return rows.toList()
   }
+  override suspend fun chunksByProject(
+    projectId: Long,
+  ): List<app.sanctum.machina.data.dao.ChunkInspectorRow> = emptyList()
 }
 
 private fun rowWith(

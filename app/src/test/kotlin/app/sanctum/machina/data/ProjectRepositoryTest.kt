@@ -659,6 +659,9 @@ private class ProjectRepoFakeProjectEmbeddingDao : ProjectEmbeddingDao {
   override suspend fun getById(id: Long): ProjectEmbeddingEntity? = null
   override suspend fun countByFileId(fileId: Long): Int = 0
   override suspend fun allByProjectAndReadyFiles(projectId: Long): List<EmbeddingRow> = emptyList()
+  override suspend fun chunksByProject(
+    projectId: Long,
+  ): List<app.sanctum.machina.data.dao.ChunkInspectorRow> = emptyList()
 }
 
 /**

@@ -147,6 +147,58 @@ class ProjectEmbeddingDaoTest {
     }
 
     @Test
+    fun chunksByProject_returnsAllChunksGroupedByFileName() = runBlocking {
+        // Two files, three chunks each. Insert order is deliberately "B then A" so the test
+        // proves the ORDER BY (file_name ASC, id ASC) — not just an accidental insertion sort.
+        val fileB = insertFile("hB", fileName = "b_doc.pdf")
+        val fileA = insertFile("hA", fileName = "a_doc.pdf")
+        dao.insertAll(
+            listOf(
+                embedding(fileB, page = 1, chunkText = "b1"),
+                embedding(fileB, page = 2, chunkText = "b2"),
+                embedding(fileB, page = 3, chunkText = "b3"),
+            )
+        )
+        dao.insertAll(
+            listOf(
+                embedding(fileA, page = 1, chunkText = "a1"),
+                embedding(fileA, page = 2, chunkText = "a2"),
+                embedding(fileA, page = 3, chunkText = "a3"),
+            )
+        )
+
+        val rows = dao.chunksByProject(projectId)
+
+        assertEquals(6, rows.size)
+        // a_doc.pdf rows come first (file_name ASC); within a file, ids are monotonic.
+        assertEquals(listOf("a1", "a2", "a3", "b1", "b2", "b3"), rows.map { it.chunkText })
+        assertEquals(listOf("a_doc.pdf", "a_doc.pdf", "a_doc.pdf", "b_doc.pdf", "b_doc.pdf", "b_doc.pdf"), rows.map { it.fileName })
+        val aIds = rows.filter { it.fileName == "a_doc.pdf" }.map { it.id }
+        assertEquals("per-file id ordering must be ascending", aIds.sorted(), aIds)
+    }
+
+    @Test
+    fun chunksByProject_includesNonReadyFiles() = runBlocking {
+        // Diagnostic surface: chunks attached to a file mid-ingest or marked `failed` must
+        // still appear so the inspector can show *why* the index looks the way it does.
+        val readyFile = insertFile("h-ready", status = "ready", fileName = "ready.pdf")
+        val indexingFile = insertFile("h-indexing", status = "indexing", fileName = "indexing.pdf")
+        dao.insertAll(listOf(embedding(readyFile, chunkText = "rdy")))
+        dao.insertAll(listOf(embedding(indexingFile, chunkText = "idx")))
+
+        val rows = dao.chunksByProject(projectId)
+
+        assertEquals(2, rows.size)
+        assertEquals(setOf("ready.pdf", "indexing.pdf"), rows.map { it.fileName }.toSet())
+    }
+
+    @Test
+    fun chunksByProject_emptyProject_returnsEmpty() = runBlocking {
+        val rows = dao.chunksByProject(projectId)
+        assertTrue("project with no chunks must return empty", rows.isEmpty())
+    }
+
+    @Test
     fun allByProjectAndReadyFiles_projectionFieldsPopulated() = runBlocking {
         val fileId = insertFile("h-proj", fileName = "proj.pdf")
         dao.insertAll(
