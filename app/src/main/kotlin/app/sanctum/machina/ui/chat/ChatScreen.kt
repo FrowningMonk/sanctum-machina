@@ -70,6 +70,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.sanctum.machina.R
 import app.sanctum.machina.core.registry.ModelEntry
+import app.sanctum.machina.data.Citation
 import app.sanctum.machina.ui.SanctumIcons
 import app.sanctum.machina.ui.theme.SanctumIncognitoTheme
 import kotlinx.coroutines.launch
@@ -235,6 +236,11 @@ private fun ReadyContent(
     // the audio sheet, though AC-19 ON_PAUSE closes it on backgrounding.
     var showCameraSheet by rememberSaveable { mutableStateOf(false) }
     var showAudioSheet by rememberSaveable { mutableStateOf(false) }
+    // Phase 4 Task 12 — single shared modal state for citation chips across
+    // every assistant bubble (T12 § Modal state hoisting). Not
+    // rememberSaveable: `Citation` is not Parcelable and the user can re-tap
+    // a chip after restore; cheaper to drop selection than to plumb a Saver.
+    var selectedCitation by remember { mutableStateOf<Citation?>(null) }
     // Sticky-to-bottom state — hoisted in ReadyContent (D10) so the
     // onSend callback below can reset it before forwarding to the VM,
     // ensuring the autoscroll effect re-fires unconditionally after a
@@ -355,6 +361,7 @@ private fun ReadyContent(
                 supportThinking = modelCaps.supportThinking,
                 userScrolledAway = userScrolledAway,
                 onUserScrolledAwayChange = onUserScrolledAwayChange,
+                onCitationClick = { selectedCitation = it },
                 modifier = Modifier.weight(1f),
             )
             if (attachments.isNotEmpty()) {
@@ -395,6 +402,12 @@ private fun ReadyContent(
             },
         )
     }
+
+    // Phase 4 Task 12 — citation detail sheet, shared by every bubble's chip-strip.
+    CitationModal(
+        citation = selectedCitation,
+        onDismiss = { selectedCitation = null },
+    )
 
     if (showAudioSheet) {
         AudioRecorderBottomSheet(
@@ -444,11 +457,16 @@ private fun ChatTopAppBarTitle(
         is TopAppBarState.Draft -> DraftModelPicker(
             models = state.models,
             currentModelId = state.currentModelId,
+            projectName = state.projectName,
             onModelPicked = onModelPicked,
         )
         is TopAppBarState.Loading -> LoadingTitle(modelName = state.modelName)
         is TopAppBarState.Failed -> FailedLoadButton(modelId = state.modelId, onLoadClicked = onLoadClicked)
-        is TopAppBarState.Ready -> ReadyTitle(modelName = state.modelName)
+        is TopAppBarState.Ready -> ReadyTitle(
+            modelName = state.modelName,
+            projectName = state.projectName,
+            chatTitle = state.chatTitle,
+        )
     }
 }
 
@@ -542,13 +560,25 @@ private fun IncognitoFailedRow(modelId: String, onLoadClicked: (String) -> Unit)
 }
 
 @Composable
-private fun ReadyTitle(modelName: String) {
+private fun ReadyTitle(modelName: String, projectName: String?, chatTitle: String?) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         StatusDot(color = MaterialTheme.colorScheme.primary)
-        Text(text = modelName)
+        // Phase 4 Task 11 cosmetic: project chats surface «{project} / {chat}» so the user
+        // sees they are in a RAG-augmented conversation. Non-project chats fall back to the
+        // Phase-3 model-name title verbatim.
+        val title = if (projectName != null) {
+            stringResource(
+                R.string.chat_project_title_format,
+                projectName,
+                chatTitle.orEmpty(),
+            )
+        } else {
+            modelName
+        }
+        Text(text = title)
     }
 }
 
@@ -613,6 +643,7 @@ private fun FailedLoadButton(modelId: String, onLoadClicked: (String) -> Unit) {
 private fun DraftModelPicker(
     models: List<ModelEntry>,
     currentModelId: String,
+    projectName: String?,
     onModelPicked: (String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -620,49 +651,65 @@ private fun DraftModelPicker(
     val currentName = models.firstOrNull { it.model.modelId == currentModelId }?.model?.name
         ?: currentModelId.ifEmpty { stringResource(R.string.chat_topappbar_pick_model_desc) }
 
-    TextButton(onClick = { expanded = true }, enabled = models.isNotEmpty()) {
-        Text(text = currentName)
-        Icon(
-            imageVector = SanctumIcons.IconChevronDown,
-            contentDescription = stringResource(R.string.chat_topappbar_pick_model_desc),
-            modifier = Modifier.size(18.dp),
-        )
-    }
-    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-        for (entry in models) {
-            DropdownMenuItem(
-                text = { Text(entry.model.name) },
-                onClick = {
-                    expanded = false
-                    val picked = entry.model.modelId
-                    if (picked == currentModelId) return@DropdownMenuItem
-                    pendingModelId = picked
-                },
-                leadingIcon = if (entry.model.modelId == currentModelId) {
-                    { Icon(SanctumIcons.IconCheck, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                } else null,
+    // Phase 4 Task 19: surface «{project} / Новый чат» above the model-picker
+    // button when the draft was opened from a project surface. The picker
+    // itself stays unchanged — the user can still pick any downloaded model
+    // and the project linkage is preserved via the `projectId` nav-arg.
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        if (projectName != null) {
+            Text(
+                text = stringResource(
+                    R.string.chat_project_title_format,
+                    projectName,
+                    stringResource(R.string.drawer_new_chat),
+                ),
+                style = MaterialTheme.typography.bodyMedium,
             )
         }
-    }
-    pendingModelId?.let { picked ->
-        AlertDialog(
-            onDismissRequest = { pendingModelId = null },
-            title = { Text(stringResource(R.string.chat_topappbar_cross_model_title)) },
-            text = { Text(stringResource(R.string.chat_topappbar_cross_model_body)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    pendingModelId = null
-                    onModelPicked(picked)
-                }) {
-                    Text(stringResource(R.string.chat_topappbar_cross_model_confirm))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingModelId = null }) {
-                    Text(stringResource(R.string.btn_cancel))
-                }
-            },
-        )
+        TextButton(onClick = { expanded = true }, enabled = models.isNotEmpty()) {
+            Text(text = currentName)
+            Icon(
+                imageVector = SanctumIcons.IconChevronDown,
+                contentDescription = stringResource(R.string.chat_topappbar_pick_model_desc),
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            for (entry in models) {
+                DropdownMenuItem(
+                    text = { Text(entry.model.name) },
+                    onClick = {
+                        expanded = false
+                        val picked = entry.model.modelId
+                        if (picked == currentModelId) return@DropdownMenuItem
+                        pendingModelId = picked
+                    },
+                    leadingIcon = if (entry.model.modelId == currentModelId) {
+                        { Icon(SanctumIcons.IconCheck, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                    } else null,
+                )
+            }
+        }
+        pendingModelId?.let { picked ->
+            AlertDialog(
+                onDismissRequest = { pendingModelId = null },
+                title = { Text(stringResource(R.string.chat_topappbar_cross_model_title)) },
+                text = { Text(stringResource(R.string.chat_topappbar_cross_model_body)) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        pendingModelId = null
+                        onModelPicked(picked)
+                    }) {
+                        Text(stringResource(R.string.chat_topappbar_cross_model_confirm))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingModelId = null }) {
+                        Text(stringResource(R.string.btn_cancel))
+                    }
+                },
+            )
+        }
     }
 }
 
@@ -701,6 +748,7 @@ private fun MessageList(
     supportThinking: Boolean,
     userScrolledAway: Boolean,
     onUserScrolledAwayChange: (Boolean) -> Unit,
+    onCitationClick: (Citation) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -775,7 +823,11 @@ private fun MessageList(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(messages) { message ->
-                MessageBubble(message = message, supportThinking = supportThinking)
+                MessageBubble(
+                    message = message,
+                    supportThinking = supportThinking,
+                    onCitationClick = onCitationClick,
+                )
             }
         }
         AnimatedVisibility(

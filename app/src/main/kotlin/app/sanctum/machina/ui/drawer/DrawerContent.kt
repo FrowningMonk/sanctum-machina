@@ -2,6 +2,7 @@ package app.sanctum.machina.ui.drawer
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,7 +21,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.MonitorHeart
 import androidx.compose.material.icons.outlined.Storage
@@ -49,6 +54,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.res.stringResource
@@ -82,6 +88,9 @@ fun DrawerContent(
     currentChatId: Long?,
     onChatClick: (chatId: Long) -> Unit,
     onNewChat: () -> Unit,
+    onNavigateToHome: () -> Unit,
+    onProjectClick: (projectId: Long) -> Unit,
+    onNewProject: () -> Unit,
     onNavigateToModelManager: (modelId: String) -> Unit,
     onOpenModelManager: () -> Unit,
     onNavigateToDiagnostics: () -> Unit,
@@ -115,13 +124,69 @@ fun DrawerContent(
             // between) — a plain Column would push the footer down when the
             // list is short and scroll it off-screen when long.
             Box(modifier = Modifier.weight(1f)) {
-                if (state.sections.isEmpty() && !state.isLoading) {
-                    DrawerEmptyState(onNewChat = onNewChat)
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(vertical = 8.dp),
-                    ) {
+                // The Projects section is ALWAYS rendered (AC: «секция не
+                // исчезает»). When the date-group list is also empty we still
+                // surface the «No saved chats» CTA — but as a trailing item
+                // INSIDE the LazyColumn, so the Projects header above it stays
+                // visible.
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(vertical = 8.dp),
+                ) {
+                    // Projects section first (User-Spec Deviation § AC-1):
+                    // higher-level container sits ABOVE the date groups.
+                    item(key = "projects-header") {
+                        ProjectsSectionHeader()
+                    }
+                    if (state.projects.isEmpty()) {
+                        // Gate on `!isLoading` to avoid a one-frame flash of
+                        // «No projects yet» before `combine()` resolves on
+                        // first subscription.
+                        if (!state.isLoading) {
+                            item(key = "projects-empty") {
+                                ProjectsEmptyPlaceholder()
+                            }
+                        }
+                    } else {
+                        state.projects.forEach { group ->
+                            item(key = "project-${group.id}") {
+                                ProjectGroupRow(
+                                    group = group,
+                                    onToggle = { viewModel.toggleProject(group.id) },
+                                    onProjectClick = { onProjectClick(group.id) },
+                                )
+                            }
+                            if (group.isExpanded) {
+                                items(group.chats, key = { "project-${group.id}-chat-${it.id}" }) { row ->
+                                    SwipeableChatRow(
+                                        row = row,
+                                        isActive = row.id == currentChatId,
+                                        onTap = {
+                                            if (row.isModelAvailable) {
+                                                onChatClick(row.id)
+                                            } else {
+                                                pendingUnavailable = row
+                                            }
+                                        },
+                                        onLongPress = { pendingRename = row },
+                                        onSwipeDelete = { pendingDelete = row },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    item(key = "projects-new") {
+                        NewProjectRow(onClick = onNewProject)
+                    }
+                    item(key = "projects-divider") {
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    }
+                    // Existing date-grouped persistent chats (Phase 3).
+                    if (state.sections.isEmpty() && !state.isLoading) {
+                        item(key = "drawer-empty-chats") {
+                            DrawerEmptyState(onNewChat = onNewChat)
+                        }
+                    } else {
                         state.sections.forEach { section ->
                             item(key = "header-${section.kind.name}") {
                                 SectionHeader(kind = section.kind)
@@ -146,6 +211,7 @@ fun DrawerContent(
                 }
             }
             DrawerFooter(
+                onNavigateToHome = onNavigateToHome,
                 onOpenModelManager = onOpenModelManager,
                 onNavigateToDiagnostics = onNavigateToDiagnostics,
                 onNavigateToAbout = onNavigateToAbout,
@@ -192,12 +258,26 @@ fun DrawerContent(
 
 @Composable
 private fun DrawerFooter(
+    onNavigateToHome: () -> Unit,
     onOpenModelManager: () -> Unit,
     onNavigateToDiagnostics: () -> Unit,
     onNavigateToAbout: () -> Unit,
 ) {
     HorizontalDivider()
     Column(modifier = Modifier.padding(vertical = 8.dp)) {
+        NavigationDrawerItem(
+            label = { Text(stringResource(R.string.drawer_footer_home)) },
+            icon = {
+                Icon(
+                    imageVector = Icons.Outlined.Home,
+                    contentDescription = null,
+                )
+            },
+            selected = false,
+            onClick = onNavigateToHome,
+            modifier = Modifier.padding(horizontal = 12.dp),
+            colors = NavigationDrawerItemDefaults.colors(),
+        )
         NavigationDrawerItem(
             label = { Text(stringResource(R.string.drawer_nav_models)) },
             icon = {
@@ -261,9 +341,12 @@ private fun DrawerHeader(onNewChat: () -> Unit) {
 
 @Composable
 private fun DrawerEmptyState(onNewChat: () -> Unit) {
+    // Phase 4 Task 8: rendered as a trailing item INSIDE the LazyColumn so the
+    // Projects section above stays visible (`fillMaxWidth` instead of
+    // `fillMaxSize` — a LazyColumn item has no parent height to fill).
     Box(
         modifier = Modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .padding(24.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -278,6 +361,105 @@ private fun DrawerEmptyState(onNewChat: () -> Unit) {
             )
             FilledTonalButton(onClick = onNewChat) {
                 Text(stringResource(R.string.drawer_new_chat))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProjectsSectionHeader() {
+    Text(
+        text = stringResource(R.string.drawer_section_projects),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+    )
+}
+
+@Composable
+private fun ProjectsEmptyPlaceholder() {
+    Text(
+        text = stringResource(R.string.drawer_projects_empty),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+    )
+}
+
+@Composable
+private fun NewProjectRow(onClick: () -> Unit) {
+    // Phase 4 Task 9 entry-point to ProjectCreateScreen. Lives in the Projects section so
+    // the create button is discoverable both in the empty-state and after the user has any
+    // existing projects (US-AC1 «FAB + Новый проект»).
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.Add,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(end = 12.dp),
+        )
+        Text(
+            text = stringResource(R.string.drawer_new_project),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+@Composable
+private fun ProjectGroupRow(
+    group: ProjectGroupUiModel,
+    onToggle: () -> Unit,
+    onProjectClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onProjectClick),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Folder,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(end = 12.dp),
+            )
+            Text(
+                text = group.name,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            // Chevron is a SEPARATE click target so the row tap navigates into
+            // the project while the chevron only flips local expansion. Without
+            // this split there is no way to collapse a group without entering
+            // it first.
+            Box(
+                modifier = Modifier
+                    .clickable(onClick = onToggle)
+                    .padding(8.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                    contentDescription = stringResource(
+                        if (group.isExpanded) R.string.drawer_project_expanded_cd
+                        else R.string.drawer_project_collapsed_cd,
+                    ),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.rotate(if (group.isExpanded) 90f else 0f),
+                )
             }
         }
     }

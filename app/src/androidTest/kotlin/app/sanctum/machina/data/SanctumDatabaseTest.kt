@@ -74,13 +74,27 @@ class SanctumDatabaseTest {
     }
 
     @Test
-    fun noProjectFilesTable() {
-        assertTrue("project_files absent in v1", "project_files" !in readTableNames())
+    fun projectsTableExists() {
+        assertTrue("projects table present in v2", "projects" in readTableNames())
     }
 
     @Test
-    fun noProjectsTable() {
-        assertTrue("projects absent in v1", "projects" !in readTableNames())
+    fun projectFilesTableExists() {
+        assertTrue("project_files table present in v2", "project_files" in readTableNames())
+    }
+
+    @Test
+    fun projectEmbeddingsTableExists() {
+        assertTrue(
+            "project_embeddings table present in v2",
+            "project_embeddings" in readTableNames(),
+        )
+    }
+
+    @Test
+    fun messagesHasCitationsColumn() {
+        val columns = readColumnNames("messages")
+        assertTrue("messages.citations column present in v2", "citations" in columns)
     }
 
     private fun readTableNames(): Set<String> {
@@ -90,6 +104,15 @@ class SanctumDatabaseTest {
             .use { cursor ->
                 while (cursor.moveToNext()) names.add(cursor.getString(0))
             }
+        return names
+    }
+
+    private fun readColumnNames(table: String): Set<String> {
+        val names = mutableSetOf<String>()
+        db.openHelper.readableDatabase.query("PRAGMA table_info(`$table`)").use { cursor ->
+            val nameIdx = cursor.getColumnIndex("name")
+            while (cursor.moveToNext()) names.add(cursor.getString(nameIdx))
+        }
         return names
     }
 }

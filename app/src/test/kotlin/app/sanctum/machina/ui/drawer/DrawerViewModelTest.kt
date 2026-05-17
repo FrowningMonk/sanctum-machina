@@ -9,10 +9,14 @@ import app.sanctum.machina.core.registry.ModelRegistry
 import app.sanctum.machina.core.registry.ResetReason
 import app.sanctum.machina.data.ChatRepository
 import app.sanctum.machina.data.PersistedAttachment
+import app.sanctum.machina.data.ProjectRepository
+import app.sanctum.machina.data.RagConfig
 import app.sanctum.machina.data.dao.ChatDao
 import app.sanctum.machina.data.dao.MessageDao
 import app.sanctum.machina.data.model.ChatEntity
 import app.sanctum.machina.data.model.MessageEntity
+import app.sanctum.machina.data.model.ProjectEntity
+import app.sanctum.machina.data.model.ProjectFileEntity
 import app.sanctum.machina.ui.chat.Attachment
 import java.io.File
 import java.time.LocalDate
@@ -64,6 +68,7 @@ class DrawerViewModelTest {
   private lateinit var registry: FakeModelRegistry
   private lateinit var messageDao: FakeMessageDao
   private lateinit var chatDao: FakeChatDao
+  private lateinit var projectRepo: FakeProjectRepository
 
   @Before
   fun setUp() {
@@ -72,6 +77,7 @@ class DrawerViewModelTest {
     registry = FakeModelRegistry()
     messageDao = FakeMessageDao()
     chatDao = FakeChatDao()
+    projectRepo = FakeProjectRepository()
   }
 
   @After
@@ -410,6 +416,180 @@ class DrawerViewModelTest {
     assertFalse(viewModel.checkModelAvailable(chatId = 400L))
   }
 
+  // ---- Phase 4 Task 8: Projects section ----
+
+  @Test
+  fun projectsSection_emptyWhenNoProjects() = runTest {
+    seedChat(id = 1L, lastMessageDate = today)
+    projectRepo.emit(emptyList())
+
+    val viewModel = subscribedViewModel()
+    advanceUntilIdle()
+
+    assertTrue(viewModel.drawerUiState.value.projects.isEmpty())
+  }
+
+  @Test
+  fun chatWithProjectId_goesToProjectGroup_notDateSections() = runTest {
+    val ms = atStartOfDayEpoch(today)
+    projectRepo.emit(listOf(ProjectEntity(id = 1L, name = "Proj A", createdAt = ms)))
+    chatDao.put(
+      ChatEntity(
+        id = 50L,
+        projectId = 1L,
+        modelId = "m",
+        title = "Chat-in-proj",
+        createdAt = ms,
+        lastMessageAt = ms,
+      )
+    )
+    chatRepo.emitChats(chatDao.snapshot())
+
+    val viewModel = subscribedViewModel()
+    advanceUntilIdle()
+
+    val state = viewModel.drawerUiState.value
+    assertEquals(listOf(50L), state.projects.single().chats.map { it.id })
+    assertTrue(
+      "chat with project_id must NOT appear in date sections",
+      state.sections.flatMap { it.chats }.none { it.id == 50L },
+    )
+  }
+
+  @Test
+  fun chatWithoutProjectId_staysInDateSections() = runTest {
+    seedChat(id = 60L, lastMessageDate = today)
+    projectRepo.emit(emptyList())
+
+    val viewModel = subscribedViewModel()
+    advanceUntilIdle()
+
+    val state = viewModel.drawerUiState.value
+    assertTrue(state.projects.isEmpty())
+    assertEquals(
+      listOf(60L),
+      state.sections.first { it.kind == DateSectionKind.TODAY }.chats.map { it.id },
+    )
+  }
+
+  @Test
+  fun toggleProject_invertsIsExpanded() = runTest {
+    val ms = atStartOfDayEpoch(today)
+    projectRepo.emit(listOf(ProjectEntity(id = 1L, name = "Proj A", createdAt = ms)))
+    val viewModel = subscribedViewModel()
+    advanceUntilIdle()
+
+    assertTrue(viewModel.drawerUiState.value.projects.single().isExpanded)
+
+    viewModel.toggleProject(1L)
+    advanceUntilIdle()
+    assertFalse(viewModel.drawerUiState.value.projects.single().isExpanded)
+
+    viewModel.toggleProject(1L)
+    advanceUntilIdle()
+    assertTrue(viewModel.drawerUiState.value.projects.single().isExpanded)
+  }
+
+  @Test
+  fun projectGroupChats_sortedByLastMessageAtDesc() = runTest {
+    // Mirrors `chatsWithinSectionSortedByLastMessageDesc` deliberately — pins
+    // that the project-group sort matches the date-group sort, both hitting
+    // their respective code paths (`buildProjectGroups` vs `buildSections`).
+    val base = atStartOfDayEpoch(today)
+    projectRepo.emit(listOf(ProjectEntity(id = 1L, name = "Proj A", createdAt = base)))
+    listOf(
+      ChatEntity(id = 70L, projectId = 1L, modelId = "m", title = "A", createdAt = base, lastMessageAt = base + 100),
+      ChatEntity(id = 71L, projectId = 1L, modelId = "m", title = "B", createdAt = base, lastMessageAt = base + 300),
+      ChatEntity(id = 72L, projectId = 1L, modelId = "m", title = "C", createdAt = base, lastMessageAt = base + 200),
+    ).forEach { chatDao.put(it) }
+    chatRepo.emitChats(chatDao.snapshot())
+
+    val viewModel = subscribedViewModel()
+    advanceUntilIdle()
+
+    val chats = viewModel.drawerUiState.value.projects.single().chats
+    assertEquals(listOf(71L, 72L, 70L), chats.map { it.id })
+  }
+
+  @Test
+  fun multipleProjects_preserveRepositoryOrder() = runTest {
+    val ms = atStartOfDayEpoch(today)
+    projectRepo.emit(
+      listOf(
+        ProjectEntity(id = 3L, name = "Newest", createdAt = ms + 200),
+        ProjectEntity(id = 2L, name = "Middle", createdAt = ms + 100),
+        ProjectEntity(id = 1L, name = "Oldest", createdAt = ms),
+      )
+    )
+
+    val viewModel = subscribedViewModel()
+    advanceUntilIdle()
+
+    val state = viewModel.drawerUiState.value
+    assertEquals(listOf(3L, 2L, 1L), state.projects.map { it.id })
+    // Edge case: project without chats still appears with an empty `chats`
+    // list (Task 9 will introduce the UI that creates such empty projects).
+    state.projects.forEach {
+      assertTrue("project ${it.id} must have empty chats", it.chats.isEmpty())
+    }
+  }
+
+  @Test
+  fun newlyArrivingProject_defaultsToExpanded_afterUnrelatedToggle() = runTest {
+    // Pins the «track collapsed ids, not expanded ids» design — a project
+    // emitted AFTER an unrelated toggle still defaults to expanded.
+    val ms = atStartOfDayEpoch(today)
+    projectRepo.emit(listOf(ProjectEntity(id = 1L, name = "A", createdAt = ms)))
+    val viewModel = subscribedViewModel()
+    advanceUntilIdle()
+
+    viewModel.toggleProject(1L)
+    advanceUntilIdle()
+    assertFalse(viewModel.drawerUiState.value.projects.single().isExpanded)
+
+    projectRepo.emit(
+      listOf(
+        ProjectEntity(id = 2L, name = "B", createdAt = ms + 100),
+        ProjectEntity(id = 1L, name = "A", createdAt = ms),
+      )
+    )
+    advanceUntilIdle()
+
+    val byId = viewModel.drawerUiState.value.projects.associateBy { it.id }
+    assertFalse("project 1 stays collapsed", byId.getValue(1L).isExpanded)
+    assertTrue("newly-arriving project 2 defaults to expanded", byId.getValue(2L).isExpanded)
+  }
+
+  @Test
+  fun chatWithUnknownProjectId_isFilteredSilently() = runTest {
+    // Race window during CASCADE DELETE: project gone from `observeAllProjects`
+    // but the chat row is still in the chats flow for a tick. Per task edge-cases
+    // — filter the chat silently; do NOT fall back into a date group.
+    val ms = atStartOfDayEpoch(today)
+    projectRepo.emit(emptyList())
+    chatDao.put(
+      ChatEntity(
+        id = 90L,
+        projectId = 99L,
+        modelId = "m",
+        title = "orphan",
+        createdAt = ms,
+        lastMessageAt = ms,
+      )
+    )
+    chatRepo.emitChats(chatDao.snapshot())
+
+    val viewModel = subscribedViewModel()
+    advanceUntilIdle()
+
+    val state = viewModel.drawerUiState.value
+    assertTrue(state.projects.isEmpty())
+    assertTrue(
+      "orphan chat must not appear in date sections",
+      state.sections.flatMap { it.chats }.none { it.id == 90L },
+    )
+  }
+
   // ---- helpers ----
 
   private fun TestScope.subscribedViewModel(): DrawerViewModel {
@@ -419,6 +599,7 @@ class DrawerViewModelTest {
         registry = registry,
         messageDao = messageDao,
         chatDao = chatDao,
+        projectRepository = projectRepo,
         filesDir = File("fake-files-dir"),
         clock = { today },
       )
@@ -514,6 +695,7 @@ private class FakeChatRepository : ChatRepository {
     filesDir: File,
     stagedImageFilename: String?,
     stagedAudioFilename: String?,
+    projectId: Long?,
   ): Long = 0L
   override suspend fun writeAttachmentStaging(
     stagingDir: File,
@@ -581,4 +763,49 @@ private class FakeMessageDao : MessageDao {
   override suspend fun lastByChat(chatId: Long): MessageEntity? =
     rows.filter { it.chatId == chatId }
       .maxWithOrNull(compareBy({ it.createdAt }, { it.id }))
+
+  override suspend fun observeCitedMessagesPageByProject(
+    projectId: Long,
+    offset: Int,
+    limit: Int,
+  ): List<MessageEntity> = emptyList()
+
+  override suspend fun updateCitations(messageId: Long, citationsJson: String?) {
+    // no-op fake — citation maintenance covered by integration tests
+  }
+}
+
+private class FakeProjectRepository : ProjectRepository {
+  private val _projects = MutableStateFlow<List<ProjectEntity>>(emptyList())
+
+  fun emit(list: List<ProjectEntity>) { _projects.value = list }
+
+  override fun observeAllProjects(): Flow<List<ProjectEntity>> = _projects.asStateFlow()
+
+  // ---- unused (returns defaults) ----
+  override fun observeProjectById(projectId: Long): Flow<ProjectEntity?> = emptyFlow()
+  override suspend fun getById(projectId: Long): ProjectEntity? = null
+  override suspend fun create(name: String, defaultModelId: String?): Long = 0L
+  override suspend fun delete(projectId: Long, filesDir: File) = Unit
+  override fun observeFiles(projectId: Long): Flow<List<ProjectFileEntity>> = emptyFlow()
+  override suspend fun addFile(
+    projectId: Long,
+    fileName: String,
+    contentHash: String,
+    localPath: String,
+  ): Long = 0L
+  override suspend fun deleteFile(fileId: Long, filesDir: File) = Unit
+  override suspend fun updateRagOverrides(projectId: Long, overrides: RagConfig?) = Unit
+  override suspend fun getEffectiveRagSettings(projectId: Long): RagConfig =
+    RagConfig(chunkSize = 800, chunkOverlap = 100, topK = 4, embeddingDim = 768)
+  override suspend fun enqueueIngest(projectId: Long, fileId: Long, filePath: String) = Unit
+  override suspend fun reindexFile(fileId: Long, filesDir: File) = Unit
+  override suspend fun applyReindexRequired(
+    projectId: Long,
+    chunkSize: Int,
+    chunkOverlap: Int,
+    filesDir: File,
+  ) = Unit
+  override suspend fun projectsUsingEmbedder(embedderModelId: String) =
+    emptyList<app.sanctum.machina.data.model.ProjectEntity>()
 }

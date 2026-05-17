@@ -2,12 +2,24 @@ package app.sanctum.machina.data.model
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
 @Entity(
     tableName = "chats",
-    indices = [Index(value = ["last_message_at"])]
+    foreignKeys = [
+        ForeignKey(
+            entity = ProjectEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["project_id"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [
+        Index(value = ["last_message_at"]),
+        Index(value = ["project_id"]),
+    ],
 )
 data class ChatEntity(
     @PrimaryKey(autoGenerate = true)

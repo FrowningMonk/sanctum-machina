@@ -1,0 +1,620 @@
+/*
+ * Copyright 2026 Sanctum Machina authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ */
+
+package app.sanctum.machina.core.worker
+
+import android.content.Context
+import androidx.room.Room
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.work.Data
+import androidx.work.ListenableWorker
+import androidx.work.testing.TestListenableWorkerBuilder
+import app.sanctum.machina.core.embedder.Embedder
+import app.sanctum.machina.core.log.ErrorLog
+import app.sanctum.machina.data.DefaultProjectRepository
+import app.sanctum.machina.data.ProjectRepository
+import app.sanctum.machina.data.SanctumDatabase
+import app.sanctum.machina.data.dao.ProjectEmbeddingDao
+import app.sanctum.machina.data.dao.ProjectFileDao
+import app.sanctum.machina.data.model.ProjectEntity
+import app.sanctum.machina.data.model.ProjectFileEntity
+import com.google.gson.Gson
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import kotlinx.coroutines.CancellationException
+import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.pdmodel.PDPage
+import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
+import com.tom_roush.pdfbox.pdmodel.font.PDType1Font
+import java.io.File
+import kotlinx.coroutines.runBlocking
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+
+/**
+ * Phase 4 Task 7 acceptance tests for [IngestWorker].
+ *
+ * Tests build the worker through [TestListenableWorkerBuilder] (no WorkManager required) and
+ * inject collaborators via [IngestWorker.testEntryPoint] — the production seam at
+ * [IngestWorker.resolveEntryPoint] flips through that field when present so we never have to
+ * stand up Hilt instrumentation.
+ *
+ * Each test sets up:
+ *   - in-memory Room database for project/file/embedding rows
+ *   - a deterministic [FakeEmbedder] returning a fixed-dim vector per chunk
+ *   - a single-page PDF fixture built at runtime via pdfbox itself (same approach
+ *     `PdfTextExtractorTest` uses to avoid committed binary fixtures)
+ *
+ * The PDF lives under `filesDir/projects/{projectId}/docs/{uuid}.pdf` so path validation
+ * passes; the path-traversal test deliberately points the worker outside that root.
+ */
+@RunWith(AndroidJUnit4::class)
+class IngestWorkerTest {
+
+  private lateinit var context: Context
+  private lateinit var db: SanctumDatabase
+  private lateinit var fileDao: ProjectFileDao
+  private lateinit var embeddingDao: ProjectEmbeddingDao
+  private lateinit var repo: ProjectRepository
+  private lateinit var errorLog: ErrorLog
+  private lateinit var fakeEmbedder: FakeEmbedder
+
+  @Before
+  fun setUp() {
+    context = ApplicationProvider.getApplicationContext()
+    PDFBoxResourceLoader.init(context)
+    db = Room.inMemoryDatabaseBuilder(context, SanctumDatabase::class.java)
+      .addCallback(SanctumDatabase.ForeignKeysOnOpenCallback)
+      .allowMainThreadQueries()
+      .build()
+    fileDao = db.projectFileDao()
+    embeddingDao = db.projectEmbeddingDao()
+    errorLog = ErrorLog(context)
+    repo = DefaultProjectRepository(
+      database = db,
+      projectDao = db.projectDao(),
+      projectFileDao = fileDao,
+      projectEmbeddingDao = embeddingDao,
+      messageDao = db.messageDao(),
+      errorLog = errorLog,
+      gson = Gson(),
+      // Worker never enqueues again — keep enqueuer no-op for unit ingest path.
+      ingestEnqueuer = IngestEnqueuer { _, _, _ -> },
+    )
+    fakeEmbedder = FakeEmbedder()
+    IngestWorker.testEntryPoint = TestEntryPoint(
+      repo = repo,
+      fileDao = fileDao,
+      embeddingDao = embeddingDao,
+      embedder = fakeEmbedder,
+      errorLog = errorLog,
+    )
+  }
+
+  @After
+  fun tearDown() {
+    IngestWorker.testEntryPoint = null
+    db.close()
+    // Best-effort wipe of any PDFs created during the test.
+    File(context.filesDir, "projects").deleteRecursively()
+  }
+
+  @Test
+  fun happyPath_threePagePdf_completesWithReadyStatus() = runBlocking {
+    val (projectId, fileId, pdfPath) = seedProjectAndFile(pages = 3)
+
+    val result = buildWorker(projectId, fileId, pdfPath).doWork()
+
+    assertEquals(ListenableWorker.Result.success(), result)
+    val row = fileDao.getById(fileId)!!
+    assertEquals("ready", row.status)
+    assertNull(row.statusMessage)
+    assertTrue("chunkCount must be > 0 after happy path", (row.chunkCount ?: 0) > 0)
+    // Two independent assertions on the embedding count: (1) the ready-filtered DAO query
+    // returns the same rows as the unfiltered count — guards against a future bug that flips
+    // file status to something other than `ready` on success; (2) chunk_count column matches
+    // the persisted row count (catches divergence between the column update and the actual
+    // DELETE/INSERT under transaction failure).
+    val readyEmbeddings = embeddingDao.allByProjectAndReadyFiles(projectId)
+    val rawCount = embeddingDao.countByFileId(fileId)
+    assertEquals(
+      "ready-filtered + raw counts must match on happy path",
+      rawCount,
+      readyEmbeddings.size,
+    )
+    assertEquals("chunk_count column must equal persisted row count", rawCount, row.chunkCount)
+  }
+
+  @Test
+  fun pathTraversal_outsideProjectDocsRoot_failsAndLogs() = runBlocking {
+    val (projectId, fileId, _) = seedProjectAndFile(pages = 1)
+    // Point filePath at a sibling directory the worker should reject.
+    val escapePath = File(context.filesDir, "evil.pdf").absolutePath
+
+    val result = buildWorker(projectId, fileId, escapePath).doWork()
+
+    assertEquals(ListenableWorker.Result.failure(), result)
+    val row = fileDao.getById(fileId)!!
+    assertEquals("failed", row.status)
+    // Status message localised — assert against the resource the worker uses.
+    assertEquals(
+      context.getString(app.sanctum.machina.R.string.ingest_status_failed_path),
+      row.statusMessage,
+    )
+    assertEquals(
+      "no embeddings rows must exist for the rejected fileId",
+      0,
+      embeddingDao.countByFileId(fileId),
+    )
+  }
+
+  @Test
+  fun pathTraversal_dotDotInPath_failsAndLogs() = runBlocking {
+    val (projectId, fileId, _) = seedProjectAndFile(pages = 1)
+    // Construct a path that *appears* to live under the docs root but escapes through `..`.
+    val tricky = File(
+      context.filesDir,
+      "projects/$projectId/docs/../../../secret.pdf",
+    ).absolutePath
+
+    val result = buildWorker(projectId, fileId, tricky).doWork()
+
+    assertEquals(ListenableWorker.Result.failure(), result)
+    val row = fileDao.getById(fileId)!!
+    assertEquals("failed", row.status)
+    assertEquals(
+      "path-traversal reject must use the localised path-error message",
+      context.getString(app.sanctum.machina.R.string.ingest_status_failed_path),
+      row.statusMessage,
+    )
+    assertEquals(0, embeddingDao.countByFileId(fileId))
+  }
+
+  /**
+   * Task 20 regression guard on the worker side. The repository bug fed `relative_path`
+   * verbatim into `enqueue` — `"projects/{projectId}/docs/{name}.pdf"`, no leading slash.
+   * `File(relative).canonicalPath` resolves against the JVM process cwd (`/` on Android),
+   * which produces `/projects/...` — not under the absolute `expectedRoot` derived from
+   * `filesDir/projects/.../docs`, so the prefix guard rejects.
+   *
+   * The two siblings above exercise the security check with absolute-but-escaping inputs.
+   * This one exercises the exact production-bug input shape — a relative path — so that a
+   * future relaxation of the canonical-prefix check (e.g. an "is the candidate name-equal
+   * after canonicalisation" simplification) breaks here and not silently in production.
+   */
+  @Test
+  fun pathTraversal_relativeFilePath_failsAndLogs() = runBlocking {
+    val (projectId, fileId, _) = seedProjectAndFile(pages = 1)
+    // Note: NO `File(context.filesDir, ...)` prefix — raw relative string, no leading slash.
+    // This is the literal value DefaultProjectRepository used to pass before Task 20.
+    val relative = "projects/$projectId/docs/fixture.pdf"
+
+    val result = buildWorker(projectId, fileId, relative).doWork()
+
+    assertEquals(ListenableWorker.Result.failure(), result)
+    val row = fileDao.getById(fileId)!!
+    assertEquals("failed", row.status)
+    assertEquals(
+      "relative-path reject must use the localised path-error message",
+      context.getString(app.sanctum.machina.R.string.ingest_status_failed_path),
+      row.statusMessage,
+    )
+    assertEquals(0, embeddingDao.countByFileId(fileId))
+  }
+
+  @Test
+  fun malformedPdf_failsAndKeepsConsistentState() = runBlocking {
+    val (projectId, fileId, pdfPath) = seedProjectAndFile(pages = 1)
+    // Overwrite the fixture with garbage so pdfbox load throws.
+    File(pdfPath).writeBytes(byteArrayOf(0x00, 0x01, 0x02, 0x03, 0x04))
+
+    val result = buildWorker(projectId, fileId, pdfPath).doWork()
+
+    assertEquals(ListenableWorker.Result.failure(), result)
+    val row = fileDao.getById(fileId)!!
+    assertEquals("failed", row.status)
+    assertEquals(0, embeddingDao.countByFileId(fileId))
+  }
+
+  /**
+   * Round-2 strengthening: the previous shape used `throwOnEncode = true` from the start, so
+   * the cleanup DELETE never had any persisted rows to remove and the test passed even if the
+   * production cleanup branch dropped its `deleteByFileId` call. Now the fake succeeds for the
+   * first encode batch then throws — so the worker writes real `project_embeddings` rows
+   * before failing, and the cleanup assertion is load-bearing.
+   */
+  @Test
+  fun embedderFailure_midIngest_cleansPersistedEmbeddings() = runBlocking {
+    // Multi-page PDF so we definitely cross the ENCODE_BATCH_SIZE=8 boundary and flushBuffer
+    // commits one batch to disk before the second batch's encode throws.
+    val (projectId, fileId, pdfPath) = seedProjectAndFile(pages = 5)
+    fakeEmbedder.throwAfterSuccessfulBatches = 1
+
+    val result = buildWorker(projectId, fileId, pdfPath).doWork()
+
+    assertEquals(ListenableWorker.Result.failure(), result)
+    val row = fileDao.getById(fileId)!!
+    assertEquals("failed", row.status)
+    assertEquals(
+      context.getString(app.sanctum.machina.R.string.ingest_status_failed_generic),
+      row.statusMessage,
+    )
+    // The first batch persisted (would be > 0 without cleanup); cleanup deletes them.
+    assertEquals(
+      "cleanupPartialIngest must delete the persisted first-batch embeddings",
+      0,
+      embeddingDao.countByFileId(fileId),
+    )
+    assertTrue(
+      "FakeEmbedder must have completed at least one batch before throwing",
+      fakeEmbedder.successfulBatches > 0,
+    )
+  }
+
+  /**
+   * Round-2 addition: the `CancellationException` catch path under `NonCancellable` in
+   * `IngestWorker.doWork` had zero coverage. We trigger it by having the embedder throw a
+   * structural `CancellationException` mid-ingest — this is the same shape WorkManager
+   * delivers when `cancelUniqueWork` fires, so the cleanup branch sees identical machinery.
+   *
+   * Assert two distinguishers vs. the generic failure path: (a) `statusMessage` is the
+   * cancel-specific string (Прервано / "Cancelled"), not the generic one; (b) embeddings are
+   * cleaned up via `NonCancellable`-wrapped DELETE even though the outer CE is inflight.
+   */
+  @Test
+  fun cancellation_midIngest_cleansEmbeddingsAndMarksCancelled() = runBlocking {
+    val (projectId, fileId, pdfPath) = seedProjectAndFile(pages = 5)
+    fakeEmbedder.cancelAfterSuccessfulBatches = 1
+
+    val caught: Throwable? = try {
+      buildWorker(projectId, fileId, pdfPath).doWork()
+      null
+    } catch (ce: CancellationException) {
+      ce
+    }
+    assertNotNull(
+      "CancellationException must propagate out of doWork so WorkManager reports STOPPED",
+      caught,
+    )
+
+    val row = fileDao.getById(fileId)!!
+    assertEquals("failed", row.status)
+    assertEquals(
+      "cancel branch must use the localised cancel message, NOT the generic failure",
+      context.getString(app.sanctum.machina.R.string.ingest_status_failed_cancelled),
+      row.statusMessage,
+    )
+    assertEquals(
+      "cleanup under NonCancellable must DELETE the persisted first-batch embeddings",
+      0,
+      embeddingDao.countByFileId(fileId),
+    )
+  }
+
+  /**
+   * Task 23: live progress chip. The worker must rewrite `project_files.status_message`
+   * after every flushBuffer and every page tick so the UI sees the `«стр. N · M чанков»`
+   * (localised in `values-ru/`, here we hit the en fallback) string climb in real time.
+   *
+   * Round-2 test-reviewer (M-1): the previous shape only asserted «marker `·` present»,
+   * which the per-flush write alone satisfies on a 3-page PDF where every page produces
+   * chunks > batch size. A future refactor that drops the per-page `persistProgress()` call
+   * (e.g. moving it inside `if (chunks.isNotEmpty())`) would silently break the empty-page
+   * tick contract spelled out in task 23 §1 («чтобы счётчик страниц всё равно тикал»). The
+   * regex-parse + monotonic-page assertion below pins the integers, and the final
+   * pre-ready update's page count must equal the PDF page count — proving that the
+   * per-page tick fires for the last page even when the buffer flush already covered it.
+   *
+   * Final `Result.success()` must clear the message so the chip flips back to «Ready».
+   */
+  @Test
+  fun happyPath_progressUpdatesAppearMidRun_andClearOnReady() = runBlocking {
+    val (projectId, fileId, pdfPath) = seedProjectAndFile(pages = 3)
+    val recording = installRecordingFileDao()
+
+    val result = buildWorker(projectId, fileId, pdfPath).doWork()
+
+    assertEquals(ListenableWorker.Result.success(), result)
+    val progressUpdates = recording.updates.filter {
+      it.status == "indexing" && it.statusMessage != null
+    }
+    assertTrue(
+      "expected at least one mid-run progress update with a localised status_message",
+      progressUpdates.isNotEmpty(),
+    )
+    // Parse the integers out of every progress message — both en («Indexing · p. N · M chunks»)
+    // and ru («Индексация · стр. N · M чанков») expose the page and chunk counts as the only
+    // two integers in the string. Asserting monotonic non-decreasing page counts catches a
+    // regression that flips the call order or drops the per-page tick.
+    val pageCounts = progressUpdates.map { extractIntsFromStatusMessage(it.statusMessage!!)[0] }
+    assertTrue(
+      "page counts must be monotonically non-decreasing, was $pageCounts",
+      pageCounts.zipWithNext().all { (prev, next) -> next >= prev },
+    )
+    assertEquals(
+      "the final progress update before ready must report all 3 pages — proves the per-page tick fired for page 3 (not just the flushBuffer write)",
+      3,
+      pageCounts.last(),
+    )
+    // Chunk count on at least one of the progress updates must be > 0 — the second flush
+    // (or the second page) sees chunks committed.
+    assertTrue(
+      "at least one progress update must carry chunkCount > 0",
+      progressUpdates.any { (it.chunkCount ?: 0) > 0 },
+    )
+    // Use `last { ready }` instead of `.last()` so a future telemetry hook that writes after
+    // the ready transition doesn't make this assertion read the wrong row and surface a
+    // misleading failure (nit from test-reviewer round 1).
+    val finalUpdate = recording.updates.last { it.status == "ready" }
+    assertNull(
+      "final ready update must clear the progress message so the chip flips to «Ready»",
+      finalUpdate.statusMessage,
+    )
+  }
+
+  /**
+   * Task 23: failure clears progress. After a mid-run throw, cleanupPartialIngest must
+   * overwrite the progress string with a failure string — the chip must never «freeze»
+   * showing «стр. N · M чанков» when ingest is no longer running.
+   */
+  @Test
+  fun failure_clearsProgressMessageWithFailureString() = runBlocking {
+    val (projectId, fileId, pdfPath) = seedProjectAndFile(pages = 5)
+    val recording = installRecordingFileDao()
+    // Throw mid-ingest so at least one progress update lands before cleanup runs.
+    fakeEmbedder.throwAfterSuccessfulBatches = 1
+
+    val result = buildWorker(projectId, fileId, pdfPath).doWork()
+
+    assertEquals(ListenableWorker.Result.failure(), result)
+    // A progress message did land at some point.
+    assertTrue(
+      "expected progress updates before failure",
+      recording.updates.any { it.status == "indexing" && it.statusMessage?.contains("·") == true },
+    )
+    // ... but the row's final state carries the failure message, not the progress string.
+    val finalUpdate = recording.updates.last { it.status == "failed" }
+    assertEquals(
+      context.getString(app.sanctum.machina.R.string.ingest_status_failed_generic),
+      finalUpdate.statusMessage,
+    )
+  }
+
+  /**
+   * Task 23 edge case (test-reviewer round 1 m-5): single-page PDF. With one page, both the
+   * per-page tick and the per-flush write fire exactly once each, so the recorder sees at
+   * least one progress update whose `«p. N»` integer equals 1 and whose chunkCount matches
+   * the persisted column. A regression like an off-by-one in the page counter (or a
+   * guard `if (totalPages > 1)`) would only manifest here.
+   */
+  @Test
+  fun singlePagePdf_emitsProgressUpdateForPageOne() = runBlocking {
+    val (projectId, fileId, pdfPath) = seedProjectAndFile(pages = 1)
+    val recording = installRecordingFileDao()
+
+    val result = buildWorker(projectId, fileId, pdfPath).doWork()
+
+    assertEquals(ListenableWorker.Result.success(), result)
+    val progressUpdates = recording.updates.filter {
+      it.status == "indexing" && it.statusMessage != null
+    }
+    assertTrue(
+      "single-page PDF must still emit at least one progress update",
+      progressUpdates.isNotEmpty(),
+    )
+    val pageCounts = progressUpdates.map { extractIntsFromStatusMessage(it.statusMessage!!)[0] }
+    assertEquals(
+      "every progress update on a 1-page PDF must report page=1",
+      setOf(1),
+      pageCounts.toSet(),
+    )
+    val finalReady = recording.updates.last { it.status == "ready" }
+    assertEquals(
+      "chunk_count column on ready must match the last progress update's chunk count",
+      progressUpdates.last().chunkCount,
+      finalReady.chunkCount,
+    )
+  }
+
+  @Test
+  fun missingInputData_failsImmediately() = runBlocking {
+    // Build with all-zero inputs — projectId<=0 short-circuits before any DB read.
+    val worker = TestListenableWorkerBuilder<IngestWorker>(context, Data.EMPTY).build()
+    val result = worker.doWork()
+    assertEquals(ListenableWorker.Result.failure(), result)
+  }
+
+  @Test
+  fun missingFileRow_failsAndDoesNotPersistEmbeddings() = runBlocking {
+    val (projectId, _, pdfPath) = seedProjectAndFile(pages = 1)
+    val orphanFileId = 9_999_999L // not in DB
+
+    val result = buildWorker(projectId, orphanFileId, pdfPath).doWork()
+
+    assertEquals(ListenableWorker.Result.failure(), result)
+    assertEquals(
+      "no embeddings rows created for orphan fileId",
+      0,
+      embeddingDao.countByFileId(orphanFileId),
+    )
+  }
+
+  // ---- helpers ----
+
+  private fun buildWorker(projectId: Long, fileId: Long, filePath: String): IngestWorker {
+    val data = Data.Builder()
+      .putLong(KEY_PROJECT_ID, projectId)
+      .putLong(KEY_FILE_ID, fileId)
+      .putString(KEY_FILE_PATH, filePath)
+      .build()
+    return TestListenableWorkerBuilder<IngestWorker>(context, data).build()
+  }
+
+  private suspend fun seedProjectAndFile(pages: Int): Triple<Long, Long, String> {
+    val projectId = db.projectDao().insert(ProjectEntity(name = "p", createdAt = 1L))
+    val docsDir = File(context.filesDir, "projects/$projectId/docs").apply { mkdirs() }
+    val pdfFile = File(docsDir, "fixture.pdf")
+    buildPdf(pdfFile, pages)
+    val fileId = fileDao.insert(
+      ProjectFileEntity(
+        projectId = projectId,
+        fileName = pdfFile.name,
+        relativePath = "projects/$projectId/docs/${pdfFile.name}",
+        contentHash = "h$projectId",
+        status = "pending",
+        createdAt = 1L,
+      ),
+    )
+    return Triple(projectId, fileId, pdfFile.absolutePath)
+  }
+
+  /**
+   * Task 23 (nit from test-reviewer round 1): centralise the «swap in a recording wrapper
+   * AFTER setUp() installed the bare DAO» dance so test bodies don't drift out of sync. A
+   * future test that forgets to re-wire `testEntryPoint` would silently exercise the bare
+   * DAO and the `recording.updates` assertions would fire against an empty list.
+   */
+  private fun installRecordingFileDao(): RecordingProjectFileDao {
+    val recording = RecordingProjectFileDao(fileDao)
+    IngestWorker.testEntryPoint = TestEntryPoint(
+      repo = repo,
+      fileDao = recording,
+      embeddingDao = embeddingDao,
+      embedder = fakeEmbedder,
+      errorLog = errorLog,
+    )
+    return recording
+  }
+
+  /**
+   * Task 23 progress-string parser. Both the en template («Indexing · p. N · M chunks») and
+   * the ru template («Индексация · стр. N · M чанков») expose exactly two integers in
+   * fixed order: page count then chunk count. Caller MUST only pass strings produced by
+   * `R.string.project_file_status_indexing_progress` — the `require` guards a future test
+   * that wires in a different status message (e.g. the simple-fallback string) and would
+   * otherwise hit an unhelpful IndexOutOfBounds (round-2 test-reviewer m-1).
+   */
+  private fun extractIntsFromStatusMessage(message: String): List<Int> {
+    val ints = Regex("\\d+").findAll(message).map { it.value.toInt() }.toList()
+    require(ints.size == 2) { "expected page+chunk ints in '$message', got $ints" }
+    return ints
+  }
+
+  private fun buildPdf(target: File, pageCount: Int) {
+    PDDocument().use { doc ->
+      for (i in 1..pageCount) {
+        val page = PDPage()
+        doc.addPage(page)
+        PDPageContentStream(doc, page).use { stream ->
+          stream.beginText()
+          stream.setFont(PDType1Font.HELVETICA, 12f)
+          stream.newLineAtOffset(72f, 720f)
+          stream.showText(
+            "Sample page $i. " + (
+              "The quick brown fox jumps over the lazy dog. ".repeat(20)
+              ),
+          )
+          stream.endText()
+        }
+      }
+      doc.save(target)
+    }
+  }
+
+  /**
+   * Task 23 helper: wraps a real [ProjectFileDao] and records every write call so tests can
+   * assert on the sequence of mid-run progress writes the worker performs against
+   * `project_files`. Read methods delegate straight through to the real DAO so the worker
+   * observes the production-shape rows for `getById` / `getByProjectAndHash` / etc.
+   *
+   * Round-2 test-reviewer (M-3) future-proofing: each `@Update` / `@Insert` / `@Query DELETE`
+   * surface is forwarded *explicitly* rather than relying on `by delegate` for writes — a
+   * future write overload (e.g. a second `@Update` method or a partial-write `@Query`) would
+   * silently bypass the recorder, and the litmus assertion «final update is ready/null» would
+   * still pass even if the production code took an undocumented write path. If you add a
+   * mutation method to [ProjectFileDao], add the matching `override` here.
+   */
+  private class RecordingProjectFileDao(
+    private val delegate: ProjectFileDao,
+  ) : ProjectFileDao by delegate {
+    val updates: MutableList<ProjectFileEntity> = mutableListOf()
+    val inserts: MutableList<ProjectFileEntity> = mutableListOf()
+    val deletes: MutableList<Long> = mutableListOf()
+
+    override suspend fun update(file: ProjectFileEntity) {
+      updates.add(file)
+      delegate.update(file)
+    }
+
+    override suspend fun insert(file: ProjectFileEntity): Long {
+      inserts.add(file)
+      return delegate.insert(file)
+    }
+
+    override suspend fun deleteById(id: Long) {
+      deletes.add(id)
+      delegate.deleteById(id)
+    }
+  }
+
+  /** Minimal hand-written EntryPoint impl wired to the test fixtures. */
+  private class TestEntryPoint(
+    private val repo: ProjectRepository,
+    private val fileDao: ProjectFileDao,
+    private val embeddingDao: ProjectEmbeddingDao,
+    private val embedder: Embedder,
+    private val errorLog: ErrorLog,
+  ) : IngestWorkerEntryPoint {
+    override fun projectRepository(): ProjectRepository = repo
+    override fun embedder(): Embedder = embedder
+    override fun projectFileDao(): ProjectFileDao = fileDao
+    override fun projectEmbeddingDao(): ProjectEmbeddingDao = embeddingDao
+    override fun errorLog(): ErrorLog = errorLog
+  }
+
+  /**
+   * Deterministic embedder: returns one fixed-dim vector per input text. Tests choose between
+   * three failure modes:
+   *   - [throwOnEncode] = true → fail immediately, never produces a successful batch.
+   *   - [throwAfterSuccessfulBatches] = N → succeed for N batches, then throw IllegalStateException
+   *     (exercises the generic `Throwable` catch in `doWork`).
+   *   - [cancelAfterSuccessfulBatches] = N → succeed for N batches, then throw
+   *     CancellationException (exercises the `NonCancellable`-wrapped cancel-cleanup branch).
+   * [successfulBatches] is the read-side counter for assertions.
+   */
+  private class FakeEmbedder(val dim: Int = 8) : Embedder {
+    var throwOnEncode: Boolean = false
+    var throwAfterSuccessfulBatches: Int = -1
+    var cancelAfterSuccessfulBatches: Int = -1
+    var successfulBatches: Int = 0
+
+    override suspend fun encode(texts: List<String>, taskType: String): List<FloatArray> {
+      if (throwOnEncode) error("FakeEmbedder configured to throw")
+      if (cancelAfterSuccessfulBatches in 0..successfulBatches) {
+        throw CancellationException("FakeEmbedder configured to cancel after $cancelAfterSuccessfulBatches batches")
+      }
+      if (throwAfterSuccessfulBatches in 0..successfulBatches) {
+        error("FakeEmbedder configured to throw after $throwAfterSuccessfulBatches batches")
+      }
+      val out = texts.map { text ->
+        FloatArray(dim) { i -> ((text.hashCode() xor i) % 7).toFloat() }
+      }
+      successfulBatches++
+      return out
+    }
+    override suspend fun encodeQuery(text: String): FloatArray = encode(listOf(text), "query").first()
+  }
+}

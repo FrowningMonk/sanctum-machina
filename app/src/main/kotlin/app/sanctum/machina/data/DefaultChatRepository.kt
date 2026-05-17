@@ -103,6 +103,7 @@ internal constructor(
     filesDir: File,
     stagedImageFilename: String?,
     stagedAudioFilename: String?,
+    projectId: Long?,
   ): Long = withContext(ioDispatcher) {
     val attachmentsRoot = File(filesDir, ATTACHMENTS_DIR)
 
@@ -125,6 +126,7 @@ internal constructor(
       createdAtMs = firstMessage.createdAt,
     )
     val chat = ChatEntity(
+      projectId = projectId,
       modelId = modelId,
       title = title,
       isManuallyTitled = 0,

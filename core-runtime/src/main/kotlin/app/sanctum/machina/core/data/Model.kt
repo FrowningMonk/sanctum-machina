@@ -36,7 +36,24 @@ enum class RuntimeType {
   @SerializedName("unknown") UNKNOWN,
   @SerializedName("litert_lm") LITERT_LM,
   @SerializedName("aicore") AICORE,
+  // Phase 4 Task 1 (Decision 4): EmbeddingGemma runs on the regular LiteRT Interpreter
+  // runtime (NOT litert-lm). Derived by AllowlistLoader from `taskTypes` containing
+  // "llm_embedding"; never serialized from the allowlist JSON directly.
+  @SerializedName("litert_interpreter") LITERT_INTERPRETER,
 }
+
+/**
+ * Phase 4 Task 1 (Decision 11): defaults for RAG parameters, carried per-model from the
+ * allowlist row's `defaultRagConfig` block. Present only on embedder rows (taskTypes contains
+ * `llm_embedding`); null for chat models. Used as the floor for per-project overrides
+ * (`projects.rag_overrides_json`) — see ProjectSettingsViewModel (Task 9).
+ */
+data class RagDefaults(
+  val chunkSize: Int,
+  val chunkOverlap: Int,
+  val topK: Int,
+  val embeddingDim: Int,
+)
 
 enum class AICoreModelReleaseStage {
   @SerializedName("stable") STABLE,
@@ -86,6 +103,17 @@ data class Model(
   val accelerators: List<Accelerator> = listOf(),
   val visionAccelerator: Accelerator = Accelerator.GPU,
   val imported: Boolean = false,
+  /**
+   * Phase 4 Task 17: row ships inside the APK's assets/ rather than downloading from
+   * Hugging Face. Bundled rows skip the [DownloadRepository] path, are surfaced as
+   * `SUCCEEDED` immediately by [DefaultModelRegistry.refreshAllowlist], and are loaded
+   * by their owning runtime through asset-extraction (currently consumed only by
+   * [app.sanctum.machina.engine.EmbedderRegistry] for EmbeddingGemma). Semantically
+   * distinct from [imported] — `imported` means «user picked a .gguf via SAF», `bundled`
+   * means «we shipped this file inside the APK». Both opt out of the download flow but
+   * for different reasons.
+   */
+  val bundled: Boolean = false,
   var normalizedName: String = "",
   var instance: Any? = null,
   var initializing: Boolean = false,
@@ -93,6 +121,12 @@ data class Model(
   var configValues: Map<String, Any> = mapOf(),
   var prevConfigValues: Map<String, Any> = mapOf(),
   var totalBytes: Long = 0L,
+  /**
+   * Phase 4 Task 1 (Decision 11): RAG parameter defaults from the allowlist row.
+   * Non-null only for embedder rows; consumed by ProjectSettingsViewModel as the
+   * baseline before per-project overrides are merged.
+   */
+  val defaultRagConfig: RagDefaults? = null,
 ) {
   init {
     normalizedName = NORMALIZE_NAME_REGEX.replace(name, "_")

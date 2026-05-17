@@ -2,6 +2,7 @@ package app.sanctum.machina.engine
 
 import androidx.annotation.VisibleForTesting
 import app.sanctum.machina.core.data.ModelDownloadStatusType
+import app.sanctum.machina.core.data.RuntimeType
 import app.sanctum.machina.core.log.ErrorLog
 import app.sanctum.machina.core.registry.ModelRegistry
 import app.sanctum.machina.core.settings.AppSettingsRepository
@@ -179,7 +180,13 @@ open class WarmupCoordinator @VisibleForTesting(otherwise = VisibleForTesting.PR
       try {
         registry.models.collect { list ->
           val downloaded = list.firstOrNull {
-            it.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED
+            // Task 10: skip embedder rows. `default_model_id` tracks the chat model used by
+            // quick chat — auto-writing the embedder's modelId would corrupt that contract
+            // (quick chat would refuse to start, "Начать быстрый чат" would suspend forever).
+            // If the embedder is the only SUCCEEDED row (user grabbed it before any chat
+            // model), we keep waiting until a chat model finishes downloading.
+            it.downloadStatus.status == ModelDownloadStatusType.SUCCEEDED &&
+              it.model.runtimeType != RuntimeType.LITERT_INTERPRETER
           } ?: return@collect
           if (appSettings.getDefaultModelId().isEmpty()) {
             val modelId = downloaded.model.modelId

@@ -24,6 +24,11 @@ The app uses open-source components:
 - [Gemma](https://ai.google.dev/gemma) — model family from Google.
 - [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) — on-device inference runtime.
 
+## Licenses
+
+- **EmbeddingGemma-300M** ships inside this application and is redistributed under the [Gemma Terms of Use](https://ai.google.dev/gemma/terms).
+- **Gemma 4 E2B / E4B** chat models are downloaded by the user from Hugging Face under the same [Gemma Terms of Use](https://ai.google.dev/gemma/terms).
+
 ## Feedback
 
 The project evolves iteratively. This file (`assets/about_en.md`) is edited directly — change its content as needed, rebuild the APK, and the About screen reflects the update.

@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import app.sanctum.machina.core.data.AllowedModel
 import app.sanctum.machina.core.data.ConfigKeys
+import app.sanctum.machina.core.data.RuntimeType
 import app.sanctum.machina.core.log.ErrorLog
 import java.io.File
 import kotlinx.coroutines.test.runTest
@@ -51,9 +52,10 @@ class AllowlistLoaderTest {
     AllowlistLoader.parse(json.byteInputStream(Charsets.UTF_8))
 
   @Test
-  fun loadFromFixture_returnsListOfTwoModels() {
+  fun loadFromFixture_returnsListOfThreeModels() {
+    // Phase 4 Task 1: third row is EmbeddingGemma-300M (taskTypes=["llm_embedding"]).
     val result = loadFixture()
-    assertEquals(2, result.getOrThrow().size)
+    assertEquals(3, result.getOrThrow().size)
   }
 
   @Test
@@ -66,20 +68,24 @@ class AllowlistLoaderTest {
       assertTrue("commitHash empty for ${model.modelId}", model.commitHash.isNotEmpty())
       assertTrue("sizeInBytes not positive for ${model.modelId}", model.sizeInBytes > 0L)
 
-      val cfg = model.defaultConfig
-      assertNotNull("defaultConfig null for ${model.modelId}", cfg)
-      assertNotNull("topK null for ${model.modelId}", cfg!!.topK)
-      assertNotNull("temperature null for ${model.modelId}", cfg.temperature)
-      assertNotNull("accelerators null for ${model.modelId}", cfg.accelerators)
-
-      // Decision T8 guard: GPU must be tried first.
-      val firstToken = cfg.accelerators!!.split(",")[0].trim().lowercase()
-      assertEquals("first accelerator must be gpu for ${model.modelId}", "gpu", firstToken)
-
       // Mapped Model sanity: URL points at huggingface.co with correct id/commit/file.
       val mapped = model.toModel()
       assertTrue("mapped URL wrong for ${model.modelId}: ${mapped.url}",
         mapped.url.startsWith("https://huggingface.co/${model.modelId}/resolve/${model.commitHash}/${model.modelFile}"))
+
+      // LLM-chat rows carry defaultConfig (sampler knobs + accelerator order).
+      // Embedder rows do not — they carry defaultRagConfig instead, validated separately.
+      if (model.taskTypes.contains("llm_chat")) {
+        val cfg = model.defaultConfig
+        assertNotNull("defaultConfig null for ${model.modelId}", cfg)
+        assertNotNull("topK null for ${model.modelId}", cfg!!.topK)
+        assertNotNull("temperature null for ${model.modelId}", cfg.temperature)
+        assertNotNull("accelerators null for ${model.modelId}", cfg.accelerators)
+
+        // Decision T8 guard: GPU must be tried first.
+        val firstToken = cfg.accelerators!!.split(",")[0].trim().lowercase()
+        assertEquals("first accelerator must be gpu for ${model.modelId}", "gpu", firstToken)
+      }
     }
   }
 
@@ -438,6 +444,266 @@ class AllowlistLoaderTest {
       model.configValues.containsKey(ConfigKeys.MAX_CONTEXT_LENGTH.label),
     )
   }
+
+  // --- Phase 4 Task 1: EmbeddingGemma allowlist row ------------------------------------
+
+  /**
+   * Compose an EmbeddingGemma-style row. Embedder rows differ structurally from chat rows:
+   * `taskTypes` = ["llm_embedding"], no `defaultConfig`, presence of `defaultRagConfig` with
+   * Matryoshka-enum-restricted embeddingDim. Org allowed: `litert-community` OR `google`.
+   */
+  private fun embeddingGemmaJson(
+    modelId: String = "litert-community/embeddinggemma-300m",
+    taskTypes: String = "[\"llm_embedding\"]",
+    defaultRagConfig: String =
+      "{\"chunkSize\":800,\"chunkOverlap\":100,\"topK\":4,\"embeddingDim\":768}",
+  ): String =
+    """{"models":[{"name":"EmbeddingGemma-300M","modelId":"$modelId",
+    "modelFile":"embeddinggemma-300M_seq2048_mixed-precision.tflite",
+    "commitHash":"e054b9751a203d96508b87532585e20730f23ef6",
+    "sizeInBytes":205520896,"minDeviceMemoryInGb":4,
+    "taskTypes":$taskTypes,"defaultRagConfig":$defaultRagConfig}]}"""
+
+  @Test
+  fun accepts_google_org_for_embedder_row() {
+    // Decision 4: regex widened to ^(litert-community|google)/... so google/* is parseable
+    // even though our final ship-row points at litert-community/embeddinggemma-300m
+    // (Decision 12 deviation — recorded in decisions.md).
+    val json = embeddingGemmaJson(modelId = "google/embeddinggemma-300m")
+    val parsed = parseRaw(json).getOrThrow()
+    val model = parsed.single().toModel()
+    assertEquals(RuntimeType.LITERT_INTERPRETER, model.runtimeType)
+    assertNotNull("defaultRagConfig must propagate to domain Model", model.defaultRagConfig)
+    assertEquals(800, model.defaultRagConfig!!.chunkSize)
+    assertEquals(100, model.defaultRagConfig!!.chunkOverlap)
+    assertEquals(4, model.defaultRagConfig!!.topK)
+    assertEquals(768, model.defaultRagConfig!!.embeddingDim)
+  }
+
+  @Test
+  fun accepts_litert_community_org_regression() {
+    // Regression guard: widening the regex must not break the existing org.
+    val json = embeddingGemmaJson(modelId = "litert-community/embeddinggemma-300m")
+    val parsed = parseRaw(json).getOrThrow()
+    assertEquals("litert-community/embeddinggemma-300m", parsed.single().modelId)
+  }
+
+  @Test
+  fun rejects_third_party_org() {
+    val json = embeddingGemmaJson(modelId = "evil-org/foo")
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    assertTrue(
+      result.exceptionOrNull()?.message.orEmpty().contains("modelId must match"),
+    )
+  }
+
+  @Test
+  fun derives_runtime_type_litert_interpreter_from_embedding_task() {
+    val model = parseRaw(embeddingGemmaJson()).getOrThrow().single().toModel()
+    assertEquals(RuntimeType.LITERT_INTERPRETER, model.runtimeType)
+    assertFalse("embedder must not be isLlm (no chat configs)", model.isLlm)
+    assertTrue("embedder must have empty configs", model.configs.isEmpty())
+  }
+
+  @Test
+  fun derives_runtime_type_litert_lm_from_chat_tasks() {
+    // Regression: existing Gemma 4 row with llm_chat must still derive LITERT_LM,
+    // not change behaviour after the runtimeType derivation rule lands.
+    val json = minimalModelJson()  // taskTypes = ["llm_chat"]
+    val model = parseRaw(json).getOrThrow().single().toModel()
+    assertEquals(RuntimeType.LITERT_LM, model.runtimeType)
+    assertTrue("chat model must be isLlm", model.isLlm)
+  }
+
+  @Test
+  fun rejects_malformed_default_rag_config_overlap_ge_chunkSize() {
+    val json = embeddingGemmaJson(
+      defaultRagConfig =
+        "{\"chunkSize\":100,\"chunkOverlap\":100,\"topK\":4,\"embeddingDim\":768}",
+    )
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected defaultRagConfig marker: $msg", msg.contains("defaultRagConfig"))
+    assertTrue("expected overlap/chunkSize marker: $msg",
+      msg.contains("chunkOverlap") || msg.contains("chunkSize"))
+  }
+
+  @Test
+  fun rejects_unknown_embedding_dim() {
+    // 384 is NOT in Matryoshka enum {128, 256, 512, 768} from EmbeddingGemma model card.
+    val json = embeddingGemmaJson(
+      defaultRagConfig =
+        "{\"chunkSize\":800,\"chunkOverlap\":100,\"topK\":4,\"embeddingDim\":384}",
+    )
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected embeddingDim marker: $msg", msg.contains("embeddingDim"))
+  }
+
+  @Test
+  fun rejects_empty_task_types() {
+    // taskTypes drives runtimeType derivation — must be non-empty to be unambiguous.
+    val json = embeddingGemmaJson(taskTypes = "[]")
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected taskTypes marker: $msg", msg.contains("taskTypes"))
+  }
+
+  @Test
+  fun rejects_mixed_task_types_embedding_and_chat() {
+    // Decision 4: single-purpose enforcement — a row may not advertise both llm_embedding
+    // and chat tasks. The Model would otherwise come out incoherent: LITERT_INTERPRETER
+    // runtime AND isLlm=true AND populated chat configs.
+    val json = embeddingGemmaJson(taskTypes = "[\"llm_embedding\",\"llm_chat\"]")
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected mix marker: $msg", msg.contains("must not mix"))
+  }
+
+  @Test
+  fun rejects_zero_or_negative_chunk_size() {
+    val json = embeddingGemmaJson(
+      defaultRagConfig =
+        "{\"chunkSize\":0,\"chunkOverlap\":0,\"topK\":4,\"embeddingDim\":768}",
+    )
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected chunkSize marker: $msg", msg.contains("chunkSize"))
+  }
+
+  @Test
+  fun rejects_oversized_chunk_size() {
+    // Defense-in-depth: parser refuses Int.MAX_VALUE-class values so a future schema edit
+    // can't OOM the chunker downstream (security-auditor round-1 low finding).
+    val json = embeddingGemmaJson(
+      defaultRagConfig =
+        "{\"chunkSize\":100000,\"chunkOverlap\":100,\"topK\":4,\"embeddingDim\":768}",
+    )
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected chunkSize range marker: $msg",
+      msg.contains("chunkSize") && msg.contains("65536"))
+  }
+
+  @Test
+  fun rejects_negative_chunk_overlap() {
+    val json = embeddingGemmaJson(
+      defaultRagConfig =
+        "{\"chunkSize\":800,\"chunkOverlap\":-1,\"topK\":4,\"embeddingDim\":768}",
+    )
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected chunkOverlap marker: $msg", msg.contains("chunkOverlap"))
+  }
+
+  @Test
+  fun rejects_zero_or_negative_top_k() {
+    val json = embeddingGemmaJson(
+      defaultRagConfig =
+        "{\"chunkSize\":800,\"chunkOverlap\":100,\"topK\":0,\"embeddingDim\":768}",
+    )
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected topK marker: $msg", msg.contains("topK"))
+  }
+
+  @Test
+  fun rejects_oversized_top_k() {
+    val json = embeddingGemmaJson(
+      defaultRagConfig =
+        "{\"chunkSize\":800,\"chunkOverlap\":100,\"topK\":1000,\"embeddingDim\":768}",
+    )
+    val result = parseRaw(json)
+    assertTrue(result.isFailure)
+    val msg = result.exceptionOrNull()?.message.orEmpty()
+    assertTrue("expected topK range marker: $msg",
+      msg.contains("topK") && msg.contains("256"))
+  }
+
+  @Test
+  fun accepts_embedder_row_without_default_rag_config() {
+    // Contract pin: defaultRagConfig is OPTIONAL on embedder rows. Spec implies it but the
+    // parser does not require it (validation only fires when the field is present). If a
+    // future row ships without ragDefaults, the Model lands with defaultRagConfig=null and
+    // T9 falls back to its hardcoded RagDefaults baseline. Test guards this contract.
+    val jsonNoRag = """{"models":[{"name":"x","modelId":"litert-community/embeddinggemma-300m",
+      "modelFile":"a.tflite","commitHash":"e054b9751a203d96508b87532585e20730f23ef6",
+      "sizeInBytes":1,"minDeviceMemoryInGb":4,"taskTypes":["llm_embedding"]}]}"""
+    val parsed = parseRaw(jsonNoRag).getOrThrow()
+    val model = parsed.single().toModel()
+    assertEquals(RuntimeType.LITERT_INTERPRETER, model.runtimeType)
+    assertEquals(null, model.defaultRagConfig)
+  }
+
+  @Test
+  fun best_for_task_types_parsed_when_present() {
+    // bestForTaskTypes was promoted to first-class on AllowedModel in this task (was Gson-
+    // silently-ignored before). Pin that the JSON field reaches the parsed object.
+    val parsed = parseRaw(embeddingGemmaJson()).getOrThrow().single()
+    // The default fixture omits bestForTaskTypes → must be null.
+    assertEquals(null, parsed.bestForTaskTypes)
+
+    val withBest = """{"models":[{"name":"x","modelId":"litert-community/embeddinggemma-300m",
+      "modelFile":"a.tflite","commitHash":"e054b9751a203d96508b87532585e20730f23ef6",
+      "sizeInBytes":1,"minDeviceMemoryInGb":4,"taskTypes":["llm_embedding"],
+      "bestForTaskTypes":["llm_embedding"],
+      "defaultRagConfig":{"chunkSize":800,"chunkOverlap":100,"topK":4,"embeddingDim":768}}]}"""
+    val withBestParsed = parseRaw(withBest).getOrThrow().single()
+    assertEquals(listOf("llm_embedding"), withBestParsed.bestForTaskTypes)
+  }
+
+  @Test
+  fun bundled_flag_defaults_false_when_missing() {
+    // Regression guard: every pre-Task-17 row (`Gemma-4-E2B-it`, `Gemma-4-E4B-it`) omits
+    // `bundled`; the parser must default to `false`, otherwise DefaultModelRegistry would
+    // surface chat rows as SUCCEEDED on first emission and skip the download flow entirely.
+    val parsed = parseRaw(embeddingGemmaJson()).getOrThrow().single()
+    assertFalse("bundled must default to false when key absent", parsed.bundled)
+    assertFalse("bundled must propagate as false to domain Model", parsed.toModel().bundled)
+  }
+
+  @Test
+  fun bundled_true_propagates_through_toModel() {
+    // Task 17: EmbeddingGemma row carries `bundled: true`. AllowlistLoader must accept it
+    // without complaint and propagate the flag onto the domain `Model` so EmbedderRegistry
+    // can branch on it at warmup time.
+    val json = """{"models":[{"name":"EmbeddingGemma-300M",
+      "modelId":"litert-community/embeddinggemma-300m",
+      "modelFile":"embeddinggemma-300M_seq2048_mixed-precision.tflite",
+      "commitHash":"e054b9751a203d96508b87532585e20730f23ef6",
+      "sizeInBytes":205520896,"minDeviceMemoryInGb":4,
+      "bundled":true,
+      "taskTypes":["llm_embedding"],
+      "defaultRagConfig":{"chunkSize":800,"chunkOverlap":100,"topK":4,"embeddingDim":768}}]}"""
+    val parsed = parseRaw(json).getOrThrow().single()
+    assertTrue("AllowedModel.bundled must reflect JSON value", parsed.bundled)
+    assertTrue("Model.bundled must reflect JSON value", parsed.toModel().bundled)
+  }
+
+  @Test
+  fun parses_real_bundled_allowlist_with_three_rows() {
+    // Asserts the bundled prod asset (after adding EmbeddingGemma row in this task)
+    // contains all three rows and they all parse — aggregate doesn't fail-fast.
+    val prod = File("src/main/assets/model_allowlist.json")
+    assertTrue("prod asset missing: ${prod.absolutePath}", prod.exists())
+    val parsed = AllowlistLoader.parse(prod.inputStream()).getOrThrow()
+    assertEquals("expected 3 rows after Phase-4-T1 add", 3, parsed.size)
+    val embedder = parsed.find { it.modelId.endsWith("/embeddinggemma-300m") }
+    assertNotNull("EmbeddingGemma row missing from prod asset", embedder)
+    assertEquals(listOf("llm_embedding"), embedder!!.taskTypes)
+    assertEquals(RuntimeType.LITERT_INTERPRETER, embedder.toModel().runtimeType)
+  }
+
+  // --- Pre-existing tests below ---------------------------------------------------------
 
   @Test
   fun defaultConfig_missingEntirely_systemPromptDefaultEmpty() {

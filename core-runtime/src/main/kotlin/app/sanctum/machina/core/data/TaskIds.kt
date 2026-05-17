@@ -11,3 +11,9 @@
 package app.sanctum.machina.core.data
 
 const val TASK_ID_LLM_CHAT = "llm_chat"
+
+/**
+ * Phase 4 Task 1: marker for embedder rows. Drives [RuntimeType] derivation in
+ * [AllowedModel.toModel] and is the gate for parsing `defaultRagConfig`.
+ */
+const val TASK_ID_LLM_EMBEDDING = "llm_embedding"

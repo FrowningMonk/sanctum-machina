@@ -3,10 +3,12 @@ package app.sanctum.machina.ui.modelmanager
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.sanctum.machina.core.data.RuntimeType
 import app.sanctum.machina.core.registry.ModelEntry
 import app.sanctum.machina.core.registry.ModelRegistry
 import app.sanctum.machina.core.settings.AppSettingsRepository
 import app.sanctum.machina.crash.CrashState
+import app.sanctum.machina.data.ProjectRepository
 import app.sanctum.machina.logexport.DeviceInfoProvider
 import app.sanctum.machina.logexport.ExportSource
 import app.sanctum.machina.logexport.LogExportManager
@@ -14,10 +16,12 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import java.io.IOException
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -31,6 +35,38 @@ sealed interface NavEvent {
     data class ShowSnackbar(val message: String) : NavEvent
 }
 
+/**
+ * Embedder delete-confirmation dialog state (Task 10).
+ *
+ * `null` means no dialog is showing; the two concrete shapes carry the data the screen renders.
+ * [WarningWithProjects.projectNames] is ordered by `created_at ASC` per `ProjectDao` — locked
+ * by `projectsUsingEmbedder_*` tests so screenshots / smoke runs see a stable list.
+ *
+ * `modelName` is the `Model.name` (display + registry key) carried so `onConfirmDelete` can
+ * route the call without re-querying the row from the UI thread.
+ */
+sealed interface EmbedderDeleteDialogState {
+    val modelName: String
+
+    /** Zero affected projects — show the standard confirm without a list. */
+    data class Confirm(override val modelName: String) : EmbedderDeleteDialogState
+
+    /** ≥1 affected projects — show the warning with the project list. */
+    data class WarningWithProjects(
+        override val modelName: String,
+        val projectNames: List<String>,
+    ) : EmbedderDeleteDialogState
+}
+
+/**
+ * Task 10 — runtime check for embedder rows. Single source of truth (Decision 12 derives
+ * `runtimeType` from `taskTypes contains "llm_embedding"` at allowlist parse time, so the
+ * runtime field is the only signal we need at UI time). Used by both the row treatment and
+ * `setDefaultModel`'s defence-in-depth guard.
+ */
+internal fun ModelEntry.isEmbedder(): Boolean =
+    model.runtimeType == RuntimeType.LITERT_INTERPRETER
+
 @HiltViewModel
 class ModelManagerViewModel
 @Inject
@@ -40,6 +76,7 @@ constructor(
     private val logExportManager: LogExportManager,
     private val appSettings: AppSettingsRepository,
     private val deviceInfo: DeviceInfoProvider,
+    private val projectRepository: ProjectRepository,
 ) : ViewModel() {
 
     /**
@@ -100,6 +137,11 @@ constructor(
     private val _navEvents = MutableSharedFlow<NavEvent>(extraBufferCapacity = 1)
     val navEvents: SharedFlow<NavEvent> = _navEvents.asSharedFlow()
 
+    private val _embedderDeleteDialog = MutableStateFlow<EmbedderDeleteDialogState?>(null)
+    /** Screen-observed state for the embedder delete-confirmation dialog (Task 10). */
+    val embedderDeleteDialog: StateFlow<EmbedderDeleteDialogState?> =
+        _embedderDeleteDialog.asStateFlow()
+
     fun onDownload(entry: ModelEntry) {
         // Defence-in-depth gate: UI already disables the button on a sub-threshold device,
         // but a programmatic call (test, future deeplink, accessibility action) must not
@@ -124,12 +166,67 @@ constructor(
     /**
      * Persist [modelId] as the user's default and surface a Snackbar with the display [modelName].
      * Called by the overflow menu "Сделать по умолчанию" item (AC-F7, US-8 item 7).
+     *
+     * Task 10 defence-in-depth: embedder rows must never have their `modelId` written to
+     * `default_model_id` (the field tracks the chat model used by quick chat). The UI already
+     * hides the overflow item for embedder rows, but a programmatic call (test, deeplink) must
+     * also short-circuit — set-default for an embedder would corrupt the chat-model contract.
      */
     fun setDefaultModel(modelId: String, modelName: String) {
+        // Fail-closed defence-in-depth: if ANY matching row is an embedder, short-circuit.
+        // `firstOrNull` would let a chat row mask an embedder collision on the same modelId
+        // (allowlist parser drift / hostile JSON); `any` keeps the guard strict — better to
+        // refuse a legitimate set-default than to corrupt `default_model_id` with an embedder.
+        // Empty match list passes through — production callers always pass a registry-resident
+        // modelId (the overflow menu of a SUCCEEDED row), and the legacy tests seed `""` /
+        // arbitrary ids to exercise the persistence path.
+        if (registry.models.value.any { it.model.modelId == modelId && it.isEmbedder() }) return
         viewModelScope.launch {
             appSettings.setDefaultModelId(modelId)
             _navEvents.emit(NavEvent.ShowSnackbar("Default model: $modelName"))
         }
+    }
+
+    /**
+     * Task 10: tap on the embedder row's «Удалить эмбеддер» action. Resolves the affected
+     * projects (Phase 4 MVP: every project depends on the single allowlisted embedder, so the
+     * list is either empty or every project), then surfaces the matching dialog state to the UI.
+     *
+     * The lookup runs on the IO dispatcher via `projectRepository` — caller path is the user
+     * tap on a menu item, response time is whatever a snapshot Room read costs (sub-ms in
+     * practice).
+     */
+    fun onDeleteEmbedderClick(modelId: String, modelName: String) {
+        viewModelScope.launch {
+            val projects = projectRepository.projectsUsingEmbedder(modelId)
+            _embedderDeleteDialog.value = if (projects.isEmpty()) {
+                EmbedderDeleteDialogState.Confirm(modelName = modelName)
+            } else {
+                EmbedderDeleteDialogState.WarningWithProjects(
+                    modelName = modelName,
+                    projectNames = projects.map { it.name },
+                )
+            }
+        }
+    }
+
+    /**
+     * Confirm the embedder deletion shown in [embedderDeleteDialog]. Delegates to
+     * [ModelRegistry.delete] (which also cancels in-flight downloads and releases the engine
+     * if loaded). Clears the dialog after the registry call so the UI snaps back without
+     * showing intermediate state — the row treatment flips via [registry.models].
+     */
+    fun onConfirmEmbedderDelete() {
+        val state = _embedderDeleteDialog.value ?: return
+        viewModelScope.launch {
+            registry.delete(state.modelName)
+            _embedderDeleteDialog.value = null
+        }
+    }
+
+    /** Dismiss the embedder delete-confirmation dialog without deleting. */
+    fun onDismissEmbedderDelete() {
+        _embedderDeleteDialog.value = null
     }
 
     /** Re-read `crash.log` + `crash.log.dismissed` from disk (Decision 6). */

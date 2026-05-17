@@ -50,4 +50,26 @@ interface MessageDao {
             "ORDER BY created_at DESC, id DESC LIMIT 1",
     )
     suspend fun lastByChat(chatId: Long): MessageEntity?
+
+    /**
+     * Paged snapshot read of messages with non-null `citations` belonging to chats
+     * inside [projectId] (JOIN through `chats.project_id`). Consumed by
+     * `DefaultProjectRepository.deleteFile` (Decision 8) which iterates batches of
+     * 50, decodes JSON, marks matching entries as stale, and writes back via
+     * [updateCitations] — keeps JVM heap bounded regardless of corpus size.
+     */
+    @Query(
+        "SELECT m.* FROM messages m " +
+            "INNER JOIN chats c ON c.id = m.chat_id " +
+            "WHERE c.project_id = :projectId AND m.citations IS NOT NULL " +
+            "ORDER BY m.id ASC LIMIT :limit OFFSET :offset",
+    )
+    suspend fun observeCitedMessagesPageByProject(
+        projectId: Long,
+        offset: Int,
+        limit: Int,
+    ): List<MessageEntity>
+
+    @Query("UPDATE messages SET citations = :citationsJson WHERE id = :messageId")
+    suspend fun updateCitations(messageId: Long, citationsJson: String?)
 }

@@ -47,4 +47,7 @@ data class MessageEntity(
 
     @ColumnInfo(name = "token_count")
     val tokenCount: Int? = null,
+
+    @ColumnInfo(name = "citations")
+    val citations: String? = null,
 )

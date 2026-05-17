@@ -39,6 +39,11 @@ dependencies {
     // parameter type for KV-cache replay, so consumers of `:core-runtime`
     // (`:app`) need this artifact on their compile classpath.
     api(libs.litertlm)
+    // Phase 4 Task 1 (Decision 1, Path C): regular LiteRT Interpreter used by
+    // EmbeddingGemmaEngine for on-device retrieval encoding. Implementation-only —
+    // the engine surface (FloatArray, taskType String) does not leak LiteRT types
+    // to consumers, so `implementation` is correct (no `api` promotion needed).
+    implementation(libs.litert)
 
     implementation(libs.hilt.android)
     ksp(libs.hilt.android.compiler)

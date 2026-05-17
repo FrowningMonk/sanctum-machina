@@ -1,5 +1,7 @@
 package app.sanctum.machina.ui.chat
 
+import app.sanctum.machina.data.Citation
+
 enum class MessageRole { USER, ASSISTANT }
 
 data class Message(
@@ -22,4 +24,11 @@ data class Message(
      * content actually dispatched to the model. Empty for assistant messages.
      */
     val attachments: List<Attachment> = emptyList(),
+    /**
+     * Phase 4 Task 11 RAG citations (Decision 7). Populated via two paths:
+     * mid-stream from `ChatViewModel._streamingCitations` for the in-flight
+     * assistant bubble, and decoded from `MessageEntity.citations` JSON when
+     * reopening a project chat. Empty for non-project chats and for USER rows.
+     */
+    val citations: List<Citation> = emptyList(),
 )

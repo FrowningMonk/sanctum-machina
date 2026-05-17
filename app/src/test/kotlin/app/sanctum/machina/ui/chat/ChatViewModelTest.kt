@@ -24,12 +24,23 @@ import app.sanctum.machina.core.runtime.ResultListener
 import app.sanctum.machina.core.settings.AppSettingsRepository
 import app.sanctum.machina.core.settings.proto.PerModelSettings
 import app.sanctum.machina.data.ChatRepository
+import app.sanctum.machina.data.Citation
 import app.sanctum.machina.data.PersistedAttachment
+import app.sanctum.machina.data.ProjectRepository
+import app.sanctum.machina.data.RagConfig
 import app.sanctum.machina.data.dao.ChatDao
 import app.sanctum.machina.data.dao.MessageDao
+import app.sanctum.machina.data.dao.ProjectFileDao
 import app.sanctum.machina.data.model.ChatEntity
 import app.sanctum.machina.data.model.MessageEntity
+import app.sanctum.machina.data.model.ProjectEntity
+import app.sanctum.machina.data.model.ProjectFileEntity
+import app.sanctum.machina.engine.EmbedderGate
+import app.sanctum.machina.engine.EmbedderState
 import app.sanctum.machina.engine.WarmupCoordinator
+import app.sanctum.machina.rag.RagInjector
+import app.sanctum.machina.rag.RetrievedChunk
+import com.google.gson.Gson
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Message as LitertlmMessage
@@ -83,6 +94,10 @@ class ChatViewModelTest {
     private lateinit var fakeChatDao: FakeChatDao
     private lateinit var fakeChatRepository: FakeChatRepository
     private lateinit var fakeWarmupCoordinator: FakeWarmupCoordinator
+    private lateinit var fakeRagInjector: FakeRagInjector
+    private lateinit var fakeEmbedderGate: FakeEmbedderGate
+    private lateinit var fakeProjectRepository: FakeProjectRepository
+    private lateinit var fakeProjectFileDao: FakeProjectFileDao
 
     private lateinit var sharedCalls: MutableList<String>
 
@@ -99,6 +114,10 @@ class ChatViewModelTest {
         fakeChatDao = FakeChatDao()
         fakeChatRepository = FakeChatRepository()
         fakeWarmupCoordinator = FakeWarmupCoordinator(kotlinx.coroutines.SupervisorJob())
+        fakeRagInjector = FakeRagInjector()
+        fakeEmbedderGate = FakeEmbedderGate()
+        fakeProjectRepository = FakeProjectRepository()
+        fakeProjectFileDao = FakeProjectFileDao()
     }
 
     @After
@@ -510,6 +529,150 @@ class ChatViewModelTest {
         assertNotNull("staging dir non-null when image staged", commit.stagingDir)
     }
 
+    // ---- Phase 4 Task 19: project-draft → Persistent commit ----------------
+
+    @Test
+    fun draftWithProjectId_commitsAssignsProjectIdToNewChat() = runTest(dispatcher) {
+        // Project-draft entry: route `chat/draft?projectId=42` lands here. The
+        // first send must reach commitDraftChat with `projectId = 42L` so the
+        // new `chats` row carries `project_id = 42` (US-AC3 invariant: project
+        // chat ⇔ `chat.project_id != null`). Embedder is Ready and the corpus
+        // has docs, so the structural blocks (1 = no embedder, 2 = empty
+        // corpus) do not fire — the test pins the commit-side projectId
+        // routing, not the engine-side RAG injection (covered separately for
+        // Persistent project chats).
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        fakeEmbedderGate.setState(EmbedderState.Ready)
+        fakeProjectFileDao.setReadyCount(42L, 3)
+        fakeProjectRepository.seed(
+            ProjectEntity(id = 42L, name = "Test-RAG", defaultModelId = "id-m", createdAt = 0L)
+        )
+
+        val vm = buildViewModel(ChatIdentityArg.DraftInProject(projectId = 42L))
+        advanceUntilIdle()
+
+        // test-reviewer-1 major: also pin AC line 140 — TopAppBar surfaces the
+        // project name in project-draft mode. Asserted on the Draft state so a
+        // regression that drops the `_projectName` collect or the new field on
+        // `TopAppBarState.Draft` fails here, not only on Honor 200 smoke.
+        val draftState = vm.topAppBarState.value
+        assertTrue("draft state expected", draftState is TopAppBarState.Draft)
+        assertEquals(
+            "TopAppBarState.Draft.projectName must surface the seeded project name",
+            "Test-RAG",
+            (draftState as TopAppBarState.Draft).projectName,
+        )
+
+        vm.send("test")
+        advanceUntilIdle()
+
+        val commit = fakeChatRepository.commitCalls.single()
+        assertEquals(
+            "project-draft commit must thread projectId into commitDraftChat",
+            42L,
+            commit.projectId,
+        )
+    }
+
+    @Test
+    fun draftWithoutProjectId_commitsAsRegularChat() = runTest(dispatcher) {
+        // Regression-guard for Drawer «+ Новый чат» — the non-project draft
+        // path must continue to commit with `project_id = null` so US-AC3 is
+        // not violated in the opposite direction (a plain chat must NOT pick
+        // up a stray project linkage from VM-internal state).
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+
+        val vm = buildViewModel(ChatIdentityArg.Draft)
+        advanceUntilIdle()
+
+        // test-reviewer-1 major: project name must be null for the plain draft —
+        // the Drawer path must never paint a project-prefix in the TopAppBar.
+        val draftState = vm.topAppBarState.value
+        assertTrue("draft state expected", draftState is TopAppBarState.Draft)
+        assertNull(
+            "plain draft must not surface a project name in TopAppBar",
+            (draftState as TopAppBarState.Draft).projectName,
+        )
+
+        vm.send("test")
+        advanceUntilIdle()
+
+        val commit = fakeChatRepository.commitCalls.single()
+        assertNull(
+            "plain draft commit must pass projectId = null",
+            commit.projectId,
+        )
+    }
+
+    @Test
+    fun draftWithSentinelProjectId_mapsToNullAndCommitsAsRegularChat() = runTest(dispatcher) {
+        // test-reviewer-1 major: exercise the production sentinel path. The
+        // route `chat/draft` (parameter-less Drawer entry) resolves through
+        // `NavType.LongType` with `defaultValue = NO_PROJECT_ID_SENTINEL`, so
+        // `SavedStateHandle["projectId"] == -1L` is the on-the-wire shape that
+        // hits `resolveIdentity`. Going through `SavedStateHandle` directly
+        // (rather than `ChatIdentityArg`) lets the test fail loudly if a
+        // future tweak inlines a `0L` default or drops the `takeIf` map.
+        fakeRegistry.setModel(Model(name = "m", modelId = "id-m"))
+        val savedState = SavedStateHandle(
+            mapOf(
+                ChatViewModel.NAV_ARG_KIND to ChatViewModel.KIND_DRAFT,
+                ChatViewModel.NAV_ARG_PROJECT_ID to ChatViewModel.NO_PROJECT_ID_SENTINEL,
+            )
+        )
+        val vm = ChatViewModel(
+            savedStateHandle = savedState,
+            registry = fakeRegistry,
+            helper = fakeHelper,
+            errorLog = ErrorLog(context),
+            context = context,
+            imageDecoder = fakeDecoder,
+            settingsRepository = fakeRepo,
+            chatRepository = fakeChatRepository,
+            messageDao = fakeMessageDao,
+            chatDao = fakeChatDao,
+            warmupCoordinator = fakeWarmupCoordinator,
+            ragInjector = fakeRagInjector,
+            embedderGate = fakeEmbedderGate,
+            projectRepository = fakeProjectRepository,
+            projectFileDao = fakeProjectFileDao,
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            "sentinel -1L on the nav-arg must resolve to Draft(projectId = null)",
+            ChatIdentity.Draft(projectId = null),
+            vm.identity,
+        )
+
+        vm.send("test")
+        advanceUntilIdle()
+
+        val commit = fakeChatRepository.commitCalls.single()
+        assertNull(
+            "sentinel projectId must NOT propagate to commitDraftChat",
+            commit.projectId,
+        )
+    }
+
+    @Test
+    fun chatIdentityDraft_dataClassEqualityAndCopy() {
+        // ChatIdentity.Draft was promoted from `object` to `data class` in
+        // Task 19 so the optional `projectId` can be carried by the identity
+        // itself (resolved once in `resolveIdentity`, snapshot-stable for the
+        // VM lifetime). Pin the equality / copy contract so a future refactor
+        // back to object would surface here.
+        val a = ChatIdentity.Draft(projectId = 7L)
+        val b = ChatIdentity.Draft(projectId = 7L)
+        val c = ChatIdentity.Draft(projectId = null)
+        val d = ChatIdentity.Draft()
+        assertEquals("same projectId → equal", a, b)
+        assertNotEquals("different projectId → not equal", a, c)
+        assertEquals("default param produces null", d, c)
+        assertEquals("copy preserves projectId", a, a.copy(projectId = 7L))
+        assertEquals("copy(null) flips to null", c, a.copy(projectId = null))
+    }
+
     @Test
     fun draftMode_stagingWriteFails_removesAttachmentAndShowsSnackbar() = runTest(dispatcher) {
         fakeRegistry.setModel(Model(name = "m", modelId = "id-m", llmSupportImage = true))
@@ -567,6 +730,10 @@ class ChatViewModelTest {
             messageDao = fakeMessageDao,
             chatDao = fakeChatDao,
             warmupCoordinator = fakeWarmupCoordinator,
+            ragInjector = fakeRagInjector,
+            embedderGate = fakeEmbedderGate,
+            projectRepository = fakeProjectRepository,
+            projectFileDao = fakeProjectFileDao,
         )
         advanceUntilIdle()
         val events = collectSnackbar(vm2)
@@ -642,6 +809,10 @@ class ChatViewModelTest {
             messageDao = fakeMessageDao,
             chatDao = fakeChatDao,
             warmupCoordinator = fakeWarmupCoordinator,
+            ragInjector = fakeRagInjector,
+            embedderGate = fakeEmbedderGate,
+            projectRepository = fakeProjectRepository,
+            projectFileDao = fakeProjectFileDao,
         )
         advanceUntilIdle()
 
@@ -2304,11 +2475,328 @@ class ChatViewModelTest {
         )
     }
 
+    // ------------------------------------------------------------------
+    // Task 11 — Project chat RAG injection, persist-clean split, fail-loud blocks.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun projectChat_embedderNotDownloaded_blocksSendAndShowsSnackbar() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(
+            ChatEntity(id = 7L, projectId = 42L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L)
+        )
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        fakeEmbedderGate.setState(EmbedderState.NotDownloaded)
+        fakeProjectFileDao.setReadyCount(42L, 3)
+
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        val events = mutableListOf<RagBlockEmbedderEvent>()
+        backgroundScope.launch { vm.ragBlockEmbedderEvent.collect { events += it } }
+        advanceUntilIdle()
+
+        vm.send("hello")
+        advanceUntilIdle()
+
+        assertEquals(
+            "block 1: USER row must NOT be persisted when embedder is NotDownloaded",
+            emptyList<MessageEntity>(),
+            fakeChatRepository.insertedMessages,
+        )
+        assertEquals(
+            "block 1: RagInjector.retrieve must not be called when send is blocked pre-USER",
+            0,
+            fakeRagInjector.calls.size,
+        )
+        assertEquals(
+            "block 1 emits exactly one fail-loud snackbar event",
+            1,
+            events.size,
+        )
+        val event = events.single()
+        assertEquals(R.string.rag_block_no_embedder, event.messageRes)
+        assertEquals(R.string.rag_block_no_embedder_cta, event.actionLabelRes)
+        assertEquals(
+            "block 1: uiState must return to Ready(isGenerating=false)",
+            ChatUiState.Ready(isGenerating = false),
+            vm.uiState.value,
+        )
+    }
+
+    @Test
+    fun projectChat_emptyCorpus_blocksSendAndShowsFailLoudBubble() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(
+            ChatEntity(id = 7L, projectId = 42L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L)
+        )
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        fakeEmbedderGate.setState(EmbedderState.Ready)
+        fakeProjectFileDao.setReadyCount(42L, 0)
+
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        vm.send("hello")
+        advanceUntilIdle()
+
+        assertEquals(
+            "block 2: USER row must NOT be persisted when corpus is empty",
+            emptyList<MessageEntity>(),
+            fakeChatRepository.insertedMessages,
+        )
+        assertEquals(
+            "block 2: RagInjector.retrieve must not be called when send is blocked pre-USER",
+            0,
+            fakeRagInjector.calls.size,
+        )
+        val bubble = vm.messages.value.lastOrNull { it.role == MessageRole.ASSISTANT }
+        assertNotNull("block 2: a fail-loud assistant bubble must be rendered", bubble)
+        assertEquals(
+            "block 2: bubble carries the empty-corpus i18n text",
+            context.getString(R.string.rag_block_empty_corpus),
+            bubble!!.text,
+        )
+        assertFalse("block 2: bubble must not be streaming", bubble.streaming)
+        assertEquals(
+            "block 2: uiState must return to Ready(isGenerating=false)",
+            ChatUiState.Ready(isGenerating = false),
+            vm.uiState.value,
+        )
+    }
+
+    @Test
+    fun projectChat_retrieveFails_persistsUserAndShowsFailLoudBubble() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(
+            ChatEntity(id = 7L, projectId = 42L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L)
+        )
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        fakeEmbedderGate.setState(EmbedderState.Ready)
+        fakeProjectFileDao.setReadyCount(42L, 3)
+        fakeRagInjector.retrieveException = IllegalStateException("encode boom")
+        val errorLogFile = File(context.filesDir, "logs/errors.log")
+        errorLogFile.parentFile?.deleteRecursively()
+
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        vm.send("hello")
+        advanceUntilIdle()
+
+        // AC-R1 invariant: USER row is persisted BEFORE retrieval, so a retrieve failure
+        // must leave the row in Room — the user retains the option to re-send.
+        assertEquals(
+            "block 3: USER row IS persisted before retrieval fires",
+            1,
+            fakeChatRepository.insertedMessages.count { it.role == "user" },
+        )
+        assertEquals(
+            "block 3: helper.runInference must NOT fire when retrieval fails",
+            0,
+            fakeHelper.runInferenceCalls,
+        )
+        val bubble = vm.messages.value.lastOrNull { it.role == MessageRole.ASSISTANT }
+        assertNotNull("block 3: a fail-loud assistant bubble must be rendered", bubble)
+        assertEquals(
+            "block 3: bubble carries the retrieve-error i18n text",
+            context.getString(R.string.rag_block_retrieve_error),
+            bubble!!.text,
+        )
+        assertFalse("block 3: bubble must not be streaming", bubble.streaming)
+        assertEquals(
+            "block 3: uiState must return to Ready(isGenerating=false)",
+            ChatUiState.Ready(isGenerating = false),
+            vm.uiState.value,
+        )
+        // TDD anchor + AC line 84: `errorLog.e("rag-retrieve", …)` MUST fire so failed
+        // retrievals are observable in field bug reports (test-reviewer-1 major). The
+        // detached `viewModelScope.launch` hops to Dispatchers.IO; poll until the file
+        // contains the expected component string, with a generous deadline so a slow CI
+        // machine cannot flake.
+        val deadlineMs = System.currentTimeMillis() + 2_000
+        while (System.currentTimeMillis() < deadlineMs) {
+            if (errorLogFile.exists() && errorLogFile.readText().contains("rag-retrieve")) break
+            Thread.sleep(20)
+        }
+        assertTrue(
+            "expected errors.log entry under 'rag-retrieve' component; got: " +
+                (if (errorLogFile.exists()) errorLogFile.readText() else "<no log file>"),
+            errorLogFile.exists() && errorLogFile.readText().contains("rag-retrieve"),
+        )
+    }
+
+    @Test
+    fun projectChat_happyPath_persistsCleanQueryAndCitationsJson() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(
+            ChatEntity(id = 7L, projectId = 42L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L)
+        )
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        fakeEmbedderGate.setState(EmbedderState.Ready)
+        fakeProjectFileDao.setReadyCount(42L, 3)
+        val retrieved = listOf(
+            RetrievedChunk(11L, "doc.pdf", 3, "chunk A", 0.91f),
+            RetrievedChunk(12L, "spec.pdf", null, "chunk B", 0.87f),
+        )
+        fakeRagInjector.retrieveResult = retrieved
+
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        vm.send("what is foo?")
+        advanceUntilIdle()
+        val listener = fakeHelper.lastResultListener
+            ?: error("project chat happy path must invoke helper.runInference")
+        listener.invoke("answer", false, null, null)
+        listener.invoke("", true, null, null)
+        advanceUntilIdle()
+
+        // Persist-clean invariant: USER row's `text` MUST be the original query verbatim —
+        // no «Context from project documents» substring may leak.
+        val userRow = fakeChatRepository.insertedMessages.single { it.role == "user" }
+        assertEquals("what is foo?", userRow.text)
+        assertFalse(
+            "persist-clean: USER row text must not contain RAG prefix",
+            userRow.text.contains("Context from project documents"),
+        )
+
+        // ASSISTANT row's `citations` JSON must roundtrip back into a structurally equal list.
+        val assistantRow = fakeChatRepository.insertedMessages.single { it.role == "assistant" }
+        val citationsJson = assistantRow.citations
+        assertNotNull("ASSISTANT row must carry a non-null citations JSON", citationsJson)
+        val decoded = Gson().fromJson(citationsJson, Array<Citation>::class.java).toList()
+        assertEquals(
+            "citations roundtrip preserves chunk count and order",
+            retrieved.map { it.fileId },
+            decoded.map { it.fileId },
+        )
+        assertEquals(retrieved.map { it.fileName }, decoded.map { it.fileName })
+        assertEquals(retrieved.map { it.page }, decoded.map { it.page })
+        assertEquals(retrieved.map { it.chunkText }, decoded.map { it.chunkText })
+
+        // Decision 6 / persist-clean invariant: helper.runInference receives the augmented
+        // prefix; the original query lives only in `messages.text`.
+        val captured = fakeHelper.lastInferenceInput
+        assertNotNull("helper.runInference must capture the augmented input", captured)
+        assertTrue(
+            "augmented input must contain the RAG prefix header",
+            captured!!.contains("Context from project documents"),
+        )
+        assertTrue(
+            "augmented input must contain the original query",
+            captured.contains("User question: what is foo?"),
+        )
+        // test-reviewer-1 minor: assert chunk content actually makes it into the prefix,
+        // otherwise a regression that emitted zero chunks would still pass header + tail.
+        assertTrue(
+            "augmented input must contain chunk A text and filename",
+            captured.contains("chunk A") && captured.contains("doc.pdf"),
+        )
+        assertTrue(
+            "augmented input must contain chunk B text and its (page-less) filename",
+            captured.contains("chunk B") && captured.contains("spec.pdf"),
+        )
+    }
+
+    @Test
+    fun projectChat_streamingCitationsEmitted_beforeDone() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        fakeChatDao.put(
+            ChatEntity(id = 7L, projectId = 42L, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L)
+        )
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        fakeEmbedderGate.setState(EmbedderState.Ready)
+        fakeProjectFileDao.setReadyCount(42L, 3)
+        val retrieved = listOf(
+            RetrievedChunk(11L, "doc.pdf", 3, "chunk A", 0.91f),
+        )
+        fakeRagInjector.retrieveResult = retrieved
+
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        vm.send("hi")
+        advanceUntilIdle()
+        val listener = fakeHelper.lastResultListener
+            ?: error("project chat must invoke helper.runInference")
+
+        // Mid-stream: streamingCitations must be populated BEFORE done=true.
+        assertEquals(
+            "streamingCitations is set right after retrieve, before first token",
+            retrieved,
+            vm.streamingCitations.value,
+        )
+        listener.invoke("part", false, null, null)
+        advanceUntilIdle()
+        assertEquals(
+            "streamingCitations must remain populated mid-stream",
+            retrieved,
+            vm.streamingCitations.value,
+        )
+
+        // done=true → handover resets streamingCitations to empty.
+        listener.invoke("", true, null, null)
+        advanceUntilIdle()
+        assertEquals(
+            "streamingCitations must reset to empty after done=true handover",
+            emptyList<RetrievedChunk>(),
+            vm.streamingCitations.value,
+        )
+    }
+
+    @Test
+    fun nonProjectChat_persistentPath_unchanged_noCitationsNoGuards() = runTest(dispatcher) {
+        val model = Model(name = "m", modelId = "id-m")
+        // No projectId on the chat row — phase-3 behaviour expected.
+        fakeChatDao.put(
+            ChatEntity(id = 7L, projectId = null, modelId = "id-m", createdAt = 0L, lastMessageAt = 0L)
+        )
+        fakeRegistry.publishEntry(model, ModelInitStatus.Ready)
+        // Even though the embedder is NotDownloaded and corpus empty, a non-project chat
+        // must ignore both — guards only fire when projectId is non-null.
+        fakeEmbedderGate.setState(EmbedderState.NotDownloaded)
+        fakeProjectFileDao.setReadyCount(0L, 0)
+
+        val vm = buildViewModel(ChatIdentityArg.Persistent(7L))
+        advanceUntilIdle()
+
+        vm.send("hello")
+        advanceUntilIdle()
+        val listener = fakeHelper.lastResultListener
+            ?: error("non-project persistent send must still invoke helper.runInference")
+        listener.invoke("ok", true, null, null)
+        advanceUntilIdle()
+
+        assertEquals(
+            "non-project: RagInjector.retrieve must NEVER be called",
+            0,
+            fakeRagInjector.calls.size,
+        )
+        assertEquals(
+            "non-project: streamingCitations stays empty throughout",
+            emptyList<RetrievedChunk>(),
+            vm.streamingCitations.value,
+        )
+        assertEquals(
+            "non-project: helper.runInference receives the raw user text (no RAG prefix)",
+            "hello",
+            fakeHelper.lastInferenceInput,
+        )
+        val assistantRow = fakeChatRepository.insertedMessages.single { it.role == "assistant" }
+        assertNull(
+            "non-project: ASSISTANT row must persist citations = null",
+            assistantRow.citations,
+        )
+    }
+
     // ---- helpers -------------------------------------------------------
 
     private sealed class ChatIdentityArg {
         object Quick : ChatIdentityArg()
         object Draft : ChatIdentityArg()
+        /** Phase 4 Task 19: project-scoped draft entry. */
+        data class DraftInProject(val projectId: Long) : ChatIdentityArg()
         data class Persistent(val id: Long) : ChatIdentityArg()
     }
 
@@ -2317,6 +2805,10 @@ class ChatViewModelTest {
             when (identity) {
                 ChatIdentityArg.Quick -> mapOf(ChatViewModel.NAV_ARG_KIND to ChatViewModel.KIND_QUICK)
                 ChatIdentityArg.Draft -> mapOf(ChatViewModel.NAV_ARG_KIND to ChatViewModel.KIND_DRAFT)
+                is ChatIdentityArg.DraftInProject -> mapOf(
+                    ChatViewModel.NAV_ARG_KIND to ChatViewModel.KIND_DRAFT,
+                    ChatViewModel.NAV_ARG_PROJECT_ID to identity.projectId,
+                )
                 is ChatIdentityArg.Persistent -> mapOf(ChatViewModel.NAV_ARG_CHAT_ID to identity.id)
             }
         )
@@ -2332,6 +2824,10 @@ class ChatViewModelTest {
             messageDao = fakeMessageDao,
             chatDao = fakeChatDao,
             warmupCoordinator = fakeWarmupCoordinator,
+            ragInjector = fakeRagInjector,
+            embedderGate = fakeEmbedderGate,
+            projectRepository = fakeProjectRepository,
+            projectFileDao = fakeProjectFileDao,
         )
     }
 
@@ -2477,6 +2973,7 @@ private class FakeLlmHelper(
     var lastExtraContext: Map<String, String>? = null
     var lastImages: List<Bitmap> = emptyList()
     var lastAudioClips: List<ByteArray> = emptyList()
+    var lastInferenceInput: String? = null
     var runInferenceCalls = 0
 
     override fun initialize(
@@ -2520,6 +3017,7 @@ private class FakeLlmHelper(
         lastExtraContext = extraContext
         lastImages = images
         lastAudioClips = audioClips
+        lastInferenceInput = input
     }
 
     override fun stopResponse(model: Model) {
@@ -2559,6 +3057,16 @@ private class FakeMessageDao : MessageDao {
     override suspend fun lastByChat(chatId: Long): MessageEntity? =
         observed.value.filter { it.chatId == chatId }
             .maxWithOrNull(compareBy({ it.createdAt }, { it.id }))
+
+    override suspend fun observeCitedMessagesPageByProject(
+        projectId: Long,
+        offset: Int,
+        limit: Int,
+    ): List<MessageEntity> = emptyList()
+
+    override suspend fun updateCitations(messageId: Long, citationsJson: String?) {
+        // no-op fake — citation maintenance covered by integration tests
+    }
 }
 
 private class FakeChatDao : ChatDao {
@@ -2588,6 +3096,7 @@ private class FakeChatRepository : ChatRepository {
         val stagingDir: File?,
         val stagedImageFilename: String?,
         val stagedAudioFilename: String?,
+        val projectId: Long?,
     )
 
     data class PersistentAttachmentCall(
@@ -2621,6 +3130,7 @@ private class FakeChatRepository : ChatRepository {
         filesDir: File,
         stagedImageFilename: String?,
         stagedAudioFilename: String?,
+        projectId: Long?,
     ): Long {
         eventLog?.add("commitDraftChat")
         commitCalls += CommitCall(
@@ -2629,6 +3139,7 @@ private class FakeChatRepository : ChatRepository {
             stagingDir = stagingDir,
             stagedImageFilename = stagedImageFilename,
             stagedAudioFilename = stagedAudioFilename,
+            projectId = projectId,
         )
         return nextChatId
     }
@@ -2753,4 +3264,109 @@ private object ViewModelReflection {
         m.isAccessible = true
         return m
     }
+}
+
+// --- Phase 4 Task 11 fakes ------------------------------------------------------
+
+/**
+ * Hand-rolled [RagInjector] fake. The default `retrieveResult` is a single deterministic
+ * chunk; tests that need a different fixture override either `retrieveResult` (success path)
+ * or `retrieveException` (block 3 fail-loud). `calls` records every invocation so a Quick
+ * / non-project regression test can assert zero touches.
+ */
+private class FakeRagInjector : RagInjector {
+    data class Call(val projectId: Long, val query: String, val topK: Int)
+
+    val calls = mutableListOf<Call>()
+    var retrieveResult: List<RetrievedChunk> = listOf(
+        RetrievedChunk(
+            fileId = 1L,
+            fileName = "doc.pdf",
+            page = 1,
+            chunkText = "fixture chunk text",
+            cosine = 0.9f,
+        )
+    )
+    var retrieveException: Throwable? = null
+
+    override suspend fun retrieve(
+        projectId: Long,
+        query: String,
+        topK: Int,
+    ): List<RetrievedChunk> {
+        calls += Call(projectId, query, topK)
+        retrieveException?.let { throw it }
+        return retrieveResult
+    }
+}
+
+/** Minimal [EmbedderGate] fake — state is a mutable StateFlow; warmup is a no-op counter. */
+private class FakeEmbedderGate : EmbedderGate {
+    private val _state = MutableStateFlow<EmbedderState>(EmbedderState.Ready)
+    override val state: StateFlow<EmbedderState> = _state.asStateFlow()
+    var warmupCalls = 0
+        private set
+
+    fun setState(s: EmbedderState) { _state.value = s }
+
+    override suspend fun warmup() { warmupCalls += 1 }
+}
+
+private class FakeProjectRepository : ProjectRepository {
+    private val projects = mutableMapOf<Long, ProjectEntity>()
+    private val projectFlows = mutableMapOf<Long, MutableStateFlow<ProjectEntity?>>()
+    var effectiveSettings: RagConfig = RagConfig(800, 100, 4, 768)
+
+    fun seed(project: ProjectEntity) {
+        projects[project.id] = project
+        projectFlows.getOrPut(project.id) { MutableStateFlow(null) }.value = project
+    }
+
+    override fun observeAllProjects(): kotlinx.coroutines.flow.Flow<List<ProjectEntity>> =
+        MutableStateFlow(projects.values.toList())
+
+    override fun observeProjectById(projectId: Long): kotlinx.coroutines.flow.Flow<ProjectEntity?> =
+        projectFlows.getOrPut(projectId) { MutableStateFlow(projects[projectId]) }
+
+    override suspend fun getById(projectId: Long): ProjectEntity? = projects[projectId]
+    override suspend fun create(name: String, defaultModelId: String?): Long = error("not used in tests")
+    override suspend fun delete(projectId: Long, filesDir: File) { /* no-op */ }
+    override fun observeFiles(projectId: Long): kotlinx.coroutines.flow.Flow<List<ProjectFileEntity>> =
+        MutableStateFlow(emptyList())
+    override suspend fun addFile(
+        projectId: Long,
+        fileName: String,
+        contentHash: String,
+        localPath: String,
+    ): Long = error("not used in tests")
+    override suspend fun deleteFile(fileId: Long, filesDir: File) { /* no-op */ }
+    override suspend fun updateRagOverrides(projectId: Long, overrides: RagConfig?) { /* no-op */ }
+    override suspend fun getEffectiveRagSettings(projectId: Long): RagConfig = effectiveSettings
+    override suspend fun enqueueIngest(projectId: Long, fileId: Long, filePath: String) { /* no-op */ }
+    override suspend fun reindexFile(fileId: Long, filesDir: File) { /* no-op */ }
+    override suspend fun applyReindexRequired(projectId: Long, chunkSize: Int, chunkOverlap: Int, filesDir: File) { /* no-op */ }
+    override suspend fun projectsUsingEmbedder(embedderModelId: String): List<ProjectEntity> = emptyList()
+}
+
+private class FakeProjectFileDao : ProjectFileDao {
+    private val readyCountFlows = mutableMapOf<Long, MutableStateFlow<Int>>()
+
+    fun setReadyCount(projectId: Long, count: Int) {
+        readyCountFlows.getOrPut(projectId) { MutableStateFlow(0) }.value = count
+    }
+
+    override suspend fun insert(file: ProjectFileEntity): Long = error("not used in tests")
+    override suspend fun update(file: ProjectFileEntity) { /* no-op */ }
+    override suspend fun deleteById(id: Long) { /* no-op */ }
+    override suspend fun getById(id: Long): ProjectFileEntity? = null
+    override fun observeByProject(projectId: Long): kotlinx.coroutines.flow.Flow<List<ProjectFileEntity>> =
+        MutableStateFlow(emptyList())
+    override suspend fun findAllByProject(projectId: Long): List<ProjectFileEntity> = emptyList()
+    override suspend fun getByProjectAndHash(projectId: Long, contentHash: String): ProjectFileEntity? = null
+    override fun observeReadyCount(projectId: Long): kotlinx.coroutines.flow.Flow<Int> =
+        readyCountFlows.getOrPut(projectId) { MutableStateFlow(0) }
+    override suspend fun findByProjectAndStatus(
+        projectId: Long,
+        status: String,
+    ): List<ProjectFileEntity> = emptyList()
 }

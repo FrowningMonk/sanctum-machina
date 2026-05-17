@@ -194,6 +194,7 @@ class StartupHousekeeperTest {
             filesDir: File,
             stagedImageFilename: String?,
             stagedAudioFilename: String?,
+            projectId: Long?,
         ): Long = 0L
 
         override suspend fun writeAttachmentStaging(

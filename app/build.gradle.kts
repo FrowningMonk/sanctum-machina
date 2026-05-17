@@ -37,6 +37,12 @@ android {
 
     androidResources {
         localeFilters += listOf("en", "ru")
+        // Phase 4 Task 17: bundled EmbeddingGemma assets (.tflite + .model). Without `noCompress`,
+        // AGP would gzip them on package — saves install footprint, but the extractor in
+        // [EmbedderRegistry.ensureBundledAssetsExtracted] could not size-gate using
+        // `AssetManager.openFd().length` (openFd throws on compressed entries), and the run-time
+        // copy from APK to cacheDir would pay decompression cost on every cold install.
+        noCompress += listOf("tflite", "model")
     }
 
     compileOptions {
@@ -51,6 +57,12 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+    }
+
+    // Make Room-generated schema JSON files visible to `MigrationTestHelper` on the
+    // instrumentation runtime (it reads them from app assets under `schemas/<dbClass>/N.json`).
+    sourceSets {
+        getByName("androidTest").assets.srcDirs("$projectDir/schemas")
     }
 }
 
@@ -98,6 +110,9 @@ dependencies {
     // so :app must depend on it directly.
     implementation(libs.androidx.datastore)
 
+    // Phase 4 Decision 9: Tom Roush pdfbox-android fork (Apache 2.0).
+    implementation(libs.pdfbox.android)
+
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)
@@ -111,4 +126,10 @@ dependencies {
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.room.testing)
+    // Phase 4 Task 7: WorkManagerTestInitHelper + SynchronousExecutor for IngestWorkerTest.
+    androidTestImplementation(libs.androidx.work.testing)
+    // Phase 4 Task 23: Compose UI tests for ProjectDetailScreen StatusChip.
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
 }

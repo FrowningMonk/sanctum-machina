@@ -656,4 +656,14 @@ private class FakeMessageDao : MessageDao {
 
   override suspend fun lastByChat(chatId: Long): MessageEntity? =
     byChat[chatId]?.maxWithOrNull(compareBy({ it.createdAt }, { it.id }))
+
+  override suspend fun observeCitedMessagesPageByProject(
+    projectId: Long,
+    offset: Int,
+    limit: Int,
+  ): List<MessageEntity> = emptyList()
+
+  override suspend fun updateCitations(messageId: Long, citationsJson: String?) {
+    // no-op fake — citation maintenance is covered by integration tests
+  }
 }

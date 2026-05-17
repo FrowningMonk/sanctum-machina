@@ -41,7 +41,11 @@ gradlew.bat text eol=crlf
 *.apk      binary
 *.aab      binary
 *.dex      binary
-*.tflite   binary
+# Phase 4 Task 17: .tflite ships in-APK (bundled EmbeddingGemma 300M ~196 MB) — git LFS.
+*.tflite   filter=lfs diff=lfs merge=lfs -text
 *.task     binary
 *.gguf     binary
 *.onnx     binary
+# Phase 4 Task 17: SentencePiece tokenizer companion to the bundled .tflite (~4.7 MB,
+# under GitHub's 100 MB normal-blob ceiling — kept off LFS to preserve bandwidth quota).
+*.model    binary

@@ -32,6 +32,18 @@ data class AllowedModelConfig(
   val systemPromptDefault: String? = null,
 )
 
+/**
+ * Phase 4 Task 1 (Decision 11): per-row RAG parameter defaults for embedder rows.
+ * Parsed only when the row carries `taskTypes` containing `llm_embedding`. Validation
+ * (overlap < chunkSize, embeddingDim in Matryoshka enum) lives in [AllowlistLoader.parse].
+ */
+data class AllowedRagConfig(
+  val chunkSize: Int,
+  val chunkOverlap: Int,
+  val topK: Int,
+  val embeddingDim: Int,
+)
+
 data class AllowedModel(
   val name: String,
   val modelId: String,
@@ -46,12 +58,28 @@ data class AllowedModel(
   val llmSupportAudio: Boolean = false,
   val llmSupportThinking: Boolean = false,
   val minDeviceMemoryInGb: Int? = null,
+  // Phase 4 Task 1: parsed but informational only — used by ModelManager UX to label
+  // a row's "best for" surface. Already present in JSON for Gemma 4 rows; previously
+  // ignored by Gson, now first-class.
+  val bestForTaskTypes: List<String>? = null,
+  // Phase 4 Task 1 (Decision 11): present only on embedder rows.
+  val defaultRagConfig: AllowedRagConfig? = null,
+  // Phase 4 Task 17 (user-spec AC-9 option «в»): row ships inside the APK rather than
+  // downloading from Hugging Face. Today only set on the EmbeddingGemma row (HF blob is
+  // gated; embedding the auth token would violate the «no API keys» manifest constraint).
+  val bundled: Boolean = false,
 ) {
   fun toModel(): Model {
     val downloadUrl = "https://huggingface.co/$modelId/resolve/$commitHash/$modelFile?download=true"
     val learnMoreUrl = "https://huggingface.co/$modelId"
 
-    val isLlmModel = taskTypes.contains(TASK_ID_LLM_CHAT) || taskTypes.isEmpty()
+    // Decision 4: derive runtime from taskTypes — embedders run on LiteRT Interpreter,
+    // everything else (chat tasks) on litert-lm. AllowlistLoader.parse already enforces
+    // non-empty taskTypes, so the fallback below stays predictable for chat rows.
+    val isEmbedder = taskTypes.contains(TASK_ID_LLM_EMBEDDING)
+    val isLlmModel = taskTypes.contains(TASK_ID_LLM_CHAT)
+    val derivedRuntimeType: RuntimeType =
+      if (isEmbedder) RuntimeType.LITERT_INTERPRETER else RuntimeType.LITERT_LM
 
     val accelerators: List<Accelerator> =
       defaultConfig?.accelerators?.let { parseAccelerators(it) } ?: DEFAULT_ACCELERATORS
@@ -75,6 +103,16 @@ data class AllowedModel(
         listOf()
       }
 
+    val ragDefaults: RagDefaults? =
+      defaultRagConfig?.let {
+        RagDefaults(
+          chunkSize = it.chunkSize,
+          chunkOverlap = it.chunkOverlap,
+          topK = it.topK,
+          embeddingDim = it.embeddingDim,
+        )
+      }
+
     return Model(
       name = name,
       modelId = modelId,
@@ -95,7 +133,9 @@ data class AllowedModel(
       llmSupportThinking = llmSupportThinking,
       minDeviceMemoryInGb = minDeviceMemoryInGb,
       isLlm = isLlmModel,
-      runtimeType = RuntimeType.LITERT_LM,
+      runtimeType = derivedRuntimeType,
+      defaultRagConfig = ragDefaults,
+      bundled = bundled,
     )
   }
 
